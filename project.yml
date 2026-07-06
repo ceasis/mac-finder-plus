@@ -1,0 +1,38 @@
+name: MacFinderPlus
+options:
+  bundleIdPrefix: com.choloasis
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+targets:
+  Panes:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+    entitlements:
+      path: Panes.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.files.bookmarks.app-scope: true
+        com.apple.security.device.audio-input: true
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Panes
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        LSApplicationCategoryType: public.app-category.utilities
+        LSMinimumSystemVersion: "14.0"
+        NSHumanReadableCopyright: "© 2026 Cholo Asis. All rights reserved."
+        NSMicrophoneUsageDescription: Panes records voice notes when you add a recording to a note.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.choloasis.panes
+        ENABLE_HARDENED_RUNTIME: true
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"

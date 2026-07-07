@@ -44,6 +44,7 @@ struct FileActivity: Identifiable, Equatable {
     var startedAt: Date
     var finishedAt: Date?
     var conflictPolicy: FileConflictPolicy
+    var supportsConflictPolicy: Bool
     var progressDetail: String?
 
     var progress: Double {

@@ -29,6 +29,7 @@ struct ResizeSheet: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .help("Choose how images are resized")
 
             if useMaxDimension {
                 Picker("Longest side", selection: $maxDimension) {
@@ -36,12 +37,14 @@ struct ResizeSheet: View {
                         Text("\(value) px").tag(value)
                     }
                 }
+                .help("Choose the maximum longest-side dimension")
             } else {
                 Picker("Scale to", selection: $percent) {
                     ForEach(percentPresets, id: \.self) { value in
                         Text("\(value) %").tag(value)
                     }
                 }
+                .help("Choose the resize percentage")
             }
 
             Picker("Save as", selection: $format) {
@@ -49,6 +52,7 @@ struct ResizeSheet: View {
                     Text(format.rawValue).tag(format)
                 }
             }
+            .help("Choose the output file format")
 
             Text("Resized copies are saved next to the originals — nothing is overwritten.")
                 .font(.caption)
@@ -60,6 +64,7 @@ struct ResizeSheet: View {
                     appState.showResizeSheet = false
                 }
                 .keyboardShortcut(.cancelAction)
+                .help("Cancel resize")
                 Button("Resize") {
                     let mode: ImageProcessing.Mode =
                         useMaxDimension ? .maxDimension(maxDimension) : .percent(percent)
@@ -68,6 +73,7 @@ struct ResizeSheet: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
+                .help("Create resized copies")
             }
         }
         .padding(20)

@@ -5,6 +5,7 @@ import Observation
 enum PaneViewMode: String, CaseIterable, Identifiable {
     case list = "List"
     case icons = "Icons"
+    case columns = "Columns"
 
     var id: String { rawValue }
 
@@ -12,6 +13,7 @@ enum PaneViewMode: String, CaseIterable, Identifiable {
         switch self {
         case .list: "list.bullet"
         case .icons: "square.grid.2x2"
+        case .columns: "rectangle.split.3x1"
         }
     }
 }
@@ -210,9 +212,12 @@ final class PaneModel {
 
     private func rebuildSelectedItems() {
         if selection.count <= 1 {
-            selectedItems = selection.compactMap { visibleItemsByID[$0] }
+            selectedItems = selection.compactMap { visibleItemsByID[$0] ?? Self.itemIfReachable(id: $0) }
         } else {
-            selectedItems = visibleSource.filter { selection.contains($0.id) }
+            let visible = visibleSource.filter { selection.contains($0.id) }
+            let visibleIDs = Set(visible.map(\.id))
+            let missing = selection.subtracting(visibleIDs).compactMap(Self.itemIfReachable)
+            selectedItems = visible + missing
         }
     }
 
@@ -267,6 +272,20 @@ final class PaneModel {
     func goUp() {
         guard canGoUp else { return }
         navigate(to: currentURL.deletingLastPathComponent().standardizedFileURL)
+    }
+
+    @discardableResult
+    func goToFolder(path: String) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return false
+        }
+        navigate(to: URL(fileURLWithPath: expanded, isDirectory: true))
+        return true
     }
 
     func refresh() {
@@ -379,7 +398,7 @@ final class PaneModel {
 
     /// Double-click / ⌘↓: descend into a single folder, otherwise open with default apps.
     func open(_ ids: Set<FileItem.ID>) {
-        let targets = visibleSource.filter { ids.contains($0.id) }
+        let targets = resolvedItems(ids)
         if targets.count == 1, let only = targets.first, only.isDirectory {
             navigate(to: only.url)
         } else {
@@ -387,6 +406,20 @@ final class PaneModel {
                 NSWorkspace.shared.open(item.url)
             }
         }
+    }
+
+    func resolvedItems(_ ids: Set<FileItem.ID>) -> [FileItem] {
+        let visible = visibleSource.filter { ids.contains($0.id) }
+        let visibleIDs = Set(visible.map(\.id))
+        let missing = ids.subtracting(visibleIDs).compactMap(Self.itemIfReachable)
+        return visible + missing
+    }
+
+    nonisolated static func itemIfReachable(id: FileItem.ID) -> FileItem? {
+        guard !id.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: id).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return FileItem.make(url: url)
     }
 
     // MARK: - Listing
@@ -567,7 +600,7 @@ final class PaneModel {
     // MARK: - Folder sizes
 
     func calculateSizes(_ ids: Set<FileItem.ID>) {
-        calculateFolderSizes(items.filter { ids.contains($0.id) && $0.isDirectory })
+        calculateFolderSizes(resolvedItems(ids).filter(\.isDirectory))
     }
 
     private func calculateAllFolderSizes() {
@@ -587,7 +620,16 @@ final class PaneModel {
         isCalculatingFolderSizes = true
         let loadedURL = currentURL
         folderSizeTask = Task {
-            for folder in folders {
+            for (folderOffset, folder) in folders.enumerated() {
+                if folderOffset > 0 {
+                    do {
+                        try await Task.sleep(for: .seconds(2))
+                    } catch is CancellationError {
+                        break
+                    } catch {
+                        break
+                    }
+                }
                 guard !Task.isCancelled,
                       folderSizeRunID == runID,
                       loadedURL == currentURL else { break }

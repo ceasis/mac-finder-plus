@@ -2,8 +2,11 @@ import AppKit
 import Foundation
 import Observation
 
-/// Persists security-scoped bookmarks for folders the user has granted access to.
-/// This is what lets a sandboxed Mac App Store build keep access across launches.
+/// Persists bookmarks for folders the user has pinned as favorites so they
+/// survive relaunches (and folder moves/renames). Panes ships without the App
+/// Sandbox, so these are plain bookmarks — no security scope is needed; the app
+/// reads any path the user's account can, subject to the usual macOS TCC
+/// prompts for protected folders (Desktop, Documents, Downloads, volumes).
 @Observable
 @MainActor
 final class BookmarkStore {
@@ -20,13 +23,12 @@ final class BookmarkStore {
             var isStale = false
             guard let url = try? URL(
                 resolvingBookmarkData: data,
-                options: .withSecurityScope,
+                options: [],
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
             ) else { continue }
-            guard url.startAccessingSecurityScopedResource() else { continue }
             grantedURLs.append(url)
-            if isStale, let fresh = try? url.bookmarkData(options: .withSecurityScope) {
+            if isStale, let fresh = try? url.bookmarkData() {
                 kept.append(fresh)
             } else {
                 kept.append(data)
@@ -37,21 +39,36 @@ final class BookmarkStore {
 
     func save(_ url: URL) {
         guard !grantedURLs.contains(url),
-              let data = try? url.bookmarkData(options: .withSecurityScope) else { return }
+              let data = try? url.bookmarkData() else { return }
         var saved = UserDefaults.standard.array(forKey: defaultsKey) as? [Data] ?? []
         saved.append(data)
         UserDefaults.standard.set(saved, forKey: defaultsKey)
-        _ = url.startAccessingSecurityScopedResource()
         grantedURLs.append(url)
     }
 
     func remove(_ url: URL) {
         guard let index = grantedURLs.firstIndex(of: url) else { return }
-        url.stopAccessingSecurityScopedResource()
         grantedURLs.remove(at: index)
         var saved = UserDefaults.standard.array(forKey: defaultsKey) as? [Data] ?? []
         if saved.indices.contains(index) { saved.remove(at: index) }
         UserDefaults.standard.set(saved, forKey: defaultsKey)
+    }
+
+    /// Inserts a favorite at a specific position (used by drag-to-reorder /
+    /// drag-to-insert in the sidebar). If the URL is already a favorite it moves
+    /// to the new position instead of duplicating.
+    func insert(_ url: URL, at index: Int) {
+        if let existing = grantedURLs.firstIndex(of: url) {
+            grantedURLs.remove(at: existing)
+        }
+        let clamped = min(max(index, 0), grantedURLs.count)
+        grantedURLs.insert(url, at: clamped)
+        persistAll()
+    }
+
+    private func persistAll() {
+        let data = grantedURLs.compactMap { try? $0.bookmarkData() }
+        UserDefaults.standard.set(data, forKey: defaultsKey)
     }
 
     /// Shows an open panel asking the user to grant access to a folder,

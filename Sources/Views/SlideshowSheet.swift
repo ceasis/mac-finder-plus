@@ -41,6 +41,7 @@ struct SlideshowSheet: View {
                     Spacer()
                     Button("Cancel") { appState.cancelSlideshow() }
                         .keyboardShortcut(.cancelAction)
+                        .help("Cancel video creation")
                 }
             } else {
                 Picker("Each photo shows for", selection: $secondsPerPhoto) {
@@ -49,15 +50,18 @@ struct SlideshowSheet: View {
                     Text("3 seconds").tag(3.0)
                     Text("5 seconds").tag(5.0)
                 }
+                .help("Choose how long each photo appears")
                 Picker("Video size", selection: $sizeChoice) {
                     ForEach(SizeChoice.allCases) { choice in
                         Text(choice.rawValue).tag(choice)
                     }
                 }
+                .help("Choose the slideshow video size")
                 Picker("Scaling", selection: $fill) {
                     Text("Fit (black bars)").tag(false)
                     Text("Fill (crop)").tag(true)
                 }
+                .help("Choose whether photos fit or fill the frame")
                 Text(
                     "Photos appear in the pane’s current sort order. "
                         + "The video is saved in this folder as “Slideshow.mp4”."
@@ -69,6 +73,7 @@ struct SlideshowSheet: View {
                     Spacer()
                     Button("Cancel") { appState.showSlideshowSheet = false }
                         .keyboardShortcut(.cancelAction)
+                        .help("Cancel slideshow export")
                     Button("Create Video") {
                         appState.performSlideshow(options: .init(
                             secondsPerPhoto: secondsPerPhoto,
@@ -78,6 +83,7 @@ struct SlideshowSheet: View {
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
+                    .help("Create slideshow video")
                 }
             }
         }

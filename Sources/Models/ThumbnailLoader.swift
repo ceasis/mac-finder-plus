@@ -4,7 +4,8 @@ import QuickLookThumbnailing
 /// Generates and caches Quick Look thumbnails for the icon grid.
 /// Cache keys include the modification date so edited files refresh.
 enum ThumbnailLoader {
-    private static let cache = NSCache<NSString, NSImage>()
+    // NSCache is internally thread-safe; safe as shared concurrency state.
+    nonisolated(unsafe) private static let cache = NSCache<NSString, NSImage>()
 
     static func thumbnail(for item: FileItem, pixelSize: CGFloat) async -> NSImage? {
         let key = "\(item.url.path)|\(item.modified.timeIntervalSince1970)|\(Int(pixelSize))"

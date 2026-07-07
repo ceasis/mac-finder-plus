@@ -20,6 +20,7 @@ struct ConvertSheet: View {
                         Text(format.rawValue).tag(format)
                     }
                 }
+                .help("Choose the output image format")
             }
 
             if videoCount > 0 {
@@ -28,6 +29,7 @@ struct ConvertSheet: View {
                         Text(codec.rawValue).tag(codec)
                     }
                 }
+                .help("Choose the output video codec")
             }
 
             Divider()
@@ -49,6 +51,7 @@ struct ConvertSheet: View {
                     appState.showConvertSheet = false
                 }
                 .keyboardShortcut(.cancelAction)
+                .help("Cancel conversion")
                 Button("Convert") {
                     appState.performConvert(options: options)
                     appState.showConvertSheet = false
@@ -56,6 +59,7 @@ struct ConvertSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(targets.isEmpty)
+                .help("Convert selected files")
             }
         }
         .padding(20)

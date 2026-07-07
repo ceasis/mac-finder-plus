@@ -25,6 +25,7 @@ struct BatchRenameSheet: View {
                     Label("Token", systemImage: "curlybraces")
                 }
                 .menuStyle(.button)
+                .help("Insert a rename token")
             }
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
@@ -76,6 +77,7 @@ struct BatchRenameSheet: View {
                     appState.showBatchRenameSheet = false
                 }
                 .keyboardShortcut(.cancelAction)
+                .help("Cancel batch rename")
                 Button("Rename") {
                     appState.performBatchRename(options: options)
                     appState.showBatchRenameSheet = false
@@ -83,6 +85,7 @@ struct BatchRenameSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(targets.isEmpty || options.pattern.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Rename selected files")
             }
         }
         .padding(20)
@@ -102,6 +105,7 @@ struct BatchRenameSheet: View {
             }
             options.pattern += token
         }
+        .help("Insert \(token)")
     }
 
     @MainActor

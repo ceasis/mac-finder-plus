@@ -1,70 +1,18 @@
+import AppKit
 import AVFoundation
 import SwiftUI
 
 struct NotesPanelView: View {
-    @Environment(\.dismiss) private var dismiss
+    @Environment(AppState.self) private var appState
     @State private var store = NotesStore.shared
 
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search Notes", text: $store.searchText)
-                        .textFieldStyle(.plain)
-                    if !store.searchText.isEmpty {
-                        Button {
-                            store.searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Clear search")
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-
-                Divider()
-
-                if store.filteredNotes.isEmpty {
-                    ContentUnavailableView("No Notes", systemImage: "note.text")
-                } else {
-                    List(selection: $store.selectedNoteID) {
-                        ForEach(store.filteredNotes) { note in
-                            NoteListRow(note: note)
-                                .tag(note.id)
-                        }
-                    }
-                    .listStyle(.sidebar)
-                }
-
-                Divider()
-
-                HStack {
-                    Button {
-                        store.createNote()
-                    } label: {
-                        Label("New Note", systemImage: "square.and.pencil")
-                    }
-                    .help("New note")
-
-                    Spacer()
-
-                    Button(role: .destructive) {
-                        store.deleteSelectedNote()
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .disabled(store.selectedNoteID == nil)
-                    .help("Delete note")
-                }
-                .padding(10)
+            NotesSidebar(store: store) {
+                appState.hideNotes()
             }
-            .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+            .navigationSplitViewColumnWidth(min: 232, ideal: 250, max: 320)
         } detail: {
             if let note = store.note(for: store.selectedNoteID) {
                 NoteEditorView(store: store, noteID: note.id)
@@ -72,13 +20,21 @@ struct NotesPanelView: View {
                 ContentUnavailableView("No Note Selected", systemImage: "note.text")
             }
         }
-        .frame(minWidth: 900, minHeight: 640)
+        .navigationSplitViewStyle(.balanced)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.bar)
         .onAppear { store.ensureSelection() }
         .alert("Notes Error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.lastError ?? "")
         }
+        .background(
+            Button("", action: { appState.hideNotes() })
+                .keyboardShortcut(.cancelAction)
+                .opacity(0)
+                .accessibilityHidden(true)
+        )
     }
 
     private var errorPresented: Binding<Bool> {
@@ -89,41 +45,159 @@ struct NotesPanelView: View {
     }
 }
 
-private struct NoteListRow: View {
-    let note: NoteItem
+private struct NotesSidebar: View {
+    let store: NotesStore
+    let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Text(note.displayTitle)
-                    .font(.body.weight(.medium))
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                if imageCount > 0 {
-                    Label("\(imageCount)", systemImage: "photo")
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.secondary)
+        @Bindable var store = store
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Label("Notes", systemImage: "note.text")
+                    .font(.headline)
+
+                Spacer()
+
+                Button {
+                    store.createNote(on: store.selectedDay)
+                } label: {
+                    Image(systemName: "square.and.pencil")
                 }
-                if audioCount > 0 {
-                    Label("\(audioCount)", systemImage: "waveform")
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                .help(store.selectedDay == nil ? "New note" : "New note on selected day")
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
                 }
+                .buttonStyle(.plain)
+                .help("Hide Notes")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            NotesCalendarView(store: store, selectedDay: $store.selectedDay)
+
+            if let day = store.selectedDay {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                    Text(day.formatted(date: .abbreviated, time: .omitted))
+                    Spacer()
+                    Button("Show All") { store.selectedDay = nil }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.tint)
+                }
+                .font(.caption)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
 
-            if !note.preview.isEmpty {
-                Text(note.preview)
-                    .font(.caption)
+            Divider()
+
+            NotesSearchField(text: $store.searchText)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+
+            if store.selectedDay == nil {
+                Picker("Group notes", selection: $store.grouping) {
+                    ForEach(NoteGrouping.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+                .help("Group notes by month or year")
+            }
+
+            Divider()
+
+            if store.filteredNotes.isEmpty {
+                ContentUnavailableView("No Notes", systemImage: "note.text")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(selection: $store.selectedNoteID) {
+                    ForEach(store.noteGroups) { group in
+                        if group.title.isEmpty {
+                            ForEach(group.notes) { note in
+                                noteRow(note)
+                            }
+                        } else {
+                            Section(group.title) {
+                                ForEach(group.notes) { note in
+                                    noteRow(note)
+                                }
+                            }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+                .contentMargins(.top, 8, for: .scrollContent)
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Text("\(store.filteredNotes.count) note\(store.filteredNotes.count == 1 ? "" : "s")")
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Spacer()
+                Button(role: .destructive) {
+                    store.deleteSelectedNote()
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.plain)
+                .disabled(store.selectedNoteID == nil)
+                .help("Delete selected note")
             }
-
-            Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            .font(.caption)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
-        .padding(.vertical, 3)
+        .background(.bar)
     }
+
+    private func noteRow(_ note: NoteItem) -> some View {
+        NoteListRow(note: note)
+            .tag(note.id)
+            .contextMenu {
+                Button("Delete Note", role: .destructive) {
+                    store.deleteNote(note.id)
+                }
+            }
+    }
+}
+
+private struct NotesSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search Notes", text: $text)
+                .textFieldStyle(.plain)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
+    }
+}
+
+private struct NoteListRow: View {
+    let note: NoteItem
 
     private var imageCount: Int {
         note.attachments.filter { $0.kind == .image }.count
@@ -131,6 +205,59 @@ private struct NoteListRow: View {
 
     private var audioCount: Int {
         note.attachments.filter { $0.kind == .audio }.count
+    }
+
+    private var attachmentCount: Int {
+        note.attachments.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Text(note.displayTitle)
+                    .font(.callout.weight(.semibold))
+                    .lineSpacing(1)
+                    .lineLimit(1)
+
+                Spacer(minLength: 6)
+
+                if attachmentCount > 0 {
+                    HStack(spacing: 3) {
+                        if imageCount > 0 {
+                            Image(systemName: "photo")
+                        }
+                        if audioCount > 0 {
+                            Image(systemName: "waveform")
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+            }
+
+            Text(previewText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineSpacing(2)
+                .lineLimit(2)
+
+            HStack(spacing: 6) {
+                Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                if attachmentCount > 0 {
+                    Text("-")
+                    Text("\(attachmentCount) attachment\(attachmentCount == 1 ? "" : "s")")
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        }
+        .padding(.vertical, 7)
+    }
+
+    private var previewText: String {
+        let trimmed = note.preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "No text yet" : trimmed
     }
 }
 
@@ -150,19 +277,75 @@ private struct NoteEditorView: View {
         note?.attachments.filter { $0.kind == .audio } ?? []
     }
 
+    private var hasAttachments: Bool {
+        !(note?.attachments.isEmpty ?? true)
+    }
+
     private var isRecordingThisNote: Bool {
         store.recordingNoteID == noteID
     }
 
+    private var isRecordingAnotherNote: Bool {
+        store.recordingNoteID != nil && !isRecordingThisNote
+    }
+
+    private var bodyIsEmpty: Bool {
+        note?.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            editorHeader
+            Divider()
+
+            VStack(spacing: 0) {
+                editorBody
+                    .frame(minHeight: 180)
+
+                if hasAttachments {
+                    Divider()
+                    attachmentsPanel
+                        .frame(minHeight: 120, maxHeight: 240)
+                }
+            }
+
+            Divider()
+            statusBar
+        }
+        .background(.background)
+        .dropDestination(for: URL.self) { urls, _ in
+            store.addImages(urls, to: noteID)
+            return true
+        }
+    }
+
+    private var editorHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 TextField("Untitled Note", text: titleBinding)
-                    .font(.title2.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                     .textFieldStyle(.plain)
+                    .lineLimit(1)
 
-                Spacer()
+                HStack(spacing: 7) {
+                    if let note {
+                        Text("Updated \(note.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                        Text("-")
+                        Text("\(wordCount) words")
+                        if hasAttachments {
+                            Text("-")
+                            Text("\(note.attachments.count) attachments")
+                        }
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
 
+            Spacer(minLength: 16)
+
+            HStack(spacing: 6) {
                 Button {
                     store.saveNow()
                 } label: {
@@ -185,6 +368,7 @@ private struct NoteEditorView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
+                    .help("Stop recording")
 
                     Button {
                         store.cancelRecording()
@@ -196,66 +380,95 @@ private struct NoteEditorView: View {
                     Button {
                         store.startRecording(for: noteID)
                     } label: {
-                        Label("Record", systemImage: "mic.circle")
+                        Image(systemName: "mic.circle")
                     }
-                    .disabled(store.recordingNoteID != nil)
+                    .disabled(isRecordingAnotherNote)
                     .help("Record voice note")
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-
-            Divider()
-
-            HSplitView {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextEditor(text: bodyBinding)
-                        .font(.body)
-                        .scrollContentBackground(.hidden)
-                        .padding(10)
-                }
-                .frame(minWidth: 360)
-
-                attachmentsPanel
-                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
-            }
-
-            Divider()
-
-            HStack {
-                if isRecordingThisNote {
-                    RecordingTimerView(startedAt: store.recordingStartedAt)
-                } else if let saved = store.lastSavedAt {
-                    Label(saved.formatted(date: .omitted, time: .shortened), systemImage: "checkmark.circle")
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if let note {
-                    Text("\(note.body.count) chars")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .font(.caption)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
+            .buttonStyle(.bordered)
         }
-        .dropDestination(for: URL.self) { urls, _ in
-            store.addImages(urls, to: noteID)
-            return true
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    private var editorBody: some View {
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: bodyBinding)
+                .font(.body)
+                .lineSpacing(3)
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+
+            if bodyIsEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Start writing", systemImage: "text.alignleft")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    Text("Type a note, drop images, or record a voice memo.")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 28)
+                .padding(.vertical, 26)
+                .allowsHitTesting(false)
+            }
+
+            if !hasAttachments {
+                VStack {
+                    Spacer()
+                    attachmentDropStrip
+                }
+                .padding(16)
+                .allowsHitTesting(false)
+            }
         }
     }
 
+    private var attachmentDropStrip: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "paperclip")
+            Text("Drop images here")
+            Spacer()
+            Image(systemName: "photo.on.rectangle")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private var attachmentsPanel: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                if !images.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Images", systemImage: "photo.on.rectangle")
-                            .font(.headline)
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Label("Attachments", systemImage: "paperclip")
+                    .font(.headline)
+                Spacer()
+                Text("\(images.count + recordings.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    if !images.isEmpty {
+                        AttachmentSectionHeader(
+                            title: "Images",
+                            systemImage: "photo.on.rectangle",
+                            count: images.count
+                        )
                         LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 118, maximum: 150), spacing: 8)],
+                            columns: [GridItem(.adaptive(minimum: 80, maximum: 110), spacing: 8)],
                             alignment: .leading,
-                            spacing: 8
+                            spacing: 10
                         ) {
                             ForEach(images) { attachment in
                                 NoteImageAttachmentView(
@@ -266,30 +479,61 @@ private struct NoteEditorView: View {
                             }
                         }
                     }
-                }
 
-                if !recordings.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Voice", systemImage: "waveform")
-                            .font(.headline)
-                        ForEach(recordings) { attachment in
-                            NoteAudioAttachmentRow(
-                                store: store,
-                                noteID: noteID,
-                                attachment: attachment
-                            )
+                    if !recordings.isEmpty {
+                        AttachmentSectionHeader(
+                            title: "Voice",
+                            systemImage: "waveform",
+                            count: recordings.count
+                        )
+                        VStack(spacing: 8) {
+                            ForEach(recordings) { attachment in
+                                NoteAudioAttachmentRow(
+                                    store: store,
+                                    noteID: noteID,
+                                    attachment: attachment
+                                )
+                            }
                         }
                     }
                 }
+                .padding(14)
+            }
+        }
+        .background(.bar)
+    }
 
-                if images.isEmpty && recordings.isEmpty {
-                    ContentUnavailableView("No Attachments", systemImage: "paperclip")
-                        .frame(maxWidth: .infinity, minHeight: 240)
+    private var statusBar: some View {
+        HStack(spacing: 10) {
+            if isRecordingThisNote {
+                RecordingTimerView(startedAt: store.recordingStartedAt)
+            } else if let saved = store.lastSavedAt {
+                Label("Saved \(saved.formatted(date: .omitted, time: .shortened))", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if let note {
+                Text("\(note.body.count) chars")
+                    .foregroundStyle(.secondary)
+                if hasAttachments {
+                    Text("-")
+                        .foregroundStyle(.tertiary)
+                    Text("\(note.attachments.count) attachments")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(14)
         }
-        .background(.quaternary.opacity(0.18))
+        .font(.caption)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .background(.bar)
+    }
+
+    private var wordCount: Int {
+        guard let body = note?.body else { return 0 }
+        return body.split { $0.isWhitespace || $0.isNewline }.count
     }
 
     private var titleBinding: Binding<String> {
@@ -304,6 +548,24 @@ private struct NoteEditorView: View {
             get: { note?.body ?? "" },
             set: { store.updateBody(noteID, body: $0) }
         )
+    }
+}
+
+private struct AttachmentSectionHeader: View {
+    let title: String
+    let systemImage: String
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+            Spacer()
+            Text("\(count)")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
     }
 }
 
@@ -333,11 +595,12 @@ private struct NoteImageAttachmentView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .frame(height: 92)
+                .frame(height: 86)
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .background(.quaternary.opacity(0.24))
+                .clipShape(RoundedRectangle(cornerRadius: 7))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8)
+                    RoundedRectangle(cornerRadius: 7)
                         .stroke(.quaternary, lineWidth: 1)
                 )
             }
@@ -361,6 +624,8 @@ private struct NoteImageAttachmentView: View {
                 .help("Remove image")
             }
         }
+        .padding(6)
+        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
         .task(id: url) {
             image = NSImage(contentsOf: url)
         }
@@ -391,6 +656,7 @@ private struct NoteAudioAttachmentRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.originalName)
+                    .font(.callout)
                     .lineLimit(1)
                 Text(durationText(attachment.duration))
                     .font(.caption)
@@ -409,8 +675,8 @@ private struct NoteAudioAttachmentRow: View {
             .foregroundStyle(.secondary)
             .help("Delete recording")
         }
-        .padding(8)
-        .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+        .padding(9)
+        .background(.quaternary.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
         .onDisappear {
             player?.pause()
         }

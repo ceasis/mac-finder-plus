@@ -23,6 +23,8 @@ struct PaneView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )
+            } else if model.viewMode == .columns {
+                FileColumnView(model: model, paneIndex: paneIndex)
             } else if model.viewMode == .icons {
                 FileGridView(model: model, paneIndex: paneIndex)
             } else {
@@ -64,11 +66,13 @@ struct PaneView: View {
                     in: RoundedRectangle(cornerRadius: 5)
                 )
                 .contentShape(Rectangle())
-                .draggable(item.url)
-                .dropDestination(for: URL.self) { urls, _ in
-                    guard item.isDirectory else { return false }
-                    return appState.drop(urls, to: item.url, paneIndex: paneIndex)
-                }
+                .fileDragSource(item, paneIndex: paneIndex, appState: appState)
+                .fileDropTarget(
+                    to: item.url,
+                    paneIndex: paneIndex,
+                    appState: appState,
+                    isEnabled: item.isDirectory
+                )
             }
             .width(min: 160, ideal: 280)
 
@@ -118,9 +122,7 @@ struct PaneView: View {
         .onKeyPress("3") { rateSelection(3); return .handled }
         .onKeyPress("4") { rateSelection(4); return .handled }
         .onKeyPress("5") { rateSelection(5); return .handled }
-        .dropDestination(for: URL.self) { urls, _ in
-            appState.drop(urls, to: model.currentURL, paneIndex: paneIndex)
-        }
+        .fileDropTarget(to: model.currentURL, paneIndex: paneIndex, appState: appState)
     }
 
     private func rateSelection(_ rating: Int) {

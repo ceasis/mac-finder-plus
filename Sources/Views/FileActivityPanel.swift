@@ -10,14 +10,16 @@ struct FileActivityPanel: View {
                 Label("Activity", systemImage: "arrow.up.arrow.down")
                     .font(.caption.weight(.semibold))
                 Spacer()
-                Picker("Conflicts", selection: $appState.fileOperationConflictPolicy) {
-                    ForEach(FileConflictPolicy.allCases) { policy in
-                        Text(policy.title).tag(policy)
+                if showsConflictPolicyPicker {
+                    Picker("Conflicts", selection: $appState.fileOperationConflictPolicy) {
+                        ForEach(FileConflictPolicy.allCases) { policy in
+                            Text(policy.title).tag(policy)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 108)
+                    .help("Conflict handling for copy, move, and sync operations")
                 }
-                .labelsHidden()
-                .frame(width: 108)
-                .help("Conflict handling for new copy and move operations")
                 Button {
                     appState.clearCompletedActivities()
                 } label: {
@@ -43,6 +45,12 @@ struct FileActivityPanel: View {
                 .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
         )
         .shadow(radius: 10, y: 4)
+    }
+
+    private var showsConflictPolicyPicker: Bool {
+        appState.fileActivities.prefix(4).contains { activity in
+            activity.supportsConflictPolicy && !activity.status.isTerminal
+        }
     }
 
     private func activityRow(_ activity: FileActivity) -> some View {

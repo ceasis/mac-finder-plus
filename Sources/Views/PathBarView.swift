@@ -6,6 +6,9 @@ struct PathBarView: View {
     @Bindable var model: PaneModel
     let isActive: Bool
     @FocusState private var searchFocused: Bool
+    @FocusState private var pathFocused: Bool
+    @State private var isEditingPath = false
+    @State private var editablePath = ""
 
     var body: some View {
         HStack(spacing: 6) {
@@ -35,28 +38,70 @@ struct PathBarView: View {
 
             Divider().frame(height: 14)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
-                    ForEach(breadcrumbs, id: \.self) { crumb in
-                        Button {
-                            model.navigate(to: crumb)
-                        } label: {
-                            Text(displayName(for: crumb))
-                                .lineLimit(1)
+            Group {
+                if isEditingPath {
+                    TextField("Path (e.g. ~/Downloads)", text: $editablePath)
+                        .textFieldStyle(.plain)
+                        .focused($pathFocused)
+                        .onSubmit { commitPathEdit() }
+                        .onExitCommand { cancelPathEdit() }
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 2) {
+                            ForEach(breadcrumbs, id: \.self) { crumb in
+                                Button {
+                                    model.navigate(to: crumb)
+                                } label: {
+                                    Text(displayName(for: crumb))
+                                        .lineLimit(1)
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(
+                                    crumb == model.currentURL ? .primary : .secondary
+                                )
+                                .help("Go to \(displayName(for: crumb))")
+                                if crumb != breadcrumbs.last {
+                                    Image(systemName: "chevron.compact.right")
+                                        .foregroundStyle(.tertiary)
+                                        .font(.caption)
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(
-                            crumb == model.currentURL ? .primary : .secondary
-                        )
-                        if crumb != breadcrumbs.last {
-                            Image(systemName: "chevron.compact.right")
-                                .foregroundStyle(.tertiary)
-                                .font(.caption)
+                    }
+                    .defaultScrollAnchor(.trailing)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        beginPathEdit()
+                    }
+                    .contextMenu {
+                        Button("Copy Path") {
+                            appState.copyPath(of: model.currentURL)
+                        }
+                        Button("Edit Path…") {
+                            beginPathEdit()
                         }
                     }
                 }
             }
-            .defaultScrollAnchor(.trailing)
+            .frame(minWidth: 80, maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                appState.copyPath(of: model.currentURL)
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .help("Copy path")
+
+            Button {
+                if isEditingPath {
+                    commitPathEdit()
+                } else {
+                    beginPathEdit()
+                }
+            } label: {
+                Image(systemName: isEditingPath ? "return" : "pencil")
+            }
+            .help(isEditingPath ? "Go to path" : "Edit path")
 
             if let title = model.duplicateResultsTitle {
                 HStack(spacing: 4) {
@@ -104,13 +149,15 @@ struct PathBarView: View {
 
             Picker("View", selection: $model.viewMode) {
                 ForEach(PaneViewMode.allCases) { mode in
-                    Image(systemName: mode.systemImage).tag(mode)
+                    Image(systemName: mode.systemImage)
+                        .tag(mode)
+                        .help(mode.rawValue)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("List or icon view (⌘1 / ⌘2)")
+            .help("List, icon, or column view (⌘1 / ⌘2 / ⌘3)")
 
             HStack(spacing: 4) {
                 Menu {
@@ -160,6 +207,7 @@ struct PathBarView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .help("Clear filter")
                 }
             }
             .padding(.horizontal, 6)
@@ -174,6 +222,42 @@ struct PathBarView: View {
         .onChange(of: appState.searchFocusTick) { _, _ in
             if isActive { searchFocused = true }
         }
+        .onChange(of: model.currentURL) { _, _ in
+            if isEditingPath {
+                isEditingPath = false
+                pathFocused = false
+            }
+        }
+    }
+
+    private func beginPathEdit() {
+        editablePath = pathString(for: model.currentURL)
+        isEditingPath = true
+        pathFocused = true
+    }
+
+    private func commitPathEdit() {
+        if model.goToFolder(path: editablePath) {
+            isEditingPath = false
+            pathFocused = false
+        } else {
+            appState.lastError = "No folder found at “\(editablePath)”."
+        }
+    }
+
+    private func cancelPathEdit() {
+        isEditingPath = false
+        pathFocused = false
+    }
+
+    private func pathString(for url: URL) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
     }
 
     private var filtersActive: Bool {

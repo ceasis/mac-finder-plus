@@ -11,8 +11,10 @@ struct FileGridView: View {
 
     @FocusState private var focused: Bool
     @State private var columnCount = 1
-    /// Last item selected by click or keyboard — the anchor arrow keys move from.
+    /// Item the keyboard cursor moves from.
     @State private var anchorID: FileItem.ID?
+    /// Fixed base for extending selection with Shift-arrow.
+    @State private var rangeAnchorID: FileItem.ID?
     @State private var cellFrames: [FileItem.ID: CGRect] = [:]
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDragBase = Set<FileItem.ID>()
@@ -51,17 +53,19 @@ struct FileGridView: View {
                                         )
                                     }
                                 )
-                                .draggable(item.url)
-                                .dropDestination(for: URL.self) { urls, _ in
-                                    guard item.isDirectory else { return false }
-                                    return appState.drop(urls, to: item.url, paneIndex: paneIndex)
-                                }
+                                .fileDragSource(item, paneIndex: paneIndex, appState: appState)
+                                .fileDropTarget(
+                                    to: item.url,
+                                    paneIndex: paneIndex,
+                                    appState: appState,
+                                    isEnabled: item.isDirectory
+                                )
                                 .contextMenu {
                                     FileItemContextMenu(
                                         ids: menuIDs(for: item), model: model, paneIndex: paneIndex
                                     )
                                 }
-                                .background(
+                                .overlay(
                                     MouseDownReporter { clickCount in
                                         handleMouseDown(on: item, clickCount: clickCount)
                                     }
@@ -72,14 +76,16 @@ struct FileGridView: View {
                 }
                 .coordinateSpace(name: FileGridSelectionLayout.coordinateSpace)
                 .background(
-                    ShiftDragSelectionReporter(
+                    SelectionDragReporter(
+                        shouldBegin: shouldBeginSelectionDrag,
                         onBegin: beginSelectionDrag,
                         onChange: updateSelectionDrag,
                         onEnd: finishSelectionDrag
                     )
                 )
-                .dropDestination(for: URL.self) { urls, _ in
-                    appState.drop(urls, to: model.currentURL, paneIndex: paneIndex)
+                .fileDropTarget(to: model.currentURL, paneIndex: paneIndex, appState: appState)
+                .contextMenu {
+                    FileItemContextMenu(ids: [], model: model, paneIndex: paneIndex)
                 }
                 .overlay(alignment: .topLeading) {
                     if let selectionRect {
@@ -138,17 +144,18 @@ struct FileGridView: View {
         let items = model.displayItems
         guard !items.isEmpty else { return }
         appState.activePaneIndex = paneIndex
-        let currentIndex: Int
-        if let anchorID, let index = items.firstIndex(where: { $0.id == anchorID }) {
-            currentIndex = index
-        } else {
-            // No selection yet: first press lands on the first (or last) item.
-            currentIndex = delta > 0 ? -1 : items.count
-        }
-        let target = min(max(currentIndex + delta, 0), items.count - 1)
-        let id = items[target].id
-        model.selection = [id]
-        anchorID = id
+        let result = FileGridKeyboardSelection.move(
+            ids: items.map(\.id),
+            focusedID: anchorID,
+            rangeAnchorID: rangeAnchorID,
+            selectedIDs: model.selection,
+            delta: delta,
+            extending: NSEvent.modifierFlags.contains(.shift)
+        )
+        model.selection = result.selection
+        anchorID = result.focusedID
+        rangeAnchorID = result.rangeAnchorID
+        guard let id = result.focusedID else { return }
         withAnimation {
             scroller.scrollTo(id)
         }
@@ -158,6 +165,7 @@ struct FileGridView: View {
         appState.activePaneIndex = paneIndex
         focused = true
         anchorID = item.id
+        rangeAnchorID = item.id
         if NSEvent.modifierFlags.contains(.command) {
             if model.selection.contains(item.id) {
                 model.selection.remove(item.id)
@@ -173,16 +181,30 @@ struct FileGridView: View {
         if clickCount == 2 {
             appState.activePaneIndex = paneIndex
             model.open([item.id])
+        } else if model.selection.contains(item.id), !NSEvent.modifierFlags.contains(.command) {
+            appState.activePaneIndex = paneIndex
+            focused = true
+            anchorID = item.id
+            rangeAnchorID = item.id
         } else {
             select(item)
         }
     }
 
-    private func beginSelectionDrag(at point: CGPoint) {
+    private func shouldBeginSelectionDrag(
+        at point: CGPoint,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        if modifiers.contains(.shift) { return true }
+        guard !cellFrames.isEmpty || model.displayItems.isEmpty else { return false }
+        return !cellFrames.values.contains { $0.insetBy(dx: -2, dy: -2).contains(point) }
+    }
+
+    private func beginSelectionDrag(at point: CGPoint, modifiers: NSEvent.ModifierFlags) {
         appState.activePaneIndex = paneIndex
         focused = true
         selectionDragStart = point
-        selectionDragBase = model.selection
+        selectionDragBase = modifiers.contains(.shift) ? model.selection : []
         updateSelectionDrag(to: point)
     }
 
@@ -197,6 +219,7 @@ struct FileGridView: View {
         model.selection = selectionDragBase.union(hitIDs)
         if let anchor = model.displayItems.last(where: { hitIDs.contains($0.id) }) {
             anchorID = anchor.id
+            rangeAnchorID = anchor.id
         }
     }
 
@@ -224,8 +247,70 @@ private enum FileGridSelectionLayout {
     static let coordinateSpace = "fileGridSelectionCoordinateSpace"
 }
 
+enum FileGridKeyboardSelection {
+    static func move<ID: Hashable>(
+        ids: [ID],
+        focusedID: ID?,
+        rangeAnchorID: ID?,
+        selectedIDs: Set<ID>,
+        delta: Int,
+        extending: Bool
+    ) -> (selection: Set<ID>, focusedID: ID?, rangeAnchorID: ID?) {
+        guard !ids.isEmpty else {
+            return ([], nil, nil)
+        }
+
+        let selectedIndexes = ids.indices.filter { selectedIDs.contains(ids[$0]) }
+        let currentIndex = index(of: focusedID, in: ids)
+            ?? selectedEdgeIndex(in: selectedIndexes, delta: delta)
+            ?? (delta > 0 ? -1 : ids.count)
+        let targetIndex = min(max(currentIndex + delta, 0), ids.count - 1)
+        let targetID = ids[targetIndex]
+
+        guard extending else {
+            return ([targetID], targetID, targetID)
+        }
+
+        let anchorIndex = index(of: rangeAnchorID, in: ids)
+            ?? extendingAnchorIndex(
+                focusedID: focusedID,
+                ids: ids,
+                selectedIndexes: selectedIndexes,
+                delta: delta
+            )
+            ?? targetIndex
+        let bounds = min(anchorIndex, targetIndex)...max(anchorIndex, targetIndex)
+        return (Set(ids[bounds]), targetID, ids[anchorIndex])
+    }
+
+    private static func index<ID: Equatable>(of id: ID?, in ids: [ID]) -> Int? {
+        guard let id else { return nil }
+        return ids.firstIndex(of: id)
+    }
+
+    private static func selectedEdgeIndex(in indexes: [Int], delta: Int) -> Int? {
+        guard !indexes.isEmpty else { return nil }
+        return delta >= 0 ? indexes.max() : indexes.min()
+    }
+
+    private static func extendingAnchorIndex<ID: Equatable>(
+        focusedID: ID?,
+        ids: [ID],
+        selectedIndexes: [Int],
+        delta: Int
+    ) -> Int? {
+        if selectedIndexes.count <= 1, let focusedIndex = index(of: focusedID, in: ids) {
+            return focusedIndex
+        }
+        guard !selectedIndexes.isEmpty else {
+            return index(of: focusedID, in: ids)
+        }
+        return delta >= 0 ? selectedIndexes.min() : selectedIndexes.max()
+    }
+}
+
 private struct GridCellFramePreferenceKey: PreferenceKey {
-    static var defaultValue: [FileItem.ID: CGRect] = [:]
+    static var defaultValue: [FileItem.ID: CGRect] { [:] }
 
     static func reduce(value: inout [FileItem.ID: CGRect], nextValue: () -> [FileItem.ID: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
@@ -285,13 +370,19 @@ private struct GridCell: View {
     }
 }
 
-private struct ShiftDragSelectionReporter: NSViewRepresentable {
-    let onBegin: (CGPoint) -> Void
+private struct SelectionDragReporter: NSViewRepresentable {
+    let shouldBegin: (CGPoint, NSEvent.ModifierFlags) -> Bool
+    let onBegin: (CGPoint, NSEvent.ModifierFlags) -> Void
     let onChange: (CGPoint) -> Void
     let onEnd: (CGPoint) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onBegin: onBegin, onChange: onChange, onEnd: onEnd)
+        Coordinator(
+            shouldBegin: shouldBegin,
+            onBegin: onBegin,
+            onChange: onChange,
+            onEnd: onEnd
+        )
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -303,6 +394,7 @@ private struct ShiftDragSelectionReporter: NSViewRepresentable {
 
     func updateNSView(_ view: NSView, context: Context) {
         context.coordinator.view = view
+        context.coordinator.shouldBegin = shouldBegin
         context.coordinator.onBegin = onBegin
         context.coordinator.onChange = onChange
         context.coordinator.onEnd = onEnd
@@ -318,17 +410,20 @@ private struct ShiftDragSelectionReporter: NSViewRepresentable {
 
     final class Coordinator {
         weak var view: NSView?
-        var onBegin: (CGPoint) -> Void
+        var shouldBegin: (CGPoint, NSEvent.ModifierFlags) -> Bool
+        var onBegin: (CGPoint, NSEvent.ModifierFlags) -> Void
         var onChange: (CGPoint) -> Void
         var onEnd: (CGPoint) -> Void
         private var monitor: Any?
         private var isDraggingSelection = false
 
         init(
-            onBegin: @escaping (CGPoint) -> Void,
+            shouldBegin: @escaping (CGPoint, NSEvent.ModifierFlags) -> Bool,
+            onBegin: @escaping (CGPoint, NSEvent.ModifierFlags) -> Void,
             onChange: @escaping (CGPoint) -> Void,
             onEnd: @escaping (CGPoint) -> Void
         ) {
+            self.shouldBegin = shouldBegin
             self.onBegin = onBegin
             self.onChange = onChange
             self.onEnd = onEnd
@@ -339,28 +434,44 @@ private struct ShiftDragSelectionReporter: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(
                 matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
             ) { [weak self] event in
-                guard let self, let view, event.window === view.window else { return event }
-                let point = view.convert(event.locationInWindow, from: nil)
+                // Extract the Sendable primitives from the (non-Sendable) event
+                // before hopping to the main actor — local monitors always fire
+                // on the main thread, so assumeIsolated is safe.
+                let location = event.locationInWindow
+                let type = event.type
+                let modifiers = event.modifierFlags
+                let windowID = event.window.map(ObjectIdentifier.init)
+                let swallow = MainActor.assumeIsolated { () -> Bool in
+                    guard let self, let view = self.view,
+                          view.window.map(ObjectIdentifier.init) == windowID else { return false }
+                    let point = view.convert(location, from: nil)
 
-                switch event.type {
-                case .leftMouseDown:
-                    guard event.modifierFlags.contains(.shift),
-                          view.bounds.contains(point) else { return event }
-                    isDraggingSelection = true
-                    onBegin(point)
-                    return nil
-                case .leftMouseDragged:
-                    guard isDraggingSelection else { return event }
-                    onChange(point)
-                    return nil
-                case .leftMouseUp:
-                    guard isDraggingSelection else { return event }
-                    isDraggingSelection = false
-                    onEnd(point)
-                    return nil
-                default:
-                    return event
+                    switch type {
+                    case .leftMouseDown:
+                        guard view.bounds.contains(point),
+                              !SelectionDragScrollGuard.isPointInScrollControl(
+                                windowPoint: location,
+                                localPoint: point,
+                                hostView: view
+                              ),
+                              self.shouldBegin(point, modifiers) else { return false }
+                        self.isDraggingSelection = true
+                        self.onBegin(point, modifiers)
+                        return true
+                    case .leftMouseDragged:
+                        guard self.isDraggingSelection else { return false }
+                        self.onChange(point)
+                        return true
+                    case .leftMouseUp:
+                        guard self.isDraggingSelection else { return false }
+                        self.isDraggingSelection = false
+                        self.onEnd(point)
+                        return true
+                    default:
+                        return false
+                    }
                 }
+                return swallow ? nil : event
             }
         }
 
@@ -385,7 +496,7 @@ private struct MouseDownReporter: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+        let view = PassthroughEventView()
         view.postsFrameChangedNotifications = true
         context.coordinator.view = view
         context.coordinator.installMonitor()
@@ -413,11 +524,18 @@ private struct MouseDownReporter: NSViewRepresentable {
         func installMonitor() {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-                guard let self, let view, event.window === view.window else { return event }
-                guard !event.modifierFlags.contains(.shift) else { return event }
-                let point = view.convert(event.locationInWindow, from: nil)
-                guard view.bounds.contains(point) else { return event }
-                onMouseDown(event.clickCount)
+                let location = event.locationInWindow
+                let modifiers = event.modifierFlags
+                let clickCount = event.clickCount
+                let windowID = event.window.map(ObjectIdentifier.init)
+                MainActor.assumeIsolated {
+                    guard let self, let view = self.view,
+                          view.window.map(ObjectIdentifier.init) == windowID,
+                          !modifiers.contains(.shift) else { return }
+                    let point = view.convert(location, from: nil)
+                    guard view.bounds.contains(point) else { return }
+                    self.onMouseDown(clickCount)
+                }
                 return event
             }
         }
@@ -432,5 +550,73 @@ private struct MouseDownReporter: NSViewRepresentable {
         deinit {
             removeMonitor()
         }
+    }
+
+    private final class PassthroughEventView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+    }
+}
+
+@MainActor
+enum SelectionDragScrollGuard {
+    private static let fallbackScrollerGutter: CGFloat = 24
+    private static let scrollerSlop: CGFloat = 4
+
+    static func isPointInScrollControl(
+        windowPoint: CGPoint,
+        localPoint: CGPoint,
+        hostView: NSView
+    ) -> Bool {
+        guard let scrollView = hostView.enclosingScrollView else {
+            return isPointInFallbackGutter(localPoint, bounds: hostView.bounds)
+        }
+
+        if let verticalScroller = scrollView.verticalScroller,
+           scrollView.hasVerticalScroller,
+           !verticalScroller.isHidden,
+           verticalScroller.alphaValue > 0 {
+            let scrollerPoint = verticalScroller.convert(windowPoint, from: nil)
+            if verticalScroller.bounds.insetBy(dx: -scrollerSlop, dy: -scrollerSlop).contains(scrollerPoint) {
+                return true
+            }
+        }
+
+        if let horizontalScroller = scrollView.horizontalScroller,
+           scrollView.hasHorizontalScroller,
+           !horizontalScroller.isHidden,
+           horizontalScroller.alphaValue > 0 {
+            let scrollerPoint = horizontalScroller.convert(windowPoint, from: nil)
+            if horizontalScroller.bounds.insetBy(dx: -scrollerSlop, dy: -scrollerSlop).contains(scrollerPoint) {
+                return true
+            }
+        }
+
+        return isPointInFallbackGutter(
+            localPoint,
+            bounds: hostView.bounds,
+            hasVerticalScroller: scrollView.hasVerticalScroller,
+            hasHorizontalScroller: scrollView.hasHorizontalScroller,
+            scrollerStyle: scrollView.scrollerStyle
+        )
+    }
+
+    private static func isPointInFallbackGutter(
+        _ point: CGPoint,
+        bounds: CGRect,
+        hasVerticalScroller: Bool = true,
+        hasHorizontalScroller: Bool = true,
+        scrollerStyle: NSScroller.Style = .overlay
+    ) -> Bool {
+        let scrollerWidth = NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollerStyle)
+        let gutter = max(fallbackScrollerGutter, scrollerWidth + scrollerSlop)
+        if hasVerticalScroller && point.x >= bounds.maxX - gutter {
+            return true
+        }
+        if hasHorizontalScroller && point.y >= bounds.maxY - gutter {
+            return true
+        }
+        return false
     }
 }

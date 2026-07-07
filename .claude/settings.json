@@ -5,10 +5,10 @@
         "hooks": [
           {
             "type": "command",
-            "command": "{ APP=\"/Users/choloasis/eclipse-workspace/mac-finder-plus/build/DerivedData/Build/Products/Debug/Panes.app\"; if [ -d \"$APP\" ]; then if pgrep -x Panes >/dev/null; then osascript -e 'tell application \"Panes\" to quit'; sleep 1; fi; open \"$APP\"; fi; } 2>/dev/null || true",
+            "command": "{ APP=\"/Users/choloasis/eclipse-workspace/mac-finder-plus/build/DerivedData/Build/Products/Debug/Workbench.app\"; if [ -d \"$APP\" ]; then if pgrep -x Workbench >/dev/null; then osascript -e 'tell application \"Workbench\" to quit'; sleep 1; fi; open \"$APP\"; fi; } 2>/dev/null || true",
             "timeout": 30,
             "async": true,
-            "statusMessage": "Relaunching Panes.app"
+            "statusMessage": "Relaunching Workbench"
           }
         ]
       }

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="Panes"
+APP_NAME="Workbench"
 BUNDLE_ID="com.choloasis.panes"
 PROJECT_NAME="MacFinderPlus.xcodeproj"
 SCHEME="Panes"

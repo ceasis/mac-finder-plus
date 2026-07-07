@@ -16,7 +16,7 @@ enum DuplicateFinder {
         leftFolder: URL,
         rightFolder: URL,
         includeHidden: Bool,
-        progress: @escaping (Double, String) async -> Void = { _, _ in }
+        progress: @escaping @Sendable (Double, String) async -> Void = { _, _ in }
     ) async throws -> DuplicateFinderResult {
         await progress(0.02, "Indexing left folder")
         let leftFiles = try mediaFiles(in: leftFolder, includeHidden: includeHidden)

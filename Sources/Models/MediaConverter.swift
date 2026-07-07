@@ -40,7 +40,7 @@ enum MediaConverter {
     static func convert(
         _ item: FileItem,
         options: MediaConversionOptions,
-        progress: @escaping (Double) async -> Void = { _ in }
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws -> URL {
         if item.isImage {
             let output = try convertImage(item.url, format: options.imageFormat)
@@ -96,7 +96,7 @@ enum MediaConverter {
     private static func convertVideo(
         _ url: URL,
         codec: MediaVideoOutputCodec,
-        progress: @escaping (Double) async -> Void
+        progress: @escaping @Sendable (Double) async -> Void
     ) async throws -> URL {
         let asset = AVURLAsset(url: url)
         guard let export = exportSession(for: asset, codec: codec) else {

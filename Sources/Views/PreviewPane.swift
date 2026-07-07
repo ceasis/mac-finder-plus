@@ -1,4 +1,5 @@
 import AVKit
+import QuickLookUI
 import SwiftUI
 
 /// Inline media preview for the active pane's selection: images (downsampled,
@@ -7,6 +8,7 @@ struct PreviewPane: View {
     @Environment(AppState.self) private var appState
     @AppStorage("loopVideos") private var loopVideos = true
     @AppStorage("previewLayoutMode") private var previewLayoutMode = PreviewLayoutMode.rows.rawValue
+    @AppStorage("previewMediaSizeScale") private var previewMediaSizeScale = 1.0
 
     private var selectedItems: [FileItem] { appState.activePane.selectedItems }
     private var mediaItems: [FileItem] { selectedItems.filter(\.isPreviewable) }
@@ -69,6 +71,12 @@ struct PreviewPane: View {
             Spacer()
             if !imagePreviewIDs.isEmpty {
                 Button {
+                    appState.beginAnnotateImage(imagePreviewIDs)
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .help("Annotate Image (⌥⌘A)")
+                Button {
                     appState.transformSelection(imagePreviewIDs, operation: .rotateLeft)
                 } label: {
                     Image(systemName: "rotate.left")
@@ -100,11 +108,29 @@ struct PreviewPane: View {
                     .font(.caption)
                     .help("Restart playback automatically when the video ends")
             }
+            if !previewItems.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .foregroundStyle(.secondary)
+                    Slider(value: $previewMediaSizeScale, in: 0.6...1.8)
+                        .frame(width: 82)
+                }
+                .help("Resize media previews")
+            }
+            if !previewItems.isEmpty {
+                Button {
+                    appState.beginPreviewSlideshow()
+                } label: {
+                    Image(systemName: "play.rectangle")
+                }
+                .help("Play preview slideshow")
+            }
             if previewItems.count > 1 {
                 Picker("Layout", selection: $previewLayoutMode) {
                     ForEach(PreviewLayoutMode.allCases) { mode in
                         Image(systemName: mode.systemImage)
                             .tag(mode.rawValue)
+                            .help(mode.title)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -112,7 +138,7 @@ struct PreviewPane: View {
                 .help("Preview layout")
             }
             Button {
-                appState.showPreview = false
+                appState.dismissToolPanel()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
@@ -130,10 +156,8 @@ struct PreviewPane: View {
 
     @ViewBuilder
     private var content: some View {
-        if selectedItems.count == 1, let item = selectedItems.first, item.isZipArchive {
-            ZipArchivePreview(item: item)
-        } else if previewItems.count == 1, let item = previewItems.first {
-            SingleMediaPreview(item: item)
+        if selectedItems.count == 1, let item = selectedItems.first {
+            singlePreview(for: item)
         } else if !previewItems.isEmpty {
             multiPreviewContent
         } else if let item = selectedItems.first {
@@ -141,9 +165,25 @@ struct PreviewPane: View {
         } else {
             ContentUnavailableView(
                 "No Selection",
-                systemImage: "photo.on.rectangle",
-                description: Text("Select an image, video, or audio file to preview it here.")
+                systemImage: "sidebar.right",
+                description: Text("Select a file to preview it here.")
             )
+        }
+    }
+
+    @ViewBuilder
+    private func singlePreview(for item: FileItem) -> some View {
+        if item.isZipArchive {
+            ZipArchivePreview(item: item)
+        } else if item.isImage || item.isPlayableMedia {
+            SingleMediaPreview(item: item, sizeScale: previewMediaSizeScale)
+        } else if item.isText {
+            TextFilePreview(item: item)
+        } else if item.isRichDocument {
+            // Quick Look renders PDFs, RTF, and Office docs natively.
+            QuickLookPreview(url: item.url)
+        } else {
+            GenericItemPreview(item: item)
         }
     }
 
@@ -157,7 +197,8 @@ struct PreviewPane: View {
                         MediaPreviewTile(
                             item: item,
                             style: .row,
-                            mutePlayer: true
+                            mutePlayer: true,
+                            sizeScale: previewMediaSizeScale
                         )
                     }
                 }
@@ -167,8 +208,8 @@ struct PreviewPane: View {
                     columns: [
                         GridItem(
                             .adaptive(
-                                minimum: PreviewTileStyle.galleryTileWidth,
-                                maximum: PreviewTileStyle.galleryTileWidth
+                                minimum: PreviewTileStyle.galleryTileWidth * CGFloat(previewMediaSizeScale),
+                                maximum: PreviewTileStyle.galleryTileWidth * CGFloat(previewMediaSizeScale)
                             ),
                             spacing: 5,
                             alignment: .topLeading
@@ -181,7 +222,8 @@ struct PreviewPane: View {
                         MediaPreviewTile(
                             item: item,
                             style: .gallery,
-                            mutePlayer: true
+                            mutePlayer: true,
+                            sizeScale: previewMediaSizeScale
                         )
                     }
                 }
@@ -193,6 +235,7 @@ struct PreviewPane: View {
 
 private struct SingleMediaPreview: View {
     let item: FileItem
+    let sizeScale: Double
 
     @State private var player: AVPlayer?
 
@@ -204,6 +247,7 @@ private struct SingleMediaPreview: View {
                         item: item,
                         style: .full,
                         mutePlayer: false,
+                        sizeScale: sizeScale,
                         onPlayerChange: { player = $0 }
                     )
                         .frame(height: previewHeight(for: geometry.size.height))
@@ -218,7 +262,7 @@ private struct SingleMediaPreview: View {
     }
 
     private func previewHeight(for availableHeight: CGFloat) -> CGFloat {
-        min(max(availableHeight * 0.58, 220), 460)
+        max(min(max(availableHeight * 0.58, 220), 460) * CGFloat(sizeScale), 140)
     }
 }
 
@@ -226,6 +270,7 @@ private struct MediaPreviewTile: View {
     let item: FileItem
     let style: PreviewTileStyle
     let mutePlayer: Bool
+    let sizeScale: Double
     var onPlayerChange: ((AVPlayer?) -> Void)? = nil
 
     @State private var player: AVPlayer?
@@ -241,7 +286,7 @@ private struct MediaPreviewTile: View {
             if style.showsFooter {
                 previewBody
                     .frame(maxWidth: .infinity)
-                    .frame(height: style.previewHeight)
+                    .frame(height: style.previewHeight * CGFloat(sizeScale))
                     .background(
                         Color(nsColor: .controlBackgroundColor),
                         in: RoundedRectangle(cornerRadius: 8)
@@ -493,6 +538,13 @@ private enum PreviewLayoutMode: String, CaseIterable, Identifiable {
         switch self {
         case .rows: "rectangle.split.1x2"
         case .gallery: "square.grid.2x2"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .rows: "One per row"
+        case .gallery: "Gallery"
         }
     }
 }
@@ -768,6 +820,102 @@ private struct GenericItemPreview: View {
     }
 }
 
+/// Monospaced, selectable preview for text and source files. Reads at most
+/// `byteCap` off the main thread and decodes UTF-8 (falling back to Latin-1)
+/// so it never blocks on a large log or hangs on binary content.
+private struct TextFilePreview: View {
+    let item: FileItem
+
+    @State private var text: String?
+    @State private var truncated = false
+    @State private var errorMessage: String?
+
+    private let byteCap = 1_000_000
+
+    private var previewKey: String {
+        "\(item.id)|\(item.modified.timeIntervalSince1970)"
+    }
+
+    var body: some View {
+        Group {
+            if let errorMessage {
+                ContentUnavailableView(
+                    "Can’t Preview",
+                    systemImage: "doc.questionmark",
+                    description: Text(errorMessage)
+                )
+            } else if let text {
+                VStack(spacing: 0) {
+                    ScrollView([.vertical, .horizontal]) {
+                        Text(text.isEmpty ? " " : text)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(nil)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                    if truncated {
+                        Divider()
+                        Text("Preview limited to the first \(ByteCountFormatter.string(fromByteCount: Int64(byteCap), countStyle: .file)).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                    }
+                }
+            } else {
+                ProgressView()
+            }
+        }
+        .task(id: previewKey) { await load() }
+    }
+
+    private func load() async {
+        let url = item.url
+        let cap = byteCap
+        let outcome: (text: String?, truncated: Bool, error: String?) =
+            await Task.detached(priority: .userInitiated) {
+                do {
+                    let handle = try FileHandle(forReadingFrom: url)
+                    defer { try? handle.close() }
+                    let data = try handle.read(upToCount: cap + 1) ?? Data()
+                    let isTruncated = data.count > cap
+                    let slice = Data(data.prefix(cap))
+                    let decoded = String(data: slice, encoding: .utf8)
+                        ?? String(data: slice, encoding: .isoLatin1)
+                        ?? ""
+                    return (decoded, isTruncated, nil)
+                } catch {
+                    return (nil, false, error.localizedDescription)
+                }
+            }.value
+        guard !Task.isCancelled, item.url == url else { return }
+        errorMessage = outcome.error
+        text = outcome.text
+        truncated = outcome.truncated
+    }
+}
+
+/// Wraps QLPreviewView so Quick Look renders PDFs, RTF, and Office documents
+/// inline — the same engine Finder's preview uses.
+private struct QuickLookPreview: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal) ?? QLPreviewView()
+        view.autostarts = true
+        view.previewItem = url as NSURL
+        return view
+    }
+
+    func updateNSView(_ nsView: QLPreviewView, context: Context) {
+        if (nsView.previewItem as? NSURL) as URL? != url {
+            nsView.previewItem = url as NSURL
+        }
+    }
+}
+
 private struct PlayerPreviewView: NSViewRepresentable {
     let player: AVPlayer
     let showsControls: Bool
@@ -790,11 +938,5 @@ private struct PlayerPreviewView: NSViewRepresentable {
     static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
         view.player?.pause()
         view.player = nil
-    }
-}
-
-private extension FileItem {
-    var isPreviewable: Bool {
-        isImage || isPlayableMedia
     }
 }

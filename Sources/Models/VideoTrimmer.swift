@@ -14,7 +14,7 @@ enum VideoTrimmer {
         url: URL,
         inTime: Double,
         outTime: Double,
-        progress: @escaping (Double) async -> Void = { _ in }
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws -> URL {
         let asset = AVURLAsset(url: url)
         guard outTime > inTime else {

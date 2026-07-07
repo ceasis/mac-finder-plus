@@ -26,12 +26,18 @@ struct AppCommands: Commands {
             Button("Batch Rename…") { appState.beginBatchRename() }
             Button("Duplicate") { appState.duplicateSelection() }
                 .keyboardShortcut("d", modifiers: .command)
+            Button("Annotate Image…") { appState.beginAnnotateImage() }
+                .keyboardShortcut("a", modifiers: [.command, .option])
+            Button("Edit in Text Editor") { appState.beginEditText() }
+                .keyboardShortcut("e", modifiers: [.command, .option])
             Button("Resize Images…") { appState.beginResize() }
             Button("Convert…") { appState.beginConvert() }
+            Button("Play Preview Slideshow") { appState.beginPreviewSlideshow() }
+                .keyboardShortcut("s", modifiers: [.command, .option])
             Button("Combine into Slideshow…") { appState.beginSlideshow() }
             Button("Export Contact Sheet PDF") { appState.exportContactSheet() }
             Button("Notes…") { appState.showNotes() }
-            Button("Screenshot…") { appState.beginScreenshot() }
+            Button("Capture Screenshot or Recording…") { appState.beginScreenshot() }
                 .keyboardShortcut("5", modifiers: [.command, .option])
             Menu("Rating") {
                 Button("Clear Rating") { appState.rateSelection(0) }
@@ -60,6 +66,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("1", modifiers: .command)
             Button("as Icons") { appState.activePane.viewMode = .icons }
                 .keyboardShortcut("2", modifiers: .command)
+            Button("as Columns") { appState.activePane.viewMode = .columns }
+                .keyboardShortcut("3", modifiers: .command)
             Button("Toggle Dual Pane") { appState.toggleDualPane() }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             Button("Toggle Hidden Files") { appState.showHidden.toggle() }
@@ -68,7 +76,7 @@ struct AppCommands: Commands {
                 get: { appState.autoCalculateFolderSizes },
                 set: { appState.autoCalculateFolderSizes = $0 }
             ))
-            Button("Toggle Preview Pane") { appState.showPreview.toggle() }
+            Button("Toggle Preview Pane") { appState.togglePreview() }
                 .keyboardShortcut("p", modifiers: [.command, .option])
             Button("Quick Look") { appState.quickLookSelection() }
                 .keyboardShortcut("y", modifiers: .command)
@@ -92,6 +100,10 @@ struct AppCommands: Commands {
                 .keyboardShortcut("h", modifiers: [.command, .shift])
             Button("Go to Folder…") { appState.showGoToPrompt = true }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
+        }
+
+        CommandGroup(replacing: .help) {
+            Button("Show Welcome Guide…") { appState.showOnboarding = true }
         }
 
         CommandMenu("Pane") {
@@ -140,6 +152,28 @@ struct AppCommands: Commands {
                 appState.showNotes()
                 NotesStore.shared.createNote()
             }
+        }
+
+        CommandMenu("Tools") {
+            Button("Organize Folder…") { appState.showOrganizeTool() }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            Button("Clean Up…") { appState.showCleanupTool() }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+            Button("Show Clipboard History") { appState.showClipboardHistory() }
+                .keyboardShortcut("v", modifiers: [.command, .option])
+            Button("Notes…") { appState.showNotes() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+        }
+
+        CommandMenu("Clipboard") {
+            Button("Show Clipboard History") { appState.showClipboardHistory() }
+                .keyboardShortcut("v", modifiers: [.command, .option])
+            Button("Copy Files") { appState.copyFilesOfSelection() }
+            Button("Copy Names As Text") { appState.copyNamesOfSelection() }
+            Button("Copy Paths As Text") { appState.copyPathOfSelection() }
+            Divider()
+            Button("Clear Clipboard History") { ClipboardHistoryStore.shared.clear() }
+                .disabled(ClipboardHistoryStore.shared.entries.isEmpty)
         }
     }
 }

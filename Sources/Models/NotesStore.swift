@@ -9,6 +9,32 @@ enum NoteAttachmentKind: String, Codable, Sendable {
     case audio
 }
 
+/// Whether a calendar day has any note, and whether those notes carry image or
+/// audio attachments — drives the badges shown under each day.
+struct NoteDayMarker: Equatable, Sendable {
+    var hasNote = false
+    var hasImage = false
+    var hasAudio = false
+}
+
+/// How the notes list is sectioned for browsing by time.
+enum NoteGrouping: String, CaseIterable, Identifiable, Sendable {
+    case none = "All"
+    case month = "Month"
+    case year = "Year"
+
+    var id: String { rawValue }
+    var label: String { self == .none ? "All" : "By \(rawValue)" }
+}
+
+/// A titled section of notes (e.g. "July 2026" or "2026"). An empty title means
+/// a single ungrouped list.
+struct NoteGroup: Identifiable, Sendable {
+    let id: String
+    let title: String
+    let notes: [NoteItem]
+}
+
 struct NoteAttachment: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var kind: NoteAttachmentKind
@@ -46,6 +72,10 @@ final class NotesStore {
     private(set) var notes: [NoteItem] = []
     var selectedNoteID: NoteItem.ID?
     var searchText = ""
+    /// When set, the list and calendar focus on notes created on this day.
+    var selectedDay: Date?
+    /// How the notes list is sectioned (by month, by year, or a flat list).
+    var grouping: NoteGrouping = .none
     var lastSavedAt: Date?
     var lastError: String?
     private(set) var recordingNoteID: NoteItem.ID?
@@ -59,15 +89,20 @@ final class NotesStore {
     }
 
     var filteredNotes: [NoteItem] {
-        let sorted = notes.sorted { lhs, rhs in
+        var result = notes.sorted { lhs, rhs in
             if lhs.updatedAt == rhs.updatedAt {
                 return lhs.createdAt > rhs.createdAt
             }
             return lhs.updatedAt > rhs.updatedAt
         }
+        if let selectedDay {
+            let calendar = Calendar.current
+            let target = calendar.startOfDay(for: selectedDay)
+            result = result.filter { calendar.startOfDay(for: $0.createdAt) == target }
+        }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return sorted }
-        return sorted.filter { note in
+        guard !query.isEmpty else { return result }
+        return result.filter { note in
             note.title.localizedCaseInsensitiveContains(query)
                 || note.body.localizedCaseInsensitiveContains(query)
                 || note.attachments.contains {
@@ -75,6 +110,47 @@ final class NotesStore {
                         || $0.filename.localizedCaseInsensitiveContains(query)
                 }
         }
+    }
+
+    /// Per-day summary used by the calendar to badge days that have notes and
+    /// whether any of those notes carry image or audio attachments.
+    func dayMarkers() -> [Date: NoteDayMarker] {
+        let calendar = Calendar.current
+        var result: [Date: NoteDayMarker] = [:]
+        for note in notes {
+            let day = calendar.startOfDay(for: note.createdAt)
+            var marker = result[day] ?? NoteDayMarker()
+            marker.hasNote = true
+            if note.attachments.contains(where: { $0.kind == .image }) { marker.hasImage = true }
+            if note.attachments.contains(where: { $0.kind == .audio }) { marker.hasAudio = true }
+            result[day] = marker
+        }
+        return result
+    }
+
+    /// The notes list, sectioned by month or year when a grouping is active.
+    /// A single-day calendar selection or "All" grouping yields one flat group.
+    var noteGroups: [NoteGroup] {
+        let notes = filteredNotes
+        guard selectedDay == nil, grouping != .none else {
+            return [NoteGroup(id: "all", title: "", notes: notes)]
+        }
+        let calendar = Calendar.current
+        let components: Set<Calendar.Component> = grouping == .month ? [.year, .month] : [.year]
+        let formatter = DateFormatter()
+        formatter.dateFormat = grouping == .month ? "LLLL yyyy" : "yyyy"
+
+        let buckets = Dictionary(grouping: notes) { note in
+            calendar.dateComponents(components, from: note.createdAt)
+        }
+        return buckets.keys
+            .sorted { (calendar.date(from: $0) ?? .distantPast) > (calendar.date(from: $1) ?? .distantPast) }
+            .map { key in
+                let date = calendar.date(from: key) ?? Date()
+                let title = formatter.string(from: date)
+                let sorted = (buckets[key] ?? []).sorted { $0.createdAt > $1.createdAt }
+                return NoteGroup(id: title, title: title, notes: sorted)
+            }
     }
 
     func ensureSelection() {
@@ -98,13 +174,21 @@ final class NotesStore {
     }
 
     @discardableResult
-    func createNote() -> NoteItem.ID {
+    func createNote(on day: Date? = nil) -> NoteItem.ID {
         let now = Date()
+        // Anchor the note to the chosen calendar day (keeping the current
+        // time-of-day) so the calendar badges the right day; default to now.
+        let created: Date
+        if let day, !Calendar.current.isDate(day, inSameDayAs: now) {
+            created = Self.combine(day: day, time: now) ?? day
+        } else {
+            created = now
+        }
         let note = NoteItem(
             id: UUID(),
             title: "",
             body: "",
-            createdAt: now,
+            createdAt: created,
             updatedAt: now,
             attachments: []
         )
@@ -112,6 +196,20 @@ final class NotesStore {
         selectedNoteID = note.id
         save()
         return note.id
+    }
+
+    private static func combine(day: Date, time: Date) -> Date? {
+        let calendar = Calendar.current
+        let dayParts = calendar.dateComponents([.year, .month, .day], from: day)
+        let timeParts = calendar.dateComponents([.hour, .minute, .second], from: time)
+        var merged = DateComponents()
+        merged.year = dayParts.year
+        merged.month = dayParts.month
+        merged.day = dayParts.day
+        merged.hour = timeParts.hour
+        merged.minute = timeParts.minute
+        merged.second = timeParts.second
+        return calendar.date(from: merged)
     }
 
     func deleteSelectedNote() {

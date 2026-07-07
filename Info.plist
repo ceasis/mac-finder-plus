@@ -5,15 +5,17 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Panes</string>
+	<string>Workbench</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Workbench</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -27,6 +29,6 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Cholo Asis. All rights reserved.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Panes records voice notes when you add a recording to a note.</string>
+	<string>Workbench uses the microphone for narrated screen recordings, voice notes, and note attachments.</string>
 </dict>
 </plist>

@@ -48,6 +48,7 @@ struct PaneTabBarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(selected ? "Current tab: \(tab.title)" : "Show tab: \(tab.title)")
 
             if model.tabs.count > 1 {
                 Button {
@@ -59,7 +60,7 @@ struct PaneTabBarView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Close Tab (⌘W)")
+                .help("Close tab: \(tab.title)")
             }
         }
         .padding(.leading, 7)

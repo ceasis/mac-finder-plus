@@ -25,8 +25,8 @@ enum FileOperations {
         to directory: URL,
         move: Bool,
         conflictPolicy: FileConflictPolicy,
-        progress: @escaping (Int64, Int64) async -> Void,
-        isPaused: @escaping () async -> Bool
+        progress: @escaping @Sendable (Int64, Int64) async -> Void,
+        isPaused: @escaping @Sendable () async -> Bool
     ) async throws -> [FileMoveRecord] {
         let totalBytes = try await totalSize(of: sources)
         await progress(0, totalBytes)
@@ -167,6 +167,13 @@ enum FileOperations {
     }
 
     @discardableResult
+    static func newTextFile(named name: String, in directory: URL) async throws -> URL {
+        let destination = uniqueDestination(for: directory.appendingPathComponent(name))
+        try Data().write(to: destination)
+        return destination
+    }
+
+    @discardableResult
     static func rename(_ url: URL, to newName: String) async throws -> FileMoveRecord {
         let destination = url.deletingLastPathComponent().appendingPathComponent(newName)
         try FileManager.default.moveItem(at: url, to: destination)
@@ -295,8 +302,8 @@ enum FileOperations {
         to destination: URL,
         completedBytes: inout Int64,
         totalBytes: Int64,
-        progress: @escaping (Int64, Int64) async -> Void,
-        isPaused: @escaping () async -> Bool
+        progress: @escaping @Sendable (Int64, Int64) async -> Void,
+        isPaused: @escaping @Sendable () async -> Bool
     ) async throws {
         var isDirectory: ObjCBool = false
         FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory)
@@ -363,8 +370,8 @@ enum FileOperations {
         to destination: URL,
         completedBytes: inout Int64,
         totalBytes: Int64,
-        progress: @escaping (Int64, Int64) async -> Void,
-        isPaused: @escaping () async -> Bool
+        progress: @escaping @Sendable (Int64, Int64) async -> Void,
+        isPaused: @escaping @Sendable () async -> Bool
     ) async throws {
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(),
@@ -392,7 +399,7 @@ enum FileOperations {
     }
 
     private static func waitWhilePaused(
-        _ isPaused: @escaping () async -> Bool
+        _ isPaused: @escaping @Sendable () async -> Bool
     ) async throws {
         while await isPaused() {
             try Task.checkCancellation()

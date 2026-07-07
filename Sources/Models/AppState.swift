@@ -1,6 +1,65 @@
 import AppKit
 import Foundation
 import Observation
+import UniformTypeIdentifiers
+
+/// Docked tool panels — only one may be active at a time.
+enum DockedToolPanel: String, Equatable {
+    case cleanup
+    case clipboard
+    case notes
+    case preview
+    case organize
+    case screenshot
+    case recording
+}
+
+enum CapturePermissionRequirement: String, CaseIterable, Identifiable {
+    case screenRecording
+    case microphone
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .screenRecording: "Screen Recording"
+        case .microphone: "Microphone"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .screenRecording:
+            "Required before Workbench can capture screenshots or record the screen."
+        case .microphone:
+            "Required before Workbench can record narration or voice notes."
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .screenRecording: "record.circle"
+        case .microphone: "mic"
+        }
+    }
+}
+
+struct CapturePermissionPrompt: Identifiable {
+    let id = UUID()
+    let kind: CaptureKind
+    let required: [CapturePermissionRequirement]
+    let missing: [CapturePermissionRequirement]
+
+    var title: String {
+        "\(kind.title) Permissions"
+    }
+}
+
+private struct FileDragSession {
+    let id: String
+    let urls: [URL]
+    let sourcePaneIndex: Int
+}
 
 /// App-wide state: the two panes, which one is active, global toggles, and the
 /// entry points that menu commands and toolbar buttons call.
@@ -8,6 +67,7 @@ import Observation
 @MainActor
 final class AppState {
     static let shared = AppState()
+    static let internalFileDragType = UTType(exportedAs: "com.choloasis.panes.file-drag")
 
     let panes: [PaneModel]
     var activePaneIndex = 0 {
@@ -36,14 +96,26 @@ final class AppState {
             savePersistentState()
         }
     }
+    var foldersFirst = true {
+        didSet {
+            panes.forEach { $0.foldersFirst = foldersFirst }
+            savePersistentState()
+        }
+    }
 
     var lastError: String?
     var quickLookURL: URL?
     var showNewFolderPrompt = false
+    var showNewFilePrompt = false
     var showGoToPrompt = false
     var renameTarget: FileItem?
-    var showPreview = false {
-        didSet { savePersistentState() }
+    /// The single docked tool panel visible in the main window, if any.
+    var activeToolPanel: DockedToolPanel? {
+        didSet {
+            if oldValue == .preview || activeToolPanel == .preview {
+                savePersistentState()
+            }
+        }
     }
     var showResizeSheet = false
     var resizeTargets: [FileItem] = []
@@ -53,8 +125,12 @@ final class AppState {
     var convertTargets: [FileItem] = []
     var showSlideshowSheet = false
     var slideshowTargets: [FileItem] = []
-    var showScreenshotSheet = false
-    var showNotesSheet = false
+    var showPreviewSlideshow = false
+    var previewSlideshowItems: [FileItem] = []
+    var annotationTarget: FileItem?
+    var editingTextFile: FileItem?
+    var showOnboarding = false
+    var capturePermissionPrompt: CapturePermissionPrompt?
     /// Non-nil while a slideshow render is in flight (0…1).
     var slideshowProgress: Double?
     private var slideshowTask: Task<Void, Never>?
@@ -66,12 +142,15 @@ final class AppState {
     @ObservationIgnored private var lastFolderCompareResult: FolderCompareResult?
     @ObservationIgnored private var lastFolderCompareLeftURL: URL?
     @ObservationIgnored private var lastFolderCompareRightURL: URL?
+    @ObservationIgnored private var currentFileDragSession: FileDragSession?
+    @ObservationIgnored private let permissionsManager = PermissionsManager()
     /// Incremented by the ⌘F command; the active pane's search field focuses on change.
     var searchFocusTick = 0
 
     var activePane: PaneModel { panes[activePaneIndex] }
     var inactivePane: PaneModel { panes[activePaneIndex == 0 ? 1 : 0] }
     var canUndoFileOperation: Bool { !undoStack.isEmpty }
+    var canPasteFilesFromClipboard: Bool { !fileURLsFromPasteboard().isEmpty }
     var undoFileOperationTitle: String {
         undoStack.last.map { "Undo \($0.title)" } ?? "Undo"
     }
@@ -88,14 +167,17 @@ final class AppState {
         isDualPane = restored.isDualPane
         showHidden = restored.showHidden
         autoCalculateFolderSizes = restored.autoCalculateFolderSizes
-        showPreview = restored.showPreview
+        foldersFirst = restored.foldersFirst
+        activeToolPanel = restored.showPreview ? .preview : nil
         panes.forEach { pane in
             pane.showHidden = showHidden
             pane.autoCalculateFolderSizes = autoCalculateFolderSizes
+            pane.foldersFirst = foldersFirst
             pane.persistentStateChanged = { [weak self] in
                 self?.savePersistentState()
             }
         }
+        ClipboardHistoryStore.shared.startMonitoring()
         savePersistentState()
     }
 
@@ -125,14 +207,13 @@ final class AppState {
     }
 
     func goTo(path: String) {
-        let expanded = (path as NSString).expandingTildeInPath
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDirectory),
-              isDirectory.boolValue else {
+        if !activePane.goToFolder(path: path) {
             lastError = "No folder found at “\(path)”."
-            return
         }
-        activePane.navigate(to: URL(fileURLWithPath: expanded))
+    }
+
+    func copyPath(of url: URL) {
+        ClipboardHistoryStore.shared.copyPaths([url.path])
     }
 
     // MARK: - Selection actions
@@ -146,24 +227,339 @@ final class AppState {
     }
 
     func beginScreenshot() {
-        showScreenshotSheet = true
+        let kind = CaptureKind(
+            rawValue: UserDefaults.standard.string(forKey: "capture.kind") ?? ""
+        ) ?? .screenshot
+        beginCaptureTool(kind, togglesExistingPanel: true)
+    }
+
+    func beginScreenshotCapture() {
+        beginCaptureTool(.screenshot, togglesExistingPanel: true)
+    }
+
+    func beginScreenRecording() {
+        beginCaptureTool(.recording, togglesExistingPanel: true)
+    }
+
+    func selectCaptureKindInPanel(_ kind: CaptureKind) {
+        beginCaptureTool(kind, togglesExistingPanel: false)
+    }
+
+    func hideCaptureTool() {
+        if activeToolPanel == .screenshot || activeToolPanel == .recording {
+            activeToolPanel = nil
+        }
+    }
+
+    func beginAnnotateImage(_ ids: Set<FileItem.ID>? = nil) {
+        guard let target = resolvedItems(ids).first(where: \.isImage) else {
+            lastError = "Select an image to annotate."
+            return
+        }
+        closeAllTools()
+        annotationTarget = target
+    }
+
+    func beginEditText(_ ids: Set<FileItem.ID>? = nil) {
+        let items = resolvedItems(ids)
+        // Prefer a recognized text file, but allow editing any non-directory file.
+        guard let target = items.first(where: \.isText) ?? items.first(where: { !$0.isDirectory }) else {
+            lastError = "Select a text file to edit."
+            return
+        }
+        closeAllTools()
+        editingTextFile = target
+    }
+
+    func annotationDidSave(_ url: URL) {
+        annotationTarget = nil
+        activePane.selection = [url.path]
+        panes.forEach { $0.refresh() }
+    }
+
+    /// Hides every docked tool panel and modal tool so only one is visible at a time.
+    private func closeAllTools() {
+        activeToolPanel = nil
+        showResizeSheet = false
+        showBatchRenameSheet = false
+        showConvertSheet = false
+        showSlideshowSheet = false
+        annotationTarget = nil
+        editingTextFile = nil
+        showPreviewSlideshow = false
+        capturePermissionPrompt = nil
+    }
+
+    private func closeModalTools() {
+        showResizeSheet = false
+        showBatchRenameSheet = false
+        showConvertSheet = false
+        showSlideshowSheet = false
+        annotationTarget = nil
+        editingTextFile = nil
+        showPreviewSlideshow = false
+    }
+
+    private func presentTool(_ tool: DockedToolPanel) {
+        closeModalTools()
+        capturePermissionPrompt = nil
+        activeToolPanel = activeToolPanel == tool ? nil : tool
+        if activeToolPanel == .clipboard {
+            ClipboardHistoryStore.shared.captureCurrentPasteboard(reportError: false)
+            ClipboardHistoryStore.shared.ensureSelection()
+        }
+    }
+
+    private func beginCaptureTool(_ kind: CaptureKind, togglesExistingPanel: Bool) {
+        let panel = dockedPanel(for: kind)
+        UserDefaults.standard.set(kind.rawValue, forKey: "capture.kind")
+
+        if togglesExistingPanel && activeToolPanel == panel {
+            activeToolPanel = nil
+            return
+        }
+
+        Task { @MainActor in
+            guard await ensureCapturePermissions(for: kind) else { return }
+            closeModalTools()
+            capturePermissionPrompt = nil
+            activeToolPanel = panel
+        }
+    }
+
+    @discardableResult
+    private func ensureCapturePermissions(for kind: CaptureKind) async -> Bool {
+        permissionsManager.refresh()
+        var missing = missingCapturePermissions(for: kind)
+
+        if missing.contains(.screenRecording) {
+            permissionsManager.requestScreenRecording()
+        }
+        if missing.contains(.microphone) {
+            await permissionsManager.requestMicrophone()
+        }
+
+        permissionsManager.refresh()
+        missing = missingCapturePermissions(for: kind)
+
+        guard missing.isEmpty else {
+            activeToolPanel = nil
+            closeModalTools()
+            capturePermissionPrompt = CapturePermissionPrompt(
+                kind: kind,
+                required: requiredCapturePermissions(for: kind),
+                missing: missing
+            )
+            return false
+        }
+
+        capturePermissionPrompt = nil
+        return true
+    }
+
+    func retryCapturePermissions() {
+        guard let prompt = capturePermissionPrompt else { return }
+        let kind = prompt.kind
+        Task { @MainActor in
+            guard await ensureCapturePermissions(for: kind) else { return }
+            closeModalTools()
+            activeToolPanel = dockedPanel(for: kind)
+        }
+    }
+
+    func openCapturePermissionSettings(_ requirement: CapturePermissionRequirement) {
+        switch requirement {
+        case .screenRecording:
+            permissionsManager.openScreenRecordingSettings()
+        case .microphone:
+            permissionsManager.openMicrophoneSettings()
+        }
+    }
+
+    func dismissCapturePermissionPrompt() {
+        capturePermissionPrompt = nil
+    }
+
+    private func missingCapturePermissions(for kind: CaptureKind) -> [CapturePermissionRequirement] {
+        requiredCapturePermissions(for: kind).filter { requirement in
+            switch requirement {
+            case .screenRecording:
+                permissionsManager.screenRecording != .granted
+            case .microphone:
+                permissionsManager.microphone != .granted
+            }
+        }
+    }
+
+    private func requiredCapturePermissions(for kind: CaptureKind) -> [CapturePermissionRequirement] {
+        switch kind {
+        case .screenshot:
+            [.screenRecording]
+        case .recording:
+            [.screenRecording, .microphone]
+        }
+    }
+
+    private func dockedPanel(for kind: CaptureKind) -> DockedToolPanel {
+        switch kind {
+        case .screenshot: .screenshot
+        case .recording: .recording
+        }
+    }
+
+    func dismissToolPanel() {
+        activeToolPanel = nil
+    }
+
+    func togglePreview() {
+        presentTool(.preview)
     }
 
     func showNotes() {
-        showNotesSheet = true
+        presentTool(.notes)
+    }
+
+    func hideNotes() {
+        if activeToolPanel == .notes { activeToolPanel = nil }
+    }
+
+    func showClipboardHistory() {
+        presentTool(.clipboard)
+    }
+
+    func hideClipboardHistory() {
+        if activeToolPanel == .clipboard { activeToolPanel = nil }
+    }
+
+    func showCleanupTool() {
+        presentTool(.cleanup)
+    }
+
+    func hideCleanupTool() {
+        if activeToolPanel == .cleanup { activeToolPanel = nil }
+    }
+
+    func showOrganizeTool() {
+        presentTool(.organize)
+    }
+
+    func hideOrganizeTool() {
+        if activeToolPanel == .organize { activeToolPanel = nil }
+    }
+
+    func applyOrganizePlan(
+        _ items: [OrganizePlanItem],
+        onSuccess: @escaping () -> Void = {}
+    ) {
+        guard !items.isEmpty else { return }
+        FolderOrganizerStore.shared.isApplying = true
+        let activityID = addActivity(
+            title: "Organize Folder",
+            detail: "\(items.count) files",
+            supportsConflictPolicy: true
+        )
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+                activity.bytesTotal = 1_000
+            }
+            do {
+                let policy = fileActivities.first(where: { $0.id == activityID })?
+                    .conflictPolicy ?? fileOperationConflictPolicy
+                let records = try await FolderOrganizerEngine.apply(items, conflictPolicy: policy)
+                if !records.isEmpty {
+                    undoStack.append(.moveBack(title: "Organize Folder", records: records))
+                }
+                updateActivity(activityID) { activity in
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = activity.bytesTotal
+                }
+                FolderOrganizerStore.shared.isApplying = false
+                onSuccess()
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+                FolderOrganizerStore.shared.isApplying = false
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+                FolderOrganizerStore.shared.isApplying = false
+            }
+            activityTasks[activityID] = nil
+            panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
+    }
+
+    func trashCleanupSuggestions(
+        _ suggestions: [CleanupSuggestion],
+        onSuccess: @escaping () -> Void = {}
+    ) {
+        let urls = suggestions.map(\.url)
+        guard !urls.isEmpty else { return }
+        let activityID = addActivity(title: "Move to Trash", detail: operationDetail(for: urls))
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+            }
+            do {
+                let records = try await FileOperations.trash(urls)
+                if !records.isEmpty {
+                    undoStack.append(.putBack(title: "Move to Trash", records: records))
+                }
+                updateActivity(activityID) { activity in
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = activity.bytesTotal
+                }
+                onSuccess()
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+            panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
     }
 
     func performScreenshot(options: ScreenshotOptions) {
+        Task { @MainActor in
+            guard await ensureCapturePermissions(for: options.kind) else { return }
+            startScreenshotActivity(options: options)
+        }
+    }
+
+    private func startScreenshotActivity(options: ScreenshotOptions) {
         let destinationFolder = activePane.currentURL
-        showScreenshotSheet = false
-        let activityID = addActivity(title: "Screenshot", detail: options.mode.title)
+        let activityTitle = options.kind == .recording ? "Screen Recording" : "Screenshot"
+        let activityDetail = options.selectedWindowTitle ?? options.mode.title
+        let activityID = addActivity(title: activityTitle, detail: activityDetail)
         let task = Task {
             updateActivity(activityID) { activity in
                 activity.status = .running
                 if options.delay > 0 {
                     activity.progressDetail = "\(options.delay)s delay"
+                } else if options.kind == .recording && options.recordingDuration > 0 {
+                    activity.progressDetail = "\(options.recordingDuration)s recording"
                 } else if options.mode == .interactive || options.mode == .selection || options.mode == .window {
                     activity.progressDetail = "Waiting for selection"
+                } else if options.kind == .recording {
+                    activity.progressDetail = "Recording"
                 }
             }
             do {
@@ -214,6 +610,7 @@ final class AppState {
             return
         }
         batchRenameTargets = targets
+        closeAllTools()
         showBatchRenameSheet = true
     }
 
@@ -242,6 +639,39 @@ final class AppState {
         runTracked(title: "New Folder", detail: trimmed) {
             try await FileOperations.newFolder(named: trimmed, in: destination)
             return nil
+        }
+    }
+
+    func createTextFile(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        // Default to a .txt extension when the user doesn't type one.
+        let fileName = trimmed.contains(".") ? trimmed : "\(trimmed).txt"
+        let destination = activePane.currentURL
+        runTracked(title: "New Text File", detail: fileName) {
+            try await FileOperations.newTextFile(named: fileName, in: destination)
+            return nil
+        }
+    }
+
+    /// Opens Terminal at the given folder (defaults to the active pane's folder).
+    func openTerminal(at url: URL? = nil) {
+        let folder = url ?? activePane.currentURL
+        let workspace = NSWorkspace.shared
+        guard let terminal = workspace.urlForApplication(
+            withBundleIdentifier: "com.apple.Terminal"
+        ) else {
+            lastError = "Terminal could not be found on this Mac."
+            return
+        }
+        workspace.open(
+            [folder],
+            withApplicationAt: terminal,
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { [weak self] _, error in
+            if let error {
+                Task { @MainActor in self?.lastError = error.localizedDescription }
+            }
         }
     }
 
@@ -283,9 +713,40 @@ final class AppState {
         enqueueTransfer(urls, to: destination, move: move)
     }
 
+    func fileDragProvider(for item: FileItem, paneIndex: Int) -> NSItemProvider {
+        activePaneIndex = paneIndex
+        let pane = panes[paneIndex]
+        let dragURLs: [URL]
+        if pane.selection.contains(item.id) {
+            dragURLs = pane.resolvedItems(pane.selection).map(\.url)
+        } else {
+            dragURLs = [item.url]
+        }
+
+        let sessionID = UUID().uuidString
+        currentFileDragSession = FileDragSession(id: sessionID, urls: dragURLs, sourcePaneIndex: paneIndex)
+
+        let provider = NSItemProvider(contentsOf: item.url) ?? NSItemProvider(object: item.url as NSURL)
+        provider.registerDataRepresentation(
+            forTypeIdentifier: Self.internalFileDragType.identifier,
+            visibility: .ownProcess
+        ) { completion in
+            completion(Data(sessionID.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    func dropCurrentFileDrag(to destination: URL, paneIndex: Int) -> Bool {
+        guard let session = currentFileDragSession else { return false }
+        currentFileDragSession = nil
+        return drop(session.urls, to: destination, paneIndex: paneIndex)
+    }
+
     func drop(_ urls: [URL], to destination: URL, paneIndex: Int) -> Bool {
         activePaneIndex = paneIndex
-        let filtered = urls.filter { $0.standardizedFileURL != destination.standardizedFileURL }
+        let sourceURLs = expandedCurrentDragURLs(matching: urls) ?? urls
+        let filtered = sourceURLs.filter { $0.standardizedFileURL != destination.standardizedFileURL }
         guard !filtered.isEmpty else { return false }
         let move = NSEvent.modifierFlags.contains(.command)
         enqueueTransfer(filtered, to: destination, move: move)
@@ -299,6 +760,7 @@ final class AppState {
             return
         }
         resizeTargets = images
+        closeAllTools()
         showResizeSheet = true
     }
 
@@ -318,6 +780,7 @@ final class AppState {
             return
         }
         convertTargets = targets
+        closeAllTools()
         showConvertSheet = true
     }
 
@@ -341,8 +804,9 @@ final class AppState {
                         activity.detail = target.name
                     }
                     _ = try await MediaConverter.convert(target, options: options) { [weak self] fileProgress in
+                        guard let self else { return }
                         await MainActor.run {
-                            self?.updateActivity(activityID) { activity in
+                            self.updateActivity(activityID) { activity in
                                 let totalProgress = (Double(completed) + fileProgress) / Double(total)
                                 activity.bytesCompleted = Int64((totalProgress * 1_000).rounded())
                                 activity.progressDetail = "\(completed) of \(total) files"
@@ -504,8 +968,9 @@ final class AppState {
                     inTime: inTime,
                     outTime: outTime
                 ) { [weak self] progress in
+                    guard let self else { return }
                     await MainActor.run {
-                        self?.updateActivity(activityID) { activity in
+                        self.updateActivity(activityID) { activity in
                             activity.bytesCompleted = Int64((progress * 1_000).rounded())
                         }
                     }
@@ -685,7 +1150,11 @@ final class AppState {
         }
 
         let destination = direction == .leftToRight ? rightFolder : leftFolder
-        let activityID = addActivity(title: "Sync \(direction.title)", detail: "Comparing folders")
+        let activityID = addActivity(
+            title: "Sync \(direction.title)",
+            detail: "Comparing folders",
+            supportsConflictPolicy: true
+        )
         updateActivity(activityID) { activity in
             activity.conflictPolicy = fileOperationConflictPolicy
         }
@@ -742,16 +1211,18 @@ final class AppState {
                         move: false,
                         conflictPolicy: policy,
                         progress: { [weak self] completed, total in
+                            guard let self else { return }
                             await MainActor.run {
-                                self?.updateActivity(activityID) { activity in
+                                self.updateActivity(activityID) { activity in
                                     activity.bytesCompleted = completed
                                     activity.bytesTotal = total
                                 }
                             }
                         },
                         isPaused: { [weak self] in
-                            await MainActor.run {
-                                self?.pausedActivityIDs.contains(activityID) == true
+                            guard let self else { return false }
+                            return await MainActor.run {
+                                self.pausedActivityIDs.contains(activityID)
                             }
                         }
                     )
@@ -790,6 +1261,7 @@ final class AppState {
             return
         }
         slideshowTargets = images
+        closeAllTools()
         showSlideshowSheet = true
     }
 
@@ -822,6 +1294,34 @@ final class AppState {
         slideshowTask?.cancel()
     }
 
+    func beginPreviewSlideshow(_ ids: Set<FileItem.ID>? = nil) {
+        let chosenIDs = ids ?? activePane.selection
+        let explicitItems = chosenIDs.isEmpty ? [] : activePane.resolvedItems(chosenIDs)
+        var playlist: [FileItem]
+
+        if explicitItems.isEmpty {
+            playlist = activePane.displayItems.filter(\.isPreviewable)
+        } else {
+            playlist = explicitItems.filter(\.isPreviewable)
+            for folder in explicitItems where folder.isDirectory {
+                playlist.append(contentsOf: previewableChildren(in: folder.url))
+            }
+            if playlist.isEmpty {
+                playlist = activePane.displayItems.filter(\.isPreviewable)
+            }
+        }
+
+        playlist = uniqueItemsPreservingOrder(playlist)
+        guard !playlist.isEmpty else {
+            lastError = "Select a folder or one or more media files to play a slideshow."
+            return
+        }
+
+        previewSlideshowItems = playlist
+        closeAllTools()
+        showPreviewSlideshow = true
+    }
+
     func transformSelection(_ ids: Set<FileItem.ID>? = nil, operation: ImageProcessing.Transform) {
         let urls = resolvedItems(ids).filter(\.isImage).map(\.url)
         guard !urls.isEmpty else {
@@ -838,8 +1338,41 @@ final class AppState {
     func copyPathOfSelection(_ ids: Set<FileItem.ID>? = nil) {
         let paths = resolvedURLs(ids).map(\.path)
         guard !paths.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+        ClipboardHistoryStore.shared.copyPaths(paths)
+    }
+
+    func copyNamesOfSelection(_ ids: Set<FileItem.ID>? = nil) {
+        let names = resolvedItems(ids).map(\.name)
+        guard !names.isEmpty else { return }
+        ClipboardHistoryStore.shared.copyNames(names)
+    }
+
+    func copyFilesOfSelection(_ ids: Set<FileItem.ID>? = nil) {
+        let urls = resolvedURLs(ids)
+        guard !urls.isEmpty else { return }
+        ClipboardHistoryStore.shared.copyFiles(urls)
+    }
+
+    func pasteClipboardFiles(to destination: URL, move: Bool) {
+        let urls = fileURLsFromPasteboard()
+        guard !urls.isEmpty else {
+            lastError = "Copy one or more files first."
+            return
+        }
+        enqueueTransfer(urls, to: destination, move: move)
+    }
+
+    func pasteClipboardHistoryFiles(_ entry: ClipboardHistoryEntry, move: Bool) {
+        guard entry.kind == .files else {
+            ClipboardHistoryStore.shared.restoreToPasteboard(entry)
+            return
+        }
+        let urls = entry.existingFileURLs
+        guard !urls.isEmpty else {
+            lastError = "The selected clipboard files are no longer available."
+            return
+        }
+        enqueueTransfer(urls, to: activePane.currentURL, move: move)
     }
 
     func revealSelectionInFinder(_ ids: Set<FileItem.ID>? = nil) {
@@ -937,25 +1470,79 @@ final class AppState {
 
     private func resolvedItems(_ ids: Set<FileItem.ID>?) -> [FileItem] {
         if let ids {
-            return activePane.visibleSource.filter { ids.contains($0.id) }
+            return activePane.resolvedItems(ids)
         }
         return activePane.selectedItems
     }
 
     private func resolvedDisplayItems(_ ids: Set<FileItem.ID>?) -> [FileItem] {
         let selectedIDs = ids ?? activePane.selection
-        return activePane.displayItems.filter { selectedIDs.contains($0.id) }
+        let visible = activePane.displayItems.filter { selectedIDs.contains($0.id) }
+        let visibleIDs = Set(visible.map(\.id))
+        let missing = selectedIDs.subtracting(visibleIDs).compactMap(PaneModel.itemIfReachable)
+        return visible + missing
     }
 
     private func resolvedURLs(_ ids: Set<FileItem.ID>?) -> [URL] {
         resolvedItems(ids).map(\.url)
     }
 
+    private func expandedCurrentDragURLs(matching droppedURLs: [URL]) -> [URL]? {
+        guard let session = currentFileDragSession else { return nil }
+        let droppedPaths = Set(droppedURLs.map { $0.standardizedFileURL.path })
+        let sessionPaths = Set(session.urls.map { $0.standardizedFileURL.path })
+        guard !droppedPaths.isDisjoint(with: sessionPaths) else { return nil }
+        currentFileDragSession = nil
+        return session.urls
+    }
+
+    private func previewableChildren(in folder: URL) -> [FileItem] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: FileItem.resourceKeys,
+            options: []
+        ) else {
+            return []
+        }
+        var items = urls.map(FileItem.make)
+        if !showHidden {
+            items = items.filter { !$0.isHidden }
+        }
+        return items
+            .filter(\.isPreviewable)
+            .sorted { left, right in
+                left.name.localizedStandardCompare(right.name) == .orderedAscending
+            }
+    }
+
+    private func uniqueItemsPreservingOrder(_ items: [FileItem]) -> [FileItem] {
+        var seen = Set<FileItem.ID>()
+        var result: [FileItem] = []
+        for item in items where !seen.contains(item.id) {
+            seen.insert(item.id)
+            result.append(item)
+        }
+        return result
+    }
+
+    private func fileURLsFromPasteboard() -> [URL] {
+        let objects = NSPasteboard.general.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) ?? []
+        return objects.compactMap { object -> URL? in
+            if let url = object as? URL { return url }
+            if let url = object as? NSURL { return url as URL }
+            return nil
+        }
+        .filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     private func enqueueTransfer(_ urls: [URL], to destination: URL, move: Bool) {
         let title = move ? "Move" : "Copy"
         let detail = "\(operationDetail(for: urls)) to \(destination.lastPathComponent)"
         let policy = fileOperationConflictPolicy
-        let activityID = addActivity(title: title, detail: detail)
+        let activityID = addActivity(title: title, detail: detail, supportsConflictPolicy: true)
         updateActivity(activityID) { activity in
             activity.conflictPolicy = policy
         }
@@ -971,16 +1558,18 @@ final class AppState {
                     move: move,
                     conflictPolicy: policy,
                     progress: { [weak self] completed, total in
+                        guard let self else { return }
                         await MainActor.run {
-                            self?.updateActivity(activityID) { activity in
+                            self.updateActivity(activityID) { activity in
                                 activity.bytesCompleted = completed
                                 activity.bytesTotal = total
                             }
                         }
                     },
                     isPaused: { [weak self] in
-                        await MainActor.run {
-                            self?.pausedActivityIDs.contains(activityID) == true
+                        guard let self else { return false }
+                        return await MainActor.run {
+                            self.pausedActivityIDs.contains(activityID)
                         }
                     }
                 )
@@ -1048,7 +1637,11 @@ final class AppState {
         activityTasks[activityID] = task
     }
 
-    private func addActivity(title: String, detail: String) -> UUID {
+    private func addActivity(
+        title: String,
+        detail: String,
+        supportsConflictPolicy: Bool = false
+    ) -> UUID {
         let activity = FileActivity(
             id: UUID(),
             title: title,
@@ -1059,6 +1652,7 @@ final class AppState {
             startedAt: Date(),
             finishedAt: nil,
             conflictPolicy: fileOperationConflictPolicy,
+            supportsConflictPolicy: supportsConflictPolicy,
             progressDetail: nil
         )
         fileActivities.insert(activity, at: 0)
@@ -1098,7 +1692,8 @@ final class AppState {
             autoCalculateFolderSizes,
             forKey: RestoredFinderState.Key.autoCalculateFolderSizes
         )
-        defaults.set(showPreview, forKey: RestoredFinderState.Key.showPreview)
+        defaults.set(foldersFirst, forKey: RestoredFinderState.Key.foldersFirst)
+        defaults.set(activeToolPanel == .preview, forKey: RestoredFinderState.Key.showPreview)
         for (index, pane) in panes.enumerated() {
             defaults.set(pane.currentURL.path, forKey: RestoredFinderState.Key.url(index))
             defaults.set(pane.viewMode.rawValue, forKey: RestoredFinderState.Key.viewMode(index))
@@ -1121,6 +1716,7 @@ private struct RestoredFinderState {
         static let activePaneIndex = "finderState.activePaneIndex"
         static let showHidden = "finderState.showHidden"
         static let autoCalculateFolderSizes = "finderState.autoCalculateFolderSizes"
+        static let foldersFirst = "finderState.foldersFirst"
         static let showPreview = "finderState.showPreview"
 
         static func url(_ index: Int) -> String {
@@ -1148,6 +1744,7 @@ private struct RestoredFinderState {
     let isDualPane: Bool
     let showHidden: Bool
     let autoCalculateFolderSizes: Bool
+    let foldersFirst: Bool
     let showPreview: Bool
     let paneTabs: [[PaneTab]]
     let activeTabIndexes: [Int]
@@ -1161,6 +1758,7 @@ private struct RestoredFinderState {
         showHidden = defaults.object(forKey: Key.showHidden) as? Bool ?? false
         autoCalculateFolderSizes =
             defaults.object(forKey: Key.autoCalculateFolderSizes) as? Bool ?? false
+        foldersFirst = defaults.object(forKey: Key.foldersFirst) as? Bool ?? true
         showPreview = defaults.object(forKey: Key.showPreview) as? Bool ?? false
         let restoredPaneTabs = (0..<2).map {
             Self.restoredTabs(for: $0, home: home, defaults: defaults)

@@ -4,7 +4,11 @@ import SwiftUI
 struct ImageAnnotationEditorView: View {
     @Environment(AppState.self) private var appState
 
-    let target: FileItem
+    private let title: String
+    private let imageURL: URL
+    private let saveButtonTitle: String
+    private let onCancel: (() -> Void)?
+    private let onSaveURL: ((URL) -> Void)?
 
     @State private var image: NSImage?
     @State private var imageSize = CGSize(width: 1, height: 1)
@@ -18,6 +22,28 @@ struct ImageAnnotationEditorView: View {
     @State private var undoStack: [[ImageAnnotationMark]] = []
     @State private var redoStack: [[ImageAnnotationMark]] = []
     @State private var errorMessage: String?
+
+    init(target: FileItem) {
+        self.title = target.name
+        self.imageURL = target.url
+        self.saveButtonTitle = "Save Copy"
+        self.onCancel = nil
+        self.onSaveURL = nil
+    }
+
+    init(
+        title: String,
+        imageURL: URL,
+        saveButtonTitle: String = "Save",
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (URL) -> Void
+    ) {
+        self.title = title
+        self.imageURL = imageURL
+        self.saveButtonTitle = saveButtonTitle
+        self.onCancel = onCancel
+        self.onSaveURL = onSave
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,7 +68,7 @@ struct ImageAnnotationEditorView: View {
             }
         }
         .frame(minWidth: 820, idealWidth: 980, minHeight: 560, idealHeight: 700)
-        .task(id: target.id) { loadImage() }
+        .task(id: imageURL) { loadImage() }
         .alert("Annotation Error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -54,7 +80,7 @@ struct ImageAnnotationEditorView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 Label {
-                    Text(target.name)
+                    Text(title)
                         .font(.callout.weight(.medium))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -135,7 +161,7 @@ struct ImageAnnotationEditorView: View {
                 .buttonStyle(.borderless)
 
                 Button("Cancel") {
-                    appState.annotationTarget = nil
+                    cancel()
                 }
                 .keyboardShortcut(.cancelAction)
                 .help("Cancel annotation")
@@ -143,7 +169,7 @@ struct ImageAnnotationEditorView: View {
                 Button {
                     save()
                 } label: {
-                    Label("Save Copy", systemImage: "square.and.arrow.down")
+                    Label(saveButtonTitle, systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -386,12 +412,20 @@ struct ImageAnnotationEditorView: View {
     }
 
     private func loadImage() {
-        guard let loadedImage = NSImage(contentsOf: target.url) else {
-            errorMessage = "“\(target.name)” could not be opened as an image."
+        guard let loadedImage = NSImage(contentsOf: imageURL) else {
+            errorMessage = "“\(title)” could not be opened as an image."
             return
         }
         image = loadedImage
         imageSize = ImageAnnotationRenderer.pixelSize(for: loadedImage)
+    }
+
+    private func cancel() {
+        if let onCancel {
+            onCancel()
+        } else {
+            appState.annotationTarget = nil
+        }
     }
 
     private func save() {
@@ -399,11 +433,15 @@ struct ImageAnnotationEditorView: View {
         do {
             let output = try ImageAnnotationRenderer.export(
                 image: image,
-                sourceURL: target.url,
+                sourceURL: imageURL,
                 marks: marks
             )
-            // annotationDidSave clears annotationTarget, which closes the modal.
-            appState.annotationDidSave(output)
+            if let onSaveURL {
+                onSaveURL(output)
+            } else {
+                // annotationDidSave clears annotationTarget, which closes the modal.
+                appState.annotationDidSave(output)
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

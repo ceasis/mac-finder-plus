@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// One browser pane: path bar on top, sortable file table below.
@@ -66,12 +67,18 @@ struct PaneView: View {
                     in: RoundedRectangle(cornerRadius: 5)
                 )
                 .contentShape(Rectangle())
+                .clickableCursor()
                 .fileDragSource(item, paneIndex: paneIndex, appState: appState)
                 .fileDropTarget(
                     to: item.url,
                     paneIndex: paneIndex,
                     appState: appState,
                     isEnabled: item.isDirectory
+                )
+                .overlay(
+                    TableNameMouseDownReporter {
+                        selectListItem(item, in: model)
+                    }
                 )
             }
             .width(min: 160, ideal: 280)
@@ -130,11 +137,26 @@ struct PaneView: View {
         appState.rateSelection(rating)
     }
 
+    private func selectListItem(_ item: FileItem, in model: PaneModel) {
+        let modifiers = NSEvent.modifierFlags
+        guard !modifiers.contains(.shift) else { return }
+        appState.activePaneIndex = paneIndex
+        if modifiers.contains(.command) {
+            if model.selection.contains(item.id) {
+                model.selection.remove(item.id)
+            } else {
+                model.selection.insert(item.id)
+            }
+        } else if !model.selection.contains(item.id) {
+            model.selection = [item.id]
+        }
+    }
+
     private var grantAccessView: some View {
         ContentUnavailableView {
             Label("No Access to “\(model.currentURL.lastPathComponent)”", systemImage: "lock")
         } description: {
-            Text("macOS requires your permission before Panes can browse this folder.")
+            Text("macOS requires your permission before Workbench can browse this folder.")
         } actions: {
             Button("Grant Access…") {
                 if let granted = BookmarkStore.shared.requestAccess(startingAt: model.currentURL) {
@@ -143,6 +165,73 @@ struct PaneView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+private struct TableNameMouseDownReporter: NSViewRepresentable {
+    let onMouseDown: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onMouseDown: onMouseDown)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PassthroughEventView()
+        context.coordinator.view = view
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.view = view
+        context.coordinator.onMouseDown = onMouseDown
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    final class Coordinator {
+        weak var view: NSView?
+        var onMouseDown: () -> Void
+        private var monitor: Any?
+
+        init(onMouseDown: @escaping () -> Void) {
+            self.onMouseDown = onMouseDown
+        }
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                let location = event.locationInWindow
+                let windowID = event.window.map(ObjectIdentifier.init)
+                MainActor.assumeIsolated {
+                    guard let self, let view = self.view,
+                          view.window.map(ObjectIdentifier.init) == windowID else { return }
+                    let point = view.convert(location, from: nil)
+                    guard view.bounds.contains(point) else { return }
+                    self.onMouseDown()
+                }
+                return event
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+        }
+
+        deinit {
+            removeMonitor()
+        }
+    }
+
+    private final class PassthroughEventView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
         }
     }
 }

@@ -70,6 +70,7 @@ struct TextEditorView: View {
                 onSave: save,
                 onCursorChange: { line = $0; column = $1 }
             )
+            .clipped()
         }
     }
 

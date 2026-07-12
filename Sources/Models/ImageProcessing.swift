@@ -160,6 +160,117 @@ enum ImageProcessing {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
+    /// Writes a JPEG copy tuned for smaller file size while preserving the source image.
+    @discardableResult
+    nonisolated static func optimize(_ url: URL, quality: CGFloat = 0.72) async throws -> URL {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw ProcessingError(message: "“\(url.lastPathComponent)” is not a readable image.")
+        }
+
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let destination = FileOperations.uniqueDestination(
+            for: url.deletingLastPathComponent().appendingPathComponent("\(baseName)-optimized.jpg")
+        )
+        guard let writer = CGImageDestinationCreateWithURL(
+            destination as CFURL,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw ProcessingError(message: "Couldn’t create “\(destination.lastPathComponent)”.")
+        }
+
+        var properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+            as? [CFString: Any] ?? [:]
+        properties[kCGImageDestinationLossyCompressionQuality] = min(max(quality, 0.1), 1)
+        CGImageDestinationAddImage(writer, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(writer) else {
+            try? FileManager.default.removeItem(at: destination)
+            throw ProcessingError(message: "Couldn’t save “\(destination.lastPathComponent)”.")
+        }
+        return destination
+    }
+
+    /// Writes a grayscale copy next to the original without changing it.
+    @discardableResult
+    nonisolated static func grayscale(_ url: URL) async throws -> URL {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let sourceImage = CIImage(contentsOf: url, options: [.applyOrientationProperty: true]) else {
+            throw ProcessingError(message: "“\(url.lastPathComponent)” is not a readable image.")
+        }
+        let grayscaleImage = sourceImage.applyingFilter(
+            "CIColorControls",
+            parameters: [kCIInputSaturationKey: 0]
+        )
+        guard let image = ciContext.createCGImage(grayscaleImage, from: grayscaleImage.extent) else {
+            throw ProcessingError(message: "Couldn’t render “\(url.lastPathComponent)”.")
+        }
+
+        let sourceType = (CGImageSourceGetType(source) as String?)
+            .flatMap(UTType.init) ?? .jpeg
+        let fileExtension = sourceType.preferredFilenameExtension ?? "jpg"
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let destination = FileOperations.uniqueDestination(
+            for: url.deletingLastPathComponent()
+                .appendingPathComponent("\(baseName)-grayscale.\(fileExtension)")
+        )
+        guard let writer = CGImageDestinationCreateWithURL(
+            destination as CFURL,
+            sourceType.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw ProcessingError(message: "Couldn’t create “\(destination.lastPathComponent)”.")
+        }
+
+        var properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+            as? [CFString: Any] ?? [:]
+        properties[kCGImagePropertyOrientation] = 1
+        if var tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            tiff[kCGImagePropertyTIFFOrientation] = 1
+            properties[kCGImagePropertyTIFFDictionary] = tiff
+        }
+        CGImageDestinationAddImage(writer, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(writer) else {
+            try? FileManager.default.removeItem(at: destination)
+            throw ProcessingError(message: "Couldn’t save “\(destination.lastPathComponent)”.")
+        }
+        return destination
+    }
+
+    /// Creates a 512 px PNG thumbnail next to the original without changing it.
+    @discardableResult
+    nonisolated static func createThumbnail(_ url: URL, maxPixel: Int = 512) async throws -> URL {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+              ] as CFDictionary) else {
+            throw ProcessingError(message: "“\(url.lastPathComponent)” is not a readable image.")
+        }
+
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let destination = FileOperations.uniqueDestination(
+            for: url.deletingLastPathComponent().appendingPathComponent("\(baseName)-thumbnail.png")
+        )
+        guard let writer = CGImageDestinationCreateWithURL(
+            destination as CFURL,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw ProcessingError(message: "Couldn’t create “\(destination.lastPathComponent)”.")
+        }
+        CGImageDestinationAddImage(writer, image, nil)
+        guard CGImageDestinationFinalize(writer) else {
+            try? FileManager.default.removeItem(at: destination)
+            throw ProcessingError(message: "Couldn’t save “\(destination.lastPathComponent)”.")
+        }
+        return destination
+    }
+
     private nonisolated static func write(
         _ image: CGImage, as type: UTType, nextTo original: URL
     ) -> URL? {

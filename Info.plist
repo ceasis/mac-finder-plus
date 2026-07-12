@@ -30,5 +30,18 @@
 	<string>© 2026 Cholo Asis. All rights reserved.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Workbench uses the microphone for narrated screen recordings, voice notes, and note attachments.</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Workbench File Drag</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.choloasis.panes.file-drag</string>
+		</dict>
+	</array>
 </dict>
 </plist>

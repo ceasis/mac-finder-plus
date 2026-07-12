@@ -35,10 +35,17 @@ private struct PermissionsSettingsView: View {
                 )
                 permissionRow(
                     title: "Microphone",
-                    detail: "Required to narrate recordings and record voice notes.",
+                    detail: "Required to narrate recordings and record voice/video journals.",
                     status: permissions.microphone,
                     enableAction: { Task { await permissions.requestMicrophone() } },
                     settingsAction: { permissions.openMicrophoneSettings() }
+                )
+                permissionRow(
+                    title: "Camera",
+                    detail: "Required to record video journals in Notes.",
+                    status: permissions.camera,
+                    enableAction: { Task { await permissions.requestCamera() } },
+                    settingsAction: { permissions.openCameraSettings() }
                 )
             }
             Section {
@@ -84,14 +91,31 @@ private struct PermissionsSettingsView: View {
 
 private struct GeneralSettingsView: View {
     @Environment(AppState.self) private var appState
+    @AppStorage(WorkbenchAppIconMode.defaultsKey) private var appIconMode = WorkbenchAppIconMode.animated.rawValue
 
     var body: some View {
         @Bindable var appState = appState
         Form {
+            Section("Appearance") {
+                Picker("App icon", selection: $appIconMode) {
+                    ForEach(WorkbenchAppIconMode.allCases) { mode in
+                        Text(mode.title).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
             Section("Browsing") {
                 Toggle("Show hidden files", isOn: $appState.showHidden)
                 Toggle("Show folders first", isOn: $appState.foldersFirst)
                 Toggle("Calculate folder sizes automatically", isOn: $appState.autoCalculateFolderSizes)
+            }
+            Section("Sidebar") {
+                Button("Reset Sidebar Layout") {
+                    SidebarLayoutPreferences.reset()
+                }
+                Text("Restores the default section, place, drive, and tool order.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Text("Calculating folder sizes scans every enclosed file, which can be slow on large folders.")
@@ -105,11 +129,25 @@ private struct GeneralSettingsView: View {
 
 private struct PreviewSettingsView: View {
     @AppStorage("loopVideos") private var loopVideos = true
+    @AppStorage("previewControlsSizeScale") private var previewControlsSizeScale = 1.0
     @AppStorage("previewSlideshow.interval") private var slideshowInterval = 3.0
     @AppStorage("previewSlideshow.fillFrame") private var slideshowFillFrame = false
 
     var body: some View {
         Form {
+            Section("Preview Pane") {
+                HStack {
+                    Text("Controls size")
+                    Slider(value: $previewControlsSizeScale, in: 0.8...2.0, step: 0.1)
+                    Text("\(Int(previewControlsSizeScale * 100))%")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .frame(width: 44, alignment: .trailing)
+                }
+                Button("Reset Controls Size") {
+                    previewControlsSizeScale = 1.0
+                }
+            }
             Section("Video") {
                 Toggle("Loop videos in the preview pane", isOn: $loopVideos)
             }

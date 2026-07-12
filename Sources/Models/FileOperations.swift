@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// All mutating file-system operations. Every function is collision-safe:
@@ -104,6 +105,27 @@ enum FileOperations {
     static func duplicate(_ urls: [URL]) async throws {
         for url in urls {
             try FileManager.default.copyItem(at: url, to: uniqueDestination(for: url))
+        }
+    }
+
+    @discardableResult
+    static func moveIntoNewFolder(
+        _ sources: [URL],
+        folderName: String,
+        in directory: URL
+    ) async throws -> (folder: URL, records: [FileMoveRecord]) {
+        let folder = try await newFolder(named: folderName, in: directory)
+        do {
+            let records = try await transfer(sources, to: folder, move: true)
+            return (folder, records)
+        } catch {
+            if let contents = try? FileManager.default.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: nil
+            ), contents.isEmpty {
+                try? FileManager.default.removeItem(at: folder)
+            }
+            throw error
         }
     }
 
@@ -493,6 +515,342 @@ enum FileOperations {
                 archiveName: archive.lastPathComponent,
                 detail: detail
             )
+        }
+    }
+}
+
+enum TextFileTools {
+    private static let maximumTextBytes = 10 * 1_024 * 1_024
+
+    static func readText(at url: URL) async throws -> String {
+        try await Task.detached(priority: .userInitiated) {
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            let size = values.fileSize ?? 0
+            guard size <= maximumTextBytes else {
+                throw TextFileToolsError.fileTooLarge(url.lastPathComponent, size: size)
+            }
+            let data = try Data(contentsOf: url)
+            guard let text = String(data: data, encoding: .utf8)
+                ?? String(data: data, encoding: .isoLatin1) else {
+                throw TextFileToolsError.unreadableText(url.lastPathComponent)
+            }
+            return text
+        }.value
+    }
+
+    static func formatJSON(at url: URL) async throws -> URL {
+        try await rewriteJSON(at: url, formatted: true)
+    }
+
+    static func minifyJSON(at url: URL) async throws -> URL {
+        try await rewriteJSON(at: url, formatted: false)
+    }
+
+    static func validateJSON(at url: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let data = try Data(contentsOf: url)
+            _ = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        }.value
+    }
+
+    private static func rewriteJSON(at url: URL, formatted: Bool) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            let data = try Data(contentsOf: url)
+            let object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+            var options: JSONSerialization.WritingOptions = [.sortedKeys, .fragmentsAllowed]
+            if formatted { options.insert(.prettyPrinted) }
+            var output = try JSONSerialization.data(withJSONObject: object, options: options)
+            if formatted { output.append(0x0A) }
+
+            let baseName = url.deletingPathExtension().lastPathComponent
+            let suffix = formatted ? "formatted" : "minified"
+            let destination = FileOperations.uniqueDestination(
+                for: url.deletingLastPathComponent().appendingPathComponent("\(baseName)-\(suffix).json")
+            )
+            try output.write(to: destination, options: .atomic)
+            return destination
+        }.value
+    }
+}
+
+enum SpreadsheetDelimitedFormat: Sendable {
+    case csv
+    case tsv
+
+    init?(url: URL) {
+        switch url.pathExtension.lowercased() {
+        case "csv": self = .csv
+        case "tsv": self = .tsv
+        default: return nil
+        }
+    }
+
+    var fileExtension: String {
+        switch self {
+        case .csv: "csv"
+        case .tsv: "tsv"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .csv: "CSV"
+        case .tsv: "TSV"
+        }
+    }
+
+    var delimiter: Character {
+        switch self {
+        case .csv: ","
+        case .tsv: "\t"
+        }
+    }
+}
+
+struct SpreadsheetSummary: Sendable {
+    let rowCount: Int
+    let columnCount: Int
+
+    var text: String {
+        "\(rowCount) row\(rowCount == 1 ? "" : "s") · \(columnCount) column\(columnCount == 1 ? "" : "s")"
+    }
+}
+
+enum SpreadsheetTools {
+    static func convertDelimitedText(
+        at url: URL,
+        to destinationFormat: SpreadsheetDelimitedFormat
+    ) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            guard let sourceFormat = SpreadsheetDelimitedFormat(url: url) else {
+                throw SpreadsheetToolsError.unsupportedDelimitedFile(url.lastPathComponent)
+            }
+            let text = try decodedText(at: url)
+            let rows = try parse(text, delimiter: sourceFormat.delimiter)
+            let output = encode(rows, delimiter: destinationFormat.delimiter)
+            let baseName = url.deletingPathExtension().lastPathComponent
+            let destination = FileOperations.uniqueDestination(
+                for: url.deletingLastPathComponent().appendingPathComponent(
+                    "\(baseName)-converted.\(destinationFormat.fileExtension)"
+                )
+            )
+            guard let data = output.data(using: .utf8) else {
+                throw SpreadsheetToolsError.unreadableFile(url.lastPathComponent)
+            }
+            try data.write(to: destination, options: .atomic)
+            return destination
+        }.value
+    }
+
+    static func summary(at url: URL) async throws -> SpreadsheetSummary {
+        try await Task.detached(priority: .userInitiated) {
+            guard let format = SpreadsheetDelimitedFormat(url: url) else {
+                throw SpreadsheetToolsError.unsupportedDelimitedFile(url.lastPathComponent)
+            }
+            let rows = try parse(decodedText(at: url), delimiter: format.delimiter)
+            return SpreadsheetSummary(
+                rowCount: rows.count,
+                columnCount: rows.map(\.count).max() ?? 0
+            )
+        }.value
+    }
+
+    static func exportToCSVUsingNumbers(at url: URL) async throws -> URL {
+        try await MainActor.run {
+            guard NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "com.apple.iWork.Numbers"
+            ) != nil else {
+                throw SpreadsheetToolsError.numbersNotInstalled
+            }
+
+            let baseName = url.deletingPathExtension().lastPathComponent
+            let destination = FileOperations.uniqueDestination(
+                for: url.deletingLastPathComponent().appendingPathComponent("\(baseName)-converted.csv")
+            )
+            let sourcePath = escapedAppleScriptPath(url.path)
+            let destinationPath = escapedAppleScriptPath(destination.path)
+            let scriptSource = """
+            set sourceFile to POSIX file "\(sourcePath)"
+            set destinationFile to POSIX file "\(destinationPath)"
+            tell application id "com.apple.iWork.Numbers"
+                set sourceDocument to open sourceFile
+                export sourceDocument to destinationFile as CSV
+                close sourceDocument saving no
+            end tell
+            """
+
+            var error: NSDictionary?
+            let result = NSAppleScript(source: scriptSource)?.executeAndReturnError(&error)
+            guard result != nil,
+                  FileManager.default.fileExists(atPath: destination.path) else {
+                let message = error?[NSAppleScript.errorMessage] as? String
+                throw SpreadsheetToolsError.numbersExportFailed(
+                    message ?? "Numbers couldn’t export “\(url.lastPathComponent)” to CSV."
+                )
+            }
+            return destination
+        }
+    }
+
+    private static func decodedText(at url: URL) throws -> String {
+        let data = try Data(contentsOf: url)
+        guard let text = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1) else {
+            throw SpreadsheetToolsError.unreadableFile(url.lastPathComponent)
+        }
+        return text
+    }
+
+    private static func parse(_ text: String, delimiter: Character) throws -> [[String]] {
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = ""
+        var isQuoted = false
+        let characters = Array(text)
+        var index = 0
+
+        while index < characters.count {
+            let character = characters[index]
+            if isQuoted {
+                if character == "\"" {
+                    if index + 1 < characters.count, characters[index + 1] == "\"" {
+                        field.append("\"")
+                        index += 1
+                    } else {
+                        isQuoted = false
+                    }
+                } else {
+                    field.append(character)
+                }
+            } else if character == "\"", field.isEmpty {
+                isQuoted = true
+            } else if character == delimiter {
+                row.append(field)
+                field = ""
+            } else if character == "\n" {
+                row.append(field)
+                rows.append(row)
+                row = []
+                field = ""
+            } else if character != "\r" {
+                field.append(character)
+            }
+            index += 1
+        }
+
+        guard !isQuoted else { throw SpreadsheetToolsError.unterminatedQuotedField }
+        if !field.isEmpty || !row.isEmpty {
+            row.append(field)
+            rows.append(row)
+        }
+        return rows
+    }
+
+    private static func encode(_ rows: [[String]], delimiter: Character) -> String {
+        rows.map { row in
+            row.map { value in
+                guard value.contains(delimiter)
+                    || value.contains("\"")
+                    || value.contains("\n")
+                    || value.contains("\r") else {
+                    return value
+                }
+                return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+            }
+            .joined(separator: String(delimiter))
+        }
+        .joined(separator: "\n") + "\n"
+    }
+
+    private static func escapedAppleScriptPath(_ path: String) -> String {
+        path
+            .replacing("\\", with: "\\\\")
+            .replacing("\"", with: "\\\"")
+    }
+}
+
+struct ApplicationBundleDetails: Sendable {
+    let name: String
+    let bundleIdentifier: String?
+    let version: String?
+    let build: String?
+    let executable: String?
+    let minimumSystemVersion: String?
+    let path: String
+
+    var clipboardText: String {
+        [
+            "Application: \(name)",
+            "Bundle Identifier: \(bundleIdentifier ?? "Not available")",
+            "Version: \(version ?? "Not available")",
+            "Build: \(build ?? "Not available")",
+            "Executable: \(executable ?? "Not available")",
+            "Minimum macOS: \(minimumSystemVersion ?? "Not available")",
+            "Path: \(path)",
+        ].joined(separator: "\n")
+    }
+}
+
+enum ApplicationBundleTools {
+    static func details(for item: FileItem) -> ApplicationBundleDetails? {
+        guard item.isApplicationBundle else { return nil }
+        let infoURL = item.url.appendingPathComponent("Contents/Info.plist")
+        let info = (Bundle(url: item.url)?.infoDictionary)
+            ?? (NSDictionary(contentsOf: infoURL) as? [String: Any])
+            ?? [:]
+        return ApplicationBundleDetails(
+            name: value(for: "CFBundleDisplayName", in: info)
+                ?? value(for: "CFBundleName", in: info)
+                ?? item.url.deletingPathExtension().lastPathComponent,
+            bundleIdentifier: value(for: "CFBundleIdentifier", in: info),
+            version: value(for: "CFBundleShortVersionString", in: info),
+            build: value(for: "CFBundleVersion", in: info),
+            executable: value(for: "CFBundleExecutable", in: info),
+            minimumSystemVersion: value(for: "LSMinimumSystemVersion", in: info),
+            path: item.url.path
+        )
+    }
+
+    private static func value(for key: String, in info: [String: Any]) -> String? {
+        if let value = info[key] as? String, !value.isEmpty { return value }
+        if let value = info[key] as? NSNumber { return value.stringValue }
+        return nil
+    }
+}
+
+private enum TextFileToolsError: LocalizedError {
+    case fileTooLarge(String, size: Int)
+    case unreadableText(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .fileTooLarge(name, size):
+            return "“\(name)” is \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)); text tools support files up to 10 MB."
+        case let .unreadableText(name):
+            return "“\(name)” can’t be read as text."
+        }
+    }
+}
+
+private enum SpreadsheetToolsError: LocalizedError {
+    case unsupportedDelimitedFile(String)
+    case unreadableFile(String)
+    case unterminatedQuotedField
+    case numbersNotInstalled
+    case numbersExportFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unsupportedDelimitedFile(name):
+            return "“\(name)” is not a CSV or TSV file."
+        case let .unreadableFile(name):
+            return "“\(name)” can’t be read as spreadsheet text."
+        case .unterminatedQuotedField:
+            return "The spreadsheet has an unterminated quoted cell."
+        case .numbersNotInstalled:
+            return "Numbers is required to export this spreadsheet to CSV."
+        case let .numbersExportFailed(message):
+            return message
         }
     }
 }

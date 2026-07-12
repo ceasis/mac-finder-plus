@@ -1,12 +1,35 @@
 import AppKit
 
+enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
+    static let defaultsKey = "appIconMode"
+
+    case animated
+    case staticIcon = "static"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .animated: "Animated"
+        case .staticIcon: "Static"
+        }
+    }
+
+    static var preferred: WorkbenchAppIconMode {
+        guard let rawValue = UserDefaults.standard.string(forKey: defaultsKey) else {
+            return .animated
+        }
+        return WorkbenchAppIconMode(rawValue: rawValue) ?? .animated
+    }
+}
+
 final class WorkbenchAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        WorkbenchDockIconAnimator.shared.start()
+        WorkbenchDockIconAnimator.shared.startObservingPreferences()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        WorkbenchDockIconAnimator.shared.stop()
+        WorkbenchDockIconAnimator.shared.stopObservingPreferences()
     }
 }
 
@@ -16,9 +39,44 @@ final class WorkbenchDockIconAnimator {
 
     private let view = WorkbenchDockIconView(frame: NSRect(x: 0, y: 0, width: 128, height: 128))
     private var timer: Timer?
+    private var defaultsObserver: NSObjectProtocol?
     private var startedAt = CACurrentMediaTime()
 
     private init() {}
+
+    func startObservingPreferences() {
+        guard defaultsObserver == nil else {
+            applyPreferredMode()
+            return
+        }
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyPreferredMode()
+            }
+        }
+        applyPreferredMode()
+    }
+
+    func stopObservingPreferences() {
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+            self.defaultsObserver = nil
+        }
+        stop()
+    }
+
+    func applyPreferredMode() {
+        switch WorkbenchAppIconMode.preferred {
+        case .animated:
+            start()
+        case .staticIcon:
+            stop()
+        }
+    }
 
     func start() {
         guard timer == nil else { return }

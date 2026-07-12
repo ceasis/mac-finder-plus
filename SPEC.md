@@ -1,6 +1,5 @@
-# Panes — a dual-pane file manager for macOS
+# Workbench — a dual-pane file manager for macOS
 
-**Working title:** "Panes" (verify App Store name availability before submission — and note that
 Apple will almost certainly reject a product name containing the word "Finder", so the repo name
 `mac-finder-plus` should stay internal only).
 
@@ -15,7 +14,7 @@ Finder is optimized for casual browsing. Power users — developers, photographe
 anyone who moves files between folders all day — fight it constantly: no dual pane, weak keyboard
 support, no folder sizes, hidden files buried behind shortcuts.
 
-Panes is the "commander-style" file manager rebuilt as a modern, native Mac app: SwiftUI,
+Workbench is the "commander-style" file manager rebuilt as a modern, native Mac app: SwiftUI,
 first-class dark mode, and full Finder feature parity where it matters, plus the power features
 Finder refuses to add.
 
@@ -27,7 +26,7 @@ abandoned. The wedge: *native-feeling, fast, modern UI, sold at an impulse price
 
 **Primary persona (v1):** people who work with large image/video libraries — photographers,
 editors, social-media producers. For them Finder's gaps hurt most: no inline video preview with
-looping, no quick resize, weak type-scoped search. Panes treats *media triage* as a first-class
+looping, no quick resize, weak type-scoped search. Workbench treats *media triage* as a first-class
 workflow: preview → filter by type → resize/move — without opening another app.
 
 ## 2. Business model

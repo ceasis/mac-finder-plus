@@ -2,6 +2,18 @@ import AVKit
 import QuickLookUI
 import SwiftUI
 
+private struct PendingLongVideoTransform {
+    let operation: MediaTransformOperation
+    let itemIDs: Set<FileItem.ID>
+    let longVideoCount: Int
+    let longestDuration: Double
+
+    var message: String {
+        let videoLabel = longVideoCount == 1 ? "video is" : "videos are"
+        return "\(longVideoCount) selected \(videoLabel) longer than 15 minutes (up to \(VideoTrimmer.timeText(longestDuration))). Transforming video re-encodes it and may take a while. A transformed copy will be saved; the original stays unchanged."
+    }
+}
+
 /// Inline media preview for the active pane's selection: images (downsampled,
 /// off-main decode) and video/audio with autoplay and a loop toggle.
 struct PreviewPane: View {
@@ -9,6 +21,10 @@ struct PreviewPane: View {
     @AppStorage("loopVideos") private var loopVideos = true
     @AppStorage("previewLayoutMode") private var previewLayoutMode = PreviewLayoutMode.rows.rawValue
     @AppStorage("previewMediaSizeScale") private var previewMediaSizeScale = 1.0
+    @AppStorage("previewControlsSizeScale") private var previewControlsSizeScale = 1.0
+    @State private var transformActivityID: UUID?
+    @State private var pendingLongVideoTransform: PendingLongVideoTransform?
+    @State private var isCheckingVideoDuration = false
 
     private var selectedItems: [FileItem] { appState.activePane.selectedItems }
     private var mediaItems: [FileItem] { selectedItems.filter(\.isPreviewable) }
@@ -20,6 +36,20 @@ struct PreviewPane: View {
     private var hasPlayablePreview: Bool {
         previewItems.contains { $0.isPlayableMedia }
     }
+    private var transformablePreviewItems: [FileItem] {
+        selectedItems.filter { $0.isImage || $0.isVideoMedia }
+    }
+    private var activeTransformActivity: FileActivity? {
+        guard let transformActivityID,
+              let activity = appState.fileActivities.first(where: { $0.id == transformActivityID }),
+              !activity.status.isTerminal else {
+            return nil
+        }
+        return activity
+    }
+    private var isTransforming: Bool {
+        isCheckingVideoDuration || activeTransformActivity != nil
+    }
     private var layoutMode: PreviewLayoutMode {
         PreviewLayoutMode(rawValue: previewLayoutMode) ?? .rows
     }
@@ -28,10 +58,31 @@ struct PreviewPane: View {
         guard !previewItems.isEmpty else { return "\(selectedItems.count) selected" }
         return "\(previewItems.count) previews"
     }
+    private var controlsScale: CGFloat {
+        CGFloat(min(max(previewControlsSizeScale, 0.8), 2.0))
+    }
+    private var previewControlSize: ControlSize {
+        if previewControlsSizeScale < 0.9 { return .mini }
+        if previewControlsSizeScale < 1.15 { return .small }
+        if previewControlsSizeScale < 1.55 { return .regular }
+        return .large
+    }
+    private var previewControlFont: Font {
+        .system(size: 13 * controlsScale)
+    }
+    private var previewControlCaptionFont: Font {
+        .system(size: 11 * controlsScale)
+    }
+    private var previewControlSpacing: CGFloat {
+        max(4, 4 * controlsScale)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let activity = activeTransformActivity {
+                transformProgress(activity)
+            }
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -43,6 +94,25 @@ struct PreviewPane: View {
         .onKeyPress("3") { rateSelection(3); return .handled }
         .onKeyPress("4") { rateSelection(4); return .handled }
         .onKeyPress("5") { rateSelection(5); return .handled }
+        .alert("Long Video Export", isPresented: Binding(
+            get: { pendingLongVideoTransform != nil },
+            set: { isPresented in
+                if !isPresented {
+                    pendingLongVideoTransform = nil
+                }
+            }
+        )) {
+            Button("Transform Copy") {
+                guard let request = pendingLongVideoTransform else { return }
+                pendingLongVideoTransform = nil
+                startMediaTransform(request.operation, itemIDs: request.itemIDs)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingLongVideoTransform = nil
+            }
+        } message: {
+            Text(pendingLongVideoTransform?.message ?? "")
+        }
     }
 
     private var header: some View {
@@ -68,7 +138,17 @@ struct PreviewPane: View {
                 .fixedSize()
                 .help("Rate selection with 1-5, or 0 to clear")
             }
-            Spacer()
+            Spacer(minLength: 8)
+            headerControls
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
+    @ViewBuilder
+    private var headerControls: some View {
+        HStack(spacing: previewControlSpacing) {
             if !imagePreviewIDs.isEmpty {
                 Button {
                     appState.beginAnnotateImage(imagePreviewIDs)
@@ -76,44 +156,25 @@ struct PreviewPane: View {
                     Image(systemName: "pencil")
                 }
                 .help("Annotate Image (⌥⌘A)")
-                Button {
-                    appState.transformSelection(imagePreviewIDs, operation: .rotateLeft)
-                } label: {
-                    Image(systemName: "rotate.left")
-                }
-                .help("Rotate Left (⌥⌘L)")
-                Button {
-                    appState.transformSelection(imagePreviewIDs, operation: .rotateRight)
-                } label: {
-                    Image(systemName: "rotate.right")
-                }
-                .help("Rotate Right (⌥⌘R)")
-                Button {
-                    appState.transformSelection(imagePreviewIDs, operation: .flipHorizontal)
-                } label: {
-                    Image(systemName: "flip.horizontal")
-                }
-                .help("Flip Horizontal")
-                Button {
-                    appState.transformSelection(imagePreviewIDs, operation: .flipVertical)
-                } label: {
-                    Image(systemName: "flip.horizontal")
-                        .rotationEffect(.degrees(90))
-                }
-                .help("Flip Vertical")
+            }
+            if !transformablePreviewItems.isEmpty {
+                mediaTransformButton(.rotateCounterclockwise, image: Image(systemName: "rotate.left"))
+                mediaTransformButton(.rotateClockwise, image: Image(systemName: "rotate.right"))
+                mediaTransformButton(.flipHorizontal, image: Image(systemName: "flip.horizontal"))
+                mediaTransformButton(.flipVertical, image: Image(systemName: "flip.vertical"))
             }
             if hasPlayablePreview {
                 Toggle("Loop", isOn: $loopVideos)
                     .toggleStyle(.checkbox)
-                    .font(.caption)
+                    .font(previewControlCaptionFont)
                     .help("Restart playback automatically when the video ends")
             }
             if !previewItems.isEmpty {
-                HStack(spacing: 4) {
+                HStack(spacing: previewControlSpacing) {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
                         .foregroundStyle(.secondary)
-                    Slider(value: $previewMediaSizeScale, in: 0.6...1.8)
-                        .frame(width: 82)
+                    Slider(value: $previewMediaSizeScale, in: 0.6...3.6)
+                        .frame(width: 82 * controlsScale)
                 }
                 .help("Resize media previews")
             }
@@ -134,7 +195,8 @@ struct PreviewPane: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 58)
+                .labelsHidden()
+                .frame(width: 58 * controlsScale)
                 .help("Preview layout")
             }
             Button {
@@ -145,9 +207,90 @@ struct PreviewPane: View {
             }
             .help("Close preview (⌥⌘P)")
         }
-        .buttonStyle(.plain)
+        .font(previewControlFont)
+        .controlSize(previewControlSize)
+    }
+
+    private func mediaTransformButton(
+        _ operation: MediaTransformOperation,
+        image: Image
+    ) -> some View {
+        Button {
+            requestMediaTransform(operation)
+        } label: {
+            image
+        }
+        .disabled(isTransforming)
+        .help(operation.title)
+    }
+
+    private func requestMediaTransform(_ operation: MediaTransformOperation) {
+        let items = transformablePreviewItems
+        guard !items.isEmpty else { return }
+        let itemIDs = Set(items.map(\.id))
+        let videos = items.filter(\.isVideoMedia)
+        guard !videos.isEmpty else {
+            startMediaTransform(operation, itemIDs: itemIDs)
+            return
+        }
+
+        isCheckingVideoDuration = true
+        Task { @MainActor in
+            defer { isCheckingVideoDuration = false }
+            var longDurations: [Double] = []
+            for video in videos {
+                guard !Task.isCancelled else { return }
+                if let duration = await VideoTransformer.duration(for: video.url),
+                   duration > VideoTransformer.longVideoWarningDuration {
+                    longDurations.append(duration)
+                }
+            }
+            guard !Task.isCancelled else { return }
+            if let longestDuration = longDurations.max() {
+                pendingLongVideoTransform = PendingLongVideoTransform(
+                    operation: operation,
+                    itemIDs: itemIDs,
+                    longVideoCount: longDurations.count,
+                    longestDuration: longestDuration
+                )
+            } else {
+                startMediaTransform(operation, itemIDs: itemIDs)
+            }
+        }
+    }
+
+    private func startMediaTransform(
+        _ operation: MediaTransformOperation,
+        itemIDs: Set<FileItem.ID>
+    ) {
+        let items = selectedItems.filter { itemIDs.contains($0.id) }
+        transformActivityID = appState.transformPreviewMedia(items, operation: operation)
+    }
+
+    private func transformProgress(_ activity: FileActivity) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(activity.title)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(activity.progressDetail ?? "Processing")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button {
+                    appState.cancelActivity(activity.id)
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.plain)
+                .help("Cancel transformation")
+            }
+            ProgressView(value: activity.progress)
+                .controlSize(.small)
+        }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
     }
 
     private func rateSelection(_ rating: Int) {
@@ -243,14 +386,18 @@ private struct SingleMediaPreview: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(spacing: 10) {
-                    MediaPreviewTile(
-                        item: item,
-                        style: .full,
-                        mutePlayer: false,
-                        sizeScale: sizeScale,
-                        onPlayerChange: { player = $0 }
-                    )
-                        .frame(height: previewHeight(for: geometry.size.height))
+                    if item.isAudioMedia {
+                        AudioPreviewCard(item: item)
+                    } else {
+                        MediaPreviewTile(
+                            item: item,
+                            style: .full,
+                            mutePlayer: false,
+                            sizeScale: sizeScale,
+                            onPlayerChange: { player = $0 }
+                        )
+                            .frame(height: previewHeight(for: geometry.size.height))
+                    }
                     if item.isVideoMedia {
                         VideoTrimControls(item: item, player: player)
                     }
@@ -385,6 +532,150 @@ private struct MediaPreviewTile: View {
         }
         endObserver = nil
         previewImage = nil
+    }
+}
+
+private struct AudioPreviewCard: View {
+    let item: FileItem
+
+    @State private var player: AVPlayer?
+    @State private var duration: Double = 0
+    @State private var currentTime: Double = 0
+    @State private var isPlaying = false
+    @State private var endObserver: NSObjectProtocol?
+    @State private var timeObserver: Any?
+
+    private var progressBinding: Binding<Double> {
+        Binding {
+            currentTime
+        } set: { value in
+            currentTime = value
+            player?.seek(to: CMTime(seconds: value, preferredTimescale: 600))
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.14))
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 72, weight: .semibold))
+                    .foregroundStyle(.tint)
+            }
+            .frame(width: 132, height: 132)
+
+            VStack(spacing: 5) {
+                Text(item.name)
+                    .font(.headline)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .truncationMode(.middle)
+                Text("\(item.kind) · \(item.sizeText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    togglePlayback()
+                } label: {
+                    Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                        .font(.system(size: 34))
+                }
+                .buttonStyle(.plain)
+                .help(isPlaying ? "Pause" : "Play")
+
+                VStack(spacing: 6) {
+                    Slider(value: progressBinding, in: 0...max(duration, 0.1))
+                        .disabled(duration <= 0)
+                    HStack {
+                        Text(timeText(currentTime))
+                        Spacer()
+                        Text(timeText(duration))
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity)
+        .background(
+            Color(nsColor: .textBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .task(id: "\(item.id)|\(item.modified.timeIntervalSince1970)") {
+            await preparePlayer()
+        }
+        .onDisappear(perform: teardown)
+    }
+
+    @MainActor
+    private func preparePlayer() async {
+        teardown()
+        let newPlayer = AVPlayer(url: item.url)
+        player = newPlayer
+        if let loadedDuration = try? await newPlayer.currentItem?.asset.load(.duration) {
+            let seconds = CMTimeGetSeconds(loadedDuration)
+            duration = seconds.isFinite ? seconds : 0
+        }
+        timeObserver = newPlayer.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.2, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            let seconds = max(CMTimeGetSeconds(time), 0)
+            Task { @MainActor in
+                currentTime = seconds
+            }
+        }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: newPlayer.currentItem,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                isPlaying = false
+                currentTime = 0
+                player?.seek(to: .zero)
+            }
+        }
+    }
+
+    private func togglePlayback() {
+        guard let player else { return }
+        if isPlaying {
+            player.pause()
+            isPlaying = false
+        } else {
+            if duration > 0, currentTime >= duration - 0.1 {
+                player.seek(to: .zero)
+            }
+            player.play()
+            isPlaying = true
+        }
+    }
+
+    private func teardown() {
+        player?.pause()
+        if let timeObserver {
+            player?.removeTimeObserver(timeObserver)
+        }
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        player = nil
+        timeObserver = nil
+        endObserver = nil
+        isPlaying = false
+        currentTime = 0
+        duration = 0
+    }
+
+    private func timeText(_ seconds: Double) -> String {
+        guard seconds.isFinite else { return "0:00" }
+        let total = max(Int(seconds.rounded()), 0)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 

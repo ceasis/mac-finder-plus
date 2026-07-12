@@ -34,9 +34,10 @@ struct AppCommands: Commands {
             Button("Convert…") { appState.beginConvert() }
             Button("Play Preview Slideshow") { appState.beginPreviewSlideshow() }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-            Button("Combine into Slideshow…") { appState.beginSlideshow() }
+            Button("Merge Into Video…") { appState.beginMergeIntoVideo() }
             Button("Export Contact Sheet PDF") { appState.exportContactSheet() }
             Button("Notes…") { appState.showNotes() }
+            Button("Snippets…") { appState.showSnippets() }
             Button("Capture Screenshot or Recording…") { appState.beginScreenshot() }
                 .keyboardShortcut("5", modifiers: [.command, .option])
             Menu("Rating") {
@@ -133,7 +134,7 @@ struct AppCommands: Commands {
             }
             .disabled(!appState.isDualPane)
             Divider()
-            Button("Find Duplicates Across Panes") { appState.findDuplicatesAcrossPanes() }
+            Button("Find Duplicates in Both Views") { appState.findDuplicatesAcrossPanes() }
                 .disabled(!appState.isDualPane)
             Button("Clear Duplicate Results") { appState.clearDuplicateResults() }
             Divider()
@@ -154,15 +155,27 @@ struct AppCommands: Commands {
             }
         }
 
+        CommandMenu("Snippets") {
+            Button("Show Snippets") { appState.showSnippets() }
+            Button("Save Current Clipboard") {
+                appState.showSnippets()
+                SnippetStore.shared.addCurrentClipboard()
+            }
+        }
+
         CommandMenu("Tools") {
             Button("Organize Folder…") { appState.showOrganizeTool() }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             Button("Clean Up…") { appState.showCleanupTool() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
+            Button("Disk Space…") { appState.showDiskSpaceAnalyzer() }
             Button("Show Clipboard History") { appState.showClipboardHistory() }
                 .keyboardShortcut("v", modifiers: [.command, .option])
             Button("Notes…") { appState.showNotes() }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+            Button("Snippets…") { appState.showSnippets() }
+            Button("Voice Recorder…") { appState.showVoiceRecorderTool() }
+                .keyboardShortcut("m", modifiers: [.command, .option])
         }
 
         CommandMenu("Clipboard") {

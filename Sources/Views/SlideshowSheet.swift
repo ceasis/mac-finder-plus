@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// Options sheet for combining selected photos into an MP4 slideshow.
+/// Options sheet for creating an MP4 from an ordered selection of images and videos.
 /// Switches to a progress view (with cancel) while rendering.
-struct SlideshowSheet: View {
+struct MergeIntoVideoSheet: View {
     @Environment(AppState.self) private var appState
     let targets: [FileItem]
 
-    @State private var secondsPerPhoto = 2.0
+    @State private var secondsPerImage = 2.0
     @State private var sizeChoice = SizeChoice.landscape1080
     @State private var fill = false
 
@@ -28,29 +28,43 @@ struct SlideshowSheet: View {
         }
     }
 
+    private var imageCount: Int { targets.filter(\.isImage).count }
+    private var videoCount: Int { targets.count - imageCount }
+
+    private var mediaSummary: String {
+        let images = imageCount == 0 ? nil : "\(imageCount) image\(imageCount == 1 ? "" : "s")"
+        let videos = videoCount == 0 ? nil : "\(videoCount) video\(videoCount == 1 ? "" : "s")"
+        return [images, videos].compactMap { $0 }.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Slideshow from \(targets.count) Photos")
+            Text("Merge Into Video")
                 .font(.headline)
+            Text(mediaSummary)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
-            if let progress = appState.slideshowProgress {
+            if let progress = appState.mergeIntoVideoProgress {
                 ProgressView(value: progress) {
-                    Text("Creating video…")
+                    Text("Merging media…")
                 }
                 HStack {
                     Spacer()
-                    Button("Cancel") { appState.cancelSlideshow() }
+                    Button("Cancel") { appState.cancelMergeIntoVideo() }
                         .keyboardShortcut(.cancelAction)
-                        .help("Cancel video creation")
+                        .help("Cancel video merge")
                 }
             } else {
-                Picker("Each photo shows for", selection: $secondsPerPhoto) {
-                    Text("1 second").tag(1.0)
-                    Text("2 seconds").tag(2.0)
-                    Text("3 seconds").tag(3.0)
-                    Text("5 seconds").tag(5.0)
+                if imageCount > 0 {
+                    Picker("Each image shows for", selection: $secondsPerImage) {
+                        Text("1 second").tag(1.0)
+                        Text("2 seconds").tag(2.0)
+                        Text("3 seconds").tag(3.0)
+                        Text("5 seconds").tag(5.0)
+                    }
+                    .help("Choose how long each image appears")
                 }
-                .help("Choose how long each photo appears")
                 Picker("Video size", selection: $sizeChoice) {
                     ForEach(SizeChoice.allCases) { choice in
                         Text(choice.rawValue).tag(choice)
@@ -61,34 +75,33 @@ struct SlideshowSheet: View {
                     Text("Fit (black bars)").tag(false)
                     Text("Fill (crop)").tag(true)
                 }
-                .help("Choose whether photos fit or fill the frame")
+                .help("Choose whether media fits or fills the frame")
                 Text(
-                    "Photos appear in the pane’s current sort order. "
-                        + "The video is saved in this folder as “Slideshow.mp4”."
+                    "The video is saved in this folder as “Merged Video.mp4”."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
                 HStack {
                     Spacer()
-                    Button("Cancel") { appState.showSlideshowSheet = false }
+                    Button("Cancel") { appState.showMergeIntoVideoSheet = false }
                         .keyboardShortcut(.cancelAction)
-                        .help("Cancel slideshow export")
-                    Button("Create Video") {
-                        appState.performSlideshow(options: .init(
-                            secondsPerPhoto: secondsPerPhoto,
+                        .help("Cancel video merge")
+                    Button("Merge Into Video") {
+                        appState.performMergeIntoVideo(options: .init(
+                            secondsPerImage: secondsPerImage,
                             size: sizeChoice.size,
                             fill: fill
                         ))
                     }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
-                    .help("Create slideshow video")
+                    .help("Merge the selected media into a video")
                 }
             }
         }
         .padding(20)
         .frame(width: 400)
-        .interactiveDismissDisabled(appState.slideshowProgress != nil)
+        .interactiveDismissDisabled(appState.mergeIntoVideoProgress != nil)
     }
 }

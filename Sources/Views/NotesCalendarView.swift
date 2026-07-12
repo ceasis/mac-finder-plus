@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Month calendar for the Notes panel. Badges each day that has notes and shows
-/// whether those notes carry image or audio attachments. Tapping a day filters
-/// the notes list to that day (tap again to clear).
+/// whether those notes carry journal attachments. Tapping a day filters the
+/// notes list to that day (tap again to clear).
 struct NotesCalendarView: View {
     let store: NotesStore
     @Binding var selectedDay: Date?
@@ -96,7 +96,13 @@ struct NotesCalendarView: View {
                 if marker.hasAudio {
                     Image(systemName: "waveform")
                 }
-                if !marker.hasImage && !marker.hasAudio {
+                if marker.hasVideo {
+                    Image(systemName: "video.fill")
+                }
+                if marker.hasFile {
+                    Image(systemName: "doc.fill")
+                }
+                if !marker.hasImage && !marker.hasAudio && !marker.hasVideo && !marker.hasFile {
                     Circle().frame(width: 4, height: 4)
                 }
             }

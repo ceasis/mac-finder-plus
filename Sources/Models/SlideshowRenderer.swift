@@ -2,17 +2,119 @@ import AVFoundation
 import CoreVideo
 import Foundation
 
+struct VideoMergeOptions: Sendable {
+    var secondsPerImage: Double
+    var size: CGSize
+    /// false = aspect-fit with black bars, true = aspect-fill (cropped).
+    var fill: Bool
+}
+
+enum VideoMergeSource: Sendable {
+    case image(URL)
+    case video(URL)
+}
+
+/// One export entry point for image-only, video-only, and mixed media sequences.
+enum MediaVideoRenderer {
+    private static let imagePreparationWeight = 0.25
+
+    @discardableResult
+    static func merge(
+        _ sources: [VideoMergeSource],
+        outputDirectory: URL,
+        options: VideoMergeOptions,
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
+    ) async throws -> URL {
+        guard sources.count >= 2 else {
+            throw SlideshowRenderer.RenderError(message: "Select at least two images or videos.")
+        }
+
+        let imageURLs = sources.compactMap { source -> URL? in
+            guard case let .image(url) = source else { return nil }
+            return url
+        }
+        let videoURLs = sources.compactMap { source -> URL? in
+            guard case let .video(url) = source else { return nil }
+            return url
+        }
+
+        if imageURLs.count == sources.count {
+            let output = outputURL(in: outputDirectory)
+            do {
+                try await SlideshowRenderer.render(
+                    images: imageURLs,
+                    to: output,
+                    options: options,
+                    progress: progress
+                )
+                return output
+            } catch {
+                try? FileManager.default.removeItem(at: output)
+                throw error
+            }
+        }
+
+        if videoURLs.count == sources.count {
+            return try await VideoMerger.merge(
+                videoURLs,
+                outputDirectory: outputDirectory,
+                options: options,
+                progress: progress
+            )
+        }
+
+        let stagingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Workbench-VideoMerge-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: stagingDirectory) }
+
+        var videoInputs: [URL] = []
+        var imageIndex = 0
+        for source in sources {
+            try Task.checkCancellation()
+            switch source {
+            case let .video(url):
+                videoInputs.append(url)
+            case let .image(url):
+                let currentImageIndex = imageIndex
+                let stagedClip = stagingDirectory.appendingPathComponent(
+                    String(format: "image-%03d.mp4", currentImageIndex)
+                )
+                try await SlideshowRenderer.render(
+                    images: [url],
+                    to: stagedClip,
+                    options: options
+                ) { clipProgress in
+                    let completed = (Double(currentImageIndex) + clipProgress) / Double(imageURLs.count)
+                    await progress(completed * imagePreparationWeight)
+                }
+                videoInputs.append(stagedClip)
+                imageIndex += 1
+            }
+        }
+
+        return try await VideoMerger.merge(
+            videoInputs,
+            outputDirectory: outputDirectory,
+            options: options
+        ) { mergeProgress in
+            await progress(
+                imagePreparationWeight + mergeProgress * (1 - imagePreparationWeight)
+            )
+        }
+    }
+
+    private static func outputURL(in folder: URL) -> URL {
+        FileOperations.uniqueDestination(
+            for: folder.appendingPathComponent("Merged Video.mp4")
+        )
+    }
+}
+
 /// Renders a set of photos into an H.264 MP4 slideshow with AVAssetWriter.
 /// Each photo is shown for a fixed duration; one frame is written per photo,
 /// so output files stay small regardless of duration.
 enum SlideshowRenderer {
-    struct Options {
-        var secondsPerPhoto: Double
-        var size: CGSize
-        /// false = aspect-fit with black bars, true = aspect-fill (cropped).
-        var fill: Bool
-    }
-
     struct RenderError: LocalizedError {
         let message: String
         var errorDescription: String? { message }
@@ -21,8 +123,8 @@ enum SlideshowRenderer {
     nonisolated static func render(
         images: [URL],
         to output: URL,
-        options: Options,
-        progress: @escaping @Sendable (Double) -> Void
+        options: VideoMergeOptions,
+        progress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws {
         guard !images.isEmpty else {
             throw RenderError(message: "No images to render.")
@@ -53,7 +155,7 @@ enum SlideshowRenderer {
         writer.startSession(atSourceTime: .zero)
 
         let timescale: CMTimeScale = 600
-        let photoDuration = CMTime(seconds: options.secondsPerPhoto, preferredTimescale: timescale)
+        let photoDuration = CMTime(seconds: options.secondsPerImage, preferredTimescale: timescale)
         let totalDuration = CMTimeMultiply(photoDuration, multiplier: Int32(images.count))
 
         for (index, url) in images.enumerated() {
@@ -91,7 +193,7 @@ enum SlideshowRenderer {
                 let holdTime = totalDuration - CMTime(value: 20, timescale: timescale)
                 adaptor.append(buffer, withPresentationTime: holdTime)
             }
-            progress(Double(index + 1) / Double(images.count))
+            await progress(Double(index + 1) / Double(images.count))
         }
 
         input.markAsFinished()

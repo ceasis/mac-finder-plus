@@ -287,6 +287,7 @@ private struct FileNameColumnCell: View {
                     .stroke(compareMarker?.color.opacity(isSelected ? 0 : 0.35) ?? Color.clear, lineWidth: 1)
             )
             .contentShape(Rectangle())
+            .clickableCursor()
             .help(item.url.path)
     }
 }

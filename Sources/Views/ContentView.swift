@@ -6,10 +6,24 @@ struct ContentView: View {
 
     @State private var newFolderName = "untitled folder"
     @State private var newFileName = "Untitled.txt"
+    @State private var moveIntoFolderName = "untitled folder"
     @State private var goToPath = ""
     @State private var renameText = ""
+    @State private var liveRightPanelWidthFraction: Double?
+    @State private var rightPanelWidthAtDragStart: CGFloat?
+    @State private var hasObservedInitialSidebarWidth = false
+    @State private var pendingSidebarColumnWidth: CGFloat?
+    @State private var sidebarColumnWidthSaveTask: Task<Void, Never>?
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     @AppStorage("rightPanelWidthFraction") private var rightPanelWidthFraction = 0.5
+    @AppStorage("sidebarColumnWidth") private var sidebarColumnWidth = 200.0
+
+    private let minimumSidebarColumnWidth: CGFloat = 170
+    private let idealSidebarColumnWidth: CGFloat = 200
+    private let maximumSidebarColumnWidth: CGFloat = 520
+    private let minimumRightPanelWidth: CGFloat = 320
+    private let minimumBrowserColumnWidth: CGFloat = 360
+    private let maximumRightPanelFraction: CGFloat = 0.75
 
     var body: some View {
         @Bindable var appState = appState
@@ -42,6 +56,19 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .alert("Move to New Folder", isPresented: $appState.showMoveIntoNewFolderPrompt) {
+            TextField("Folder Name", text: $moveIntoFolderName)
+            Button("Move") {
+                appState.moveSelectionIntoNewFolder(named: moveIntoFolderName)
+                moveIntoFolderName = "untitled folder"
+            }
+            Button("Cancel", role: .cancel) {
+                appState.cancelMoveIntoNewFolder()
+                moveIntoFolderName = "untitled folder"
+            }
+        } message: {
+            Text("Selected items will be moved inside this folder.")
+        }
         .alert("New Text File", isPresented: $appState.showNewFilePrompt) {
             TextField("Name", text: $newFileName)
             Button("Create") {
@@ -68,19 +95,100 @@ struct ContentView: View {
         .onChange(of: appState.renameTarget) { _, target in
             if let target { renameText = target.name }
         }
+        .onChange(of: appState.showMoveIntoNewFolderPrompt) { _, isShowing in
+            if isShowing {
+                moveIntoFolderName = "untitled folder"
+            } else {
+                appState.cancelMoveIntoNewFolder()
+            }
+        }
     }
 
     private func rightPanelWidth(totalWidth: CGFloat) -> CGFloat {
-        let minWidth: CGFloat = 320
-        let maxFraction = 0.75
-        let fraction = rightPanelWidthFraction > 0 ? rightPanelWidthFraction : 0.5
-        let clampedFraction = min(max(fraction, Double(minWidth / max(totalWidth, 1))), maxFraction)
-        return totalWidth * clampedFraction
+        let fraction = liveRightPanelWidthFraction ?? rightPanelWidthFraction
+        let rawWidth = totalWidth * CGFloat(fraction > 0 ? fraction : 0.5)
+        return clampedRightPanelWidth(rawWidth, totalWidth: totalWidth)
+    }
+
+    private func rightPanelWidthLimits(totalWidth: CGFloat) -> (minimum: CGFloat, maximum: CGFloat) {
+        let safeTotalWidth = max(totalWidth, 1)
+        let minimum = min(minimumRightPanelWidth, safeTotalWidth)
+        let maxByFraction = safeTotalWidth * maximumRightPanelFraction
+        let maxByMainColumn = max(safeTotalWidth - minimumBrowserColumnWidth, minimum)
+        let maximum = min(maxByFraction, maxByMainColumn)
+        return (minimum, max(minimum, maximum))
+    }
+
+    private func clampedRightPanelWidth(_ width: CGFloat, totalWidth: CGFloat) -> CGFloat {
+        let limits = rightPanelWidthLimits(totalWidth: totalWidth)
+        return min(max(width, limits.minimum), limits.maximum)
+    }
+
+    private func rightPanelFraction(for width: CGFloat, totalWidth: CGFloat) -> Double {
+        Double(clampedRightPanelWidth(width, totalWidth: totalWidth) / max(totalWidth, 1))
+    }
+
+    private var restoredSidebarColumnWidth: CGFloat {
+        let width = sidebarColumnWidth.isFinite ? CGFloat(sidebarColumnWidth) : idealSidebarColumnWidth
+        return clampedSidebarColumnWidth(width)
+    }
+
+    private func clampedSidebarColumnWidth(_ width: CGFloat) -> CGFloat {
+        min(max(width, minimumSidebarColumnWidth), maximumSidebarColumnWidth)
+    }
+
+    private func scheduleSidebarColumnWidthSave(_ measuredWidth: CGFloat) {
+        guard measuredWidth.isFinite, measuredWidth > 0 else { return }
+        let width = clampedSidebarColumnWidth(measuredWidth)
+
+        guard hasObservedInitialSidebarWidth else {
+            hasObservedInitialSidebarWidth = true
+            return
+        }
+        guard abs(CGFloat(sidebarColumnWidth) - width) > 0.5 else { return }
+
+        pendingSidebarColumnWidth = width
+        sidebarColumnWidthSaveTask?.cancel()
+        sidebarColumnWidthSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            sidebarColumnWidth = Double(width)
+            pendingSidebarColumnWidth = nil
+            sidebarColumnWidthSaveTask = nil
+        }
+    }
+
+    private func commitPendingSidebarColumnWidth() {
+        sidebarColumnWidthSaveTask?.cancel()
+        sidebarColumnWidthSaveTask = nil
+        if let pendingSidebarColumnWidth {
+            sidebarColumnWidth = Double(clampedSidebarColumnWidth(pendingSidebarColumnWidth))
+            self.pendingSidebarColumnWidth = nil
+        }
+    }
+
+    private func updateRightPanelResize(delta: CGFloat, totalWidth: CGFloat, currentWidth: CGFloat) {
+        if rightPanelWidthAtDragStart == nil {
+            rightPanelWidthAtDragStart = currentWidth
+        }
+        guard let startWidth = rightPanelWidthAtDragStart else { return }
+        liveRightPanelWidthFraction = rightPanelFraction(for: startWidth - delta, totalWidth: totalWidth)
+    }
+
+    private func finishRightPanelResize(totalWidth: CGFloat) {
+        if let liveRightPanelWidthFraction {
+            rightPanelWidthFraction = rightPanelFraction(
+                for: totalWidth * liveRightPanelWidthFraction,
+                totalWidth: totalWidth
+            )
+        }
+        liveRightPanelWidthFraction = nil
+        rightPanelWidthAtDragStart = nil
     }
 
     private func usesRightDockedPanel(_ panel: DockedToolPanel?) -> Bool {
         switch panel {
-        case .notes, .screenshot, .recording:
+        case .notes, .snippets, .screenshot, .recording, .voiceRecorder, .diskSpace:
             true
         default:
             false
@@ -92,8 +200,14 @@ struct ContentView: View {
         switch panel {
         case .notes:
             NotesPanelView()
+        case .snippets:
+            SnippetPanelView()
         case .screenshot, .recording:
             CapturePanelView()
+        case .voiceRecorder:
+            VoiceRecorderPanelView()
+        case .diskSpace:
+            DiskSpaceAnalyzerPanelView()
         default:
             EmptyView()
         }
@@ -118,7 +232,12 @@ struct ContentView: View {
     private var mainContent: some View {
         NavigationSplitView {
             SidebarView()
-                .navigationSplitViewColumnWidth(min: 170, ideal: 200)
+                .background(SidebarColumnWidthReader())
+                .navigationSplitViewColumnWidth(
+                    min: minimumSidebarColumnWidth,
+                    ideal: restoredSidebarColumnWidth,
+                    max: maximumSidebarColumnWidth
+                )
         } detail: {
             GeometryReader { geometry in
                 let totalWidth = geometry.size.width
@@ -126,7 +245,7 @@ struct ContentView: View {
                     ? appState.activeToolPanel
                     : nil
                 let rightWidth = rightPanel != nil ? rightPanelWidth(totalWidth: totalWidth) : 0
-                let mainWidth = max(totalWidth - rightWidth, 360)
+                let mainWidth = max(totalWidth - rightWidth, 0)
 
                 ZStack(alignment: .bottomTrailing) {
                     HStack(spacing: 0) {
@@ -148,8 +267,16 @@ struct ContentView: View {
 
                         if let rightPanel {
                             ResizableSidePanelContainer(
-                                availableWidth: totalWidth,
-                                widthFraction: $rightPanelWidthFraction
+                                onDrag: { delta in
+                                    updateRightPanelResize(
+                                        delta: delta,
+                                        totalWidth: totalWidth,
+                                        currentWidth: rightWidth
+                                    )
+                                },
+                                onDragEnded: {
+                                    finishRightPanelResize(totalWidth: totalWidth)
+                                }
                             ) {
                                 rightDockedPanelContent(for: rightPanel)
                             }
@@ -163,11 +290,21 @@ struct ContentView: View {
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .onChange(of: appState.activeToolPanel) { _, panel in
+                    liveRightPanelWidthFraction = nil
+                    rightPanelWidthAtDragStart = nil
                     if usesRightDockedPanel(panel), rightPanelWidthFraction < 0.45 {
-                        rightPanelWidthFraction = 0.5
+                        rightPanelWidthFraction = rightPanelFraction(for: totalWidth * 0.5, totalWidth: totalWidth)
                     }
                 }
             }
+        }
+        .onPreferenceChange(SidebarColumnWidthPreferenceKey.self) { width in
+            if let width {
+                scheduleSidebarColumnWidthSave(width)
+            }
+        }
+        .onDisappear {
+            commitPendingSidebarColumnWidth()
         }
     }
 
@@ -197,16 +334,28 @@ struct ContentView: View {
             } content: {
                 ConvertSheet(targets: appState.convertTargets)
             }
-        } else if appState.showSlideshowSheet {
+        } else if appState.showPDFToolSheet,
+                  let target = appState.pdfToolTarget,
+                  let mode = appState.pdfToolMode {
+            DismissibleToolModal {
+                appState.dismissPDFToolSheet()
+            } content: {
+                PDFToolsSheet(
+                    target: target,
+                    mode: mode,
+                    pageCount: appState.pdfToolPageCount
+                )
+            }
+        } else if appState.showMergeIntoVideoSheet {
             DismissibleToolModal(
-                isDismissable: appState.slideshowProgress == nil,
+                isDismissable: appState.mergeIntoVideoProgress == nil,
                 onDismiss: {
-                    if appState.slideshowProgress == nil {
-                        appState.showSlideshowSheet = false
+                    if appState.mergeIntoVideoProgress == nil {
+                        appState.showMergeIntoVideoSheet = false
                     }
                 },
                 content: {
-                    SlideshowSheet(targets: appState.slideshowTargets)
+                    MergeIntoVideoSheet(targets: appState.mergeIntoVideoTargets)
                 }
             )
         } else if let target = appState.annotationTarget {
@@ -241,6 +390,7 @@ struct ContentView: View {
             }
             .pickerStyle(.segmented)
             .help("List, icon, or column view (⌘1 / ⌘2 / ⌘3)")
+            .clickableCursor()
 
             Button {
                 appState.showNewFolderPrompt = true
@@ -248,6 +398,7 @@ struct ContentView: View {
                 Label("New Folder", systemImage: "folder.badge.plus")
             }
             .help("New Folder (⇧⌘N)")
+            .clickableCursor()
 
             Button {
                 appState.transferSelection(move: false)
@@ -256,6 +407,7 @@ struct ContentView: View {
             }
             .help("Copy selection to the other pane (F5)")
             .disabled(!appState.isDualPane)
+            .clickableCursor(appState.isDualPane)
 
             Button {
                 appState.transferSelection(move: true)
@@ -264,6 +416,16 @@ struct ContentView: View {
             }
             .help("Move selection to the other pane (F6)")
             .disabled(!appState.isDualPane)
+            .clickableCursor(appState.isDualPane)
+
+            Button {
+                appState.shareSelectionViaAirDrop()
+            } label: {
+                Label("AirDrop", systemImage: "square.and.arrow.up")
+            }
+            .help("Share selected files with AirDrop")
+            .disabled(appState.activePane.selection.isEmpty)
+            .clickableCursor(!appState.activePane.selection.isEmpty)
 
             Spacer()
 
@@ -273,6 +435,7 @@ struct ContentView: View {
                 Label("Notes", systemImage: "note.text")
             }
             .help("Notes (⌥⌘N)")
+            .clickableCursor()
 
             Button {
                 appState.showClipboardHistory()
@@ -280,6 +443,7 @@ struct ContentView: View {
                 Label("Clipboard", systemImage: "clipboard")
             }
             .help("Clipboard history (⌥⌘V)")
+            .clickableCursor()
 
             Button {
                 appState.beginScreenshot()
@@ -287,6 +451,7 @@ struct ContentView: View {
                 Label("Capture", systemImage: "record.circle")
             }
             .help("Capture screenshot or recording (⌥⌘5)")
+            .clickableCursor()
 
             Button {
                 appState.beginAnnotateImage()
@@ -295,6 +460,7 @@ struct ContentView: View {
             }
             .help("Annotate selected image (⌥⌘A)")
             .disabled(!appState.activePane.selectedItems.contains(where: \.isImage))
+            .clickableCursor(appState.activePane.selectedItems.contains(where: \.isImage))
 
             Button {
                 appState.showHidden.toggle()
@@ -305,6 +471,7 @@ struct ContentView: View {
                 )
             }
             .help("Show or hide hidden files (⇧⌘.)")
+            .clickableCursor()
 
             Toggle(isOn: Binding(
                 get: { appState.autoCalculateFolderSizes },
@@ -314,6 +481,7 @@ struct ContentView: View {
             }
             .toggleStyle(.button)
             .help("Auto calculate folder sizes")
+            .clickableCursor()
 
             Button {
                 appState.toggleDualPane()
@@ -325,6 +493,7 @@ struct ContentView: View {
                 )
             }
             .help("Toggle dual pane (⇧⌘D)")
+            .clickableCursor()
 
             Button {
                 appState.togglePreview()
@@ -335,6 +504,7 @@ struct ContentView: View {
                 )
             }
             .help("Toggle media preview pane (⌥⌘P)")
+            .clickableCursor()
         }
     }
 
@@ -528,6 +698,27 @@ private struct MainColumnWidthModifier: ViewModifier {
         } else {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct SidebarColumnWidthReader: View {
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: SidebarColumnWidthPreferenceKey.self,
+                value: proxy.size.width
+            )
+        }
+    }
+}
+
+private struct SidebarColumnWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat? = nil
+
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        if let next = nextValue(), next.isFinite, next > 0 {
+            value = next
         }
     }
 }

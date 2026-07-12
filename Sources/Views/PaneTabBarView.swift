@@ -24,6 +24,7 @@ struct PaneTabBarView: View {
             }
             .buttonStyle(.plain)
             .help("New Tab (⌘T)")
+            .clickableCursor()
             .padding(.trailing, 6)
         }
         .font(.caption)
@@ -49,6 +50,7 @@ struct PaneTabBarView: View {
             }
             .buttonStyle(.plain)
             .help(selected ? "Current tab: \(tab.title)" : "Show tab: \(tab.title)")
+            .clickableCursor()
 
             if model.tabs.count > 1 {
                 Button {
@@ -61,6 +63,7 @@ struct PaneTabBarView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("Close tab: \(tab.title)")
+                .clickableCursor()
             }
         }
         .padding(.leading, 7)

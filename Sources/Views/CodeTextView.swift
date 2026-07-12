@@ -31,6 +31,8 @@ struct CodeTextView: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
         textView.textContainerInset = NSSize(width: 4, height: 8)
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
         textView.allowsDocumentBackgroundColorChange = false
         textView.usesFontPanel = false
         textView.string = text
@@ -41,6 +43,10 @@ struct CodeTextView: NSViewRepresentable {
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
         scrollView.hasHorizontalScroller = true
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = .textBackgroundColor
 
         context.coordinator.textView = textView
         context.coordinator.ruler = ruler
@@ -216,17 +222,32 @@ final class LineNumberRulerView: NSRulerView {
     required init(coder: NSCoder) { fatalError() }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
+        NSColor.textBackgroundColor.setFill()
+        bounds.fill()
+
+        NSColor.separatorColor.withAlphaComponent(0.45).setStroke()
+        let separator = NSBezierPath()
+        separator.move(to: NSPoint(x: bounds.maxX - 0.5, y: bounds.minY))
+        separator.line(to: NSPoint(x: bounds.maxX - 0.5, y: bounds.maxY))
+        separator.lineWidth = 1
+        separator.stroke()
+
         guard let textView = clientView as? NSTextView,
               let layoutManager = textView.layoutManager,
               let container = textView.textContainer else { return }
 
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: bounds).addClip()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
         let content = textView.string as NSString
         let visibleRect = textView.visibleRect
-        let inset = textView.textContainerInset.height
+        let textOrigin = textView.textContainerOrigin
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font, .foregroundColor: NSColor.secondaryLabelColor,
         ]
 
+        layoutManager.ensureLayout(for: container)
         let visibleGlyphs = layoutManager.glyphRange(forBoundingRect: visibleRect, in: container)
         let visibleChars = layoutManager.characterRange(forGlyphRange: visibleGlyphs, actualGlyphRange: nil)
 
@@ -241,13 +262,16 @@ final class LineNumberRulerView: NSRulerView {
         while index <= NSMaxRange(visibleChars) {
             let lineRange = content.lineRange(for: NSRange(location: index, length: 0))
             let glyphRange = layoutManager.glyphRange(forCharacterRange: lineRange, actualCharacterRange: nil)
-            let lineRect = layoutManager.boundingRect(forGlyphRange:
-                NSRange(location: glyphRange.location, length: 0), in: container)
-            let y = lineRect.minY + inset - visibleRect.minY
+            let lineRect = glyphRange.length > 0
+                ? layoutManager.lineFragmentRect(forGlyphAt: glyphRange.location, effectiveRange: nil)
+                : layoutManager.extraLineFragmentRect
+            let y = lineRect.minY + textOrigin.y - visibleRect.minY
 
             let label = "\(lineNumber)" as NSString
             let size = label.size(withAttributes: attributes)
-            label.draw(at: NSPoint(x: ruleThickness - size.width - 5, y: y), withAttributes: attributes)
+            if y + size.height >= bounds.minY, y <= bounds.maxY {
+                label.draw(at: NSPoint(x: ruleThickness - size.width - 5, y: y), withAttributes: attributes)
+            }
 
             lineNumber += 1
             let next = NSMaxRange(lineRange)

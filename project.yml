@@ -1,6 +1,6 @@
 name: MacFinderPlus
 options:
-  bundleIdPrefix: com.choloasis
+  bundleIdPrefix: com.qnsub
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
@@ -9,16 +9,16 @@ settings:
     SWIFT_VERSION: "5.0"
     SWIFT_STRICT_CONCURRENCY: complete
 targets:
-  Panes:
+  Workbench:
     type: application
     platform: macOS
     sources:
       - Assets.xcassets
       - Sources
     entitlements:
-      path: Panes.entitlements
+      path: Workbench.entitlements
       properties:
-        # Panes ships via direct download (not the Mac App Store), so it is NOT
+        # Workbench ships via direct download (not the Mac App Store), so it is NOT
         # sandboxed — the sandbox blocks spawning /usr/sbin/screencapture, which
         # the screenshot/recording tools rely on. Hardened runtime stays on for
         # notarization; audio-input re-enables the mic under hardened runtime.
@@ -35,30 +35,34 @@ targets:
         LSMinimumSystemVersion: "14.0"
         NSHumanReadableCopyright: "© 2026 Cholo Asis. All rights reserved."
         NSMicrophoneUsageDescription: Workbench uses the microphone for narrated screen recordings, voice notes, and note attachments.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.choloasis.panes.file-drag
+            UTTypeDescription: Workbench File Drag
+            UTTypeConformsTo:
+              - public.data
     settings:
       base:
-        # User-facing app is "Workbench" (Workbench.app). The Swift module stays
-        # "Panes" so tests/imports and the XcodeGen target/scheme are unaffected.
+        # Keep the compiled module aligned with the product name and shared scheme.
         PRODUCT_NAME: Workbench
-        PRODUCT_MODULE_NAME: Panes
-        PRODUCT_BUNDLE_IDENTIFIER: com.choloasis.panes
+        PRODUCT_MODULE_NAME: Workbench
+        PRODUCT_BUNDLE_IDENTIFIER: com.qnsub.workbench.app
         ENABLE_HARDENED_RUNTIME: true
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     scheme:
       testTargets:
-        - PanesTests
-  PanesTests:
+        - WorkbenchTests
+  WorkbenchTests:
     type: bundle.unit-test
     platform: macOS
     sources:
       - Tests
     dependencies:
-      - target: Panes
+      - target: Workbench
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.choloasis.panes.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.qnsub.workbench.app.tests
         GENERATE_INFOPLIST_FILE: true
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workbench.app/Contents/MacOS/Workbench"
         BUNDLE_LOADER: "$(TEST_HOST)"

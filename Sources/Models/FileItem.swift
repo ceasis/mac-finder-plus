@@ -10,6 +10,7 @@ struct FileItem: Identifiable, Hashable, Sendable {
     let isHidden: Bool
     /// Bytes. -1 means unknown (folders, until "Calculate Size" runs).
     var size: Int64
+    let created: Date
     let modified: Date
     let kind: String
     let contentType: UTType?
@@ -18,7 +19,7 @@ struct FileItem: Identifiable, Hashable, Sendable {
     var id: String { url.path }
 
     static let resourceKeys: [URLResourceKey] = [
-        .isDirectoryKey, .fileSizeKey, .contentModificationDateKey,
+        .isDirectoryKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey,
         .localizedTypeDescriptionKey, .isHiddenKey, .contentTypeKey,
         .tagNamesKey,
     ]
@@ -32,6 +33,7 @@ struct FileItem: Identifiable, Hashable, Sendable {
             isDirectory: isDirectory,
             isHidden: values?.isHidden ?? false,
             size: isDirectory ? -1 : Int64(values?.fileSize ?? 0),
+            created: values?.creationDate ?? values?.contentModificationDate ?? .distantPast,
             modified: values?.contentModificationDate ?? .distantPast,
             kind: values?.localizedTypeDescription ?? (isDirectory ? "Folder" : "Document"),
             contentType: values?.contentType,
@@ -54,6 +56,63 @@ struct FileItem: Identifiable, Hashable, Sendable {
         guard let contentType else { return false }
         return contentType.conforms(to: .movie)
             || contentType.conforms(to: .video)
+    }
+
+    var isAudioMedia: Bool {
+        contentType?.conforms(to: .audio) == true
+    }
+
+    var isSpreadsheet: Bool {
+        let fileExtension = url.pathExtension.lowercased()
+        if Self.spreadsheetExtensions.contains(fileExtension) { return true }
+        return contentType?.conforms(to: .spreadsheet) == true
+    }
+
+    var isDelimitedSpreadsheet: Bool {
+        Self.delimitedSpreadsheetExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isJSONFile: Bool {
+        !isDirectory && Self.jsonExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isApplicationBundle: Bool {
+        isDirectory && url.pathExtension.localizedCaseInsensitiveCompare("app") == .orderedSame
+    }
+
+    var isDiskImage: Bool {
+        !isDirectory && Self.diskImageExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isInstallerPackage: Bool {
+        Self.installerExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isPresentation: Bool {
+        let fileExtension = url.pathExtension.lowercased()
+        if Self.presentationExtensions.contains(fileExtension) { return true }
+        return contentType?.conforms(to: .presentation) == true
+    }
+
+    var isFontFile: Bool {
+        !isDirectory && Self.fontExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isEPUB: Bool {
+        !isDirectory && (url.pathExtension.localizedCaseInsensitiveCompare("epub") == .orderedSame
+            || contentType?.conforms(to: .epub) == true)
+    }
+
+    var isArchive: Bool {
+        isZipArchive || Self.archiveExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isContactCard: Bool {
+        !isDirectory && Self.contactCardExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    var isToolPackage: Bool {
+        isApplicationBundle || isSpreadsheet || isPresentation || isInstallerPackage
     }
 
     var isPreviewable: Bool {
@@ -82,6 +141,19 @@ struct FileItem: Identifiable, Hashable, Sendable {
         "css", "scss", "sass", "less", "vue", "svelte", "gradle", "dockerfile",
         "gitignore", "gitattributes", "editorconfig", "srt", "vtt", "tex", "bib",
     ]
+
+    private static let spreadsheetExtensions: Set<String> = [
+        "csv", "numbers", "tsv", "xls", "xlsx",
+    ]
+
+    private static let delimitedSpreadsheetExtensions: Set<String> = ["csv", "tsv"]
+    private static let jsonExtensions: Set<String> = ["json", "ndjson"]
+    private static let diskImageExtensions: Set<String> = ["dmg", "iso"]
+    private static let installerExtensions: Set<String> = ["mpkg", "pkg"]
+    private static let presentationExtensions: Set<String> = ["key", "ppt", "pptx"]
+    private static let fontExtensions: Set<String> = ["otf", "ttc", "ttf"]
+    private static let archiveExtensions: Set<String> = ["bz2", "gz", "tar", "tbz", "tgz", "txz", "xz"]
+    private static let contactCardExtensions: Set<String> = ["vcard", "vcf"]
 
     /// Document types Quick Look renders well (PDF, RTF, Office, ePub). Routed
     /// to the QLPreviewView fallback rather than the icon-only generic preview.

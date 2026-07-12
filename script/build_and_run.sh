@@ -3,9 +3,9 @@ set -euo pipefail
 
 MODE="${1:-run}"
 APP_NAME="Workbench"
-BUNDLE_ID="com.choloasis.panes"
+BUNDLE_ID="com.qnsub.workbench.app"
 PROJECT_NAME="MacFinderPlus.xcodeproj"
-SCHEME="Panes"
+SCHEME="Workbench"
 CONFIGURATION="${CONFIGURATION:-Debug}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

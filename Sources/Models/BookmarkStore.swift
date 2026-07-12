@@ -3,7 +3,7 @@ import Foundation
 import Observation
 
 /// Persists bookmarks for folders the user has pinned as favorites so they
-/// survive relaunches (and folder moves/renames). Panes ships without the App
+/// survive relaunches (and folder moves/renames). Workbench ships without the App
 /// Sandbox, so these are plain bookmarks — no security scope is needed; the app
 /// reads any path the user's account can, subject to the usual macOS TCC
 /// prompts for protected folders (Desktop, Documents, Downloads, volumes).
@@ -54,6 +54,11 @@ final class BookmarkStore {
         UserDefaults.standard.set(saved, forKey: defaultsKey)
     }
 
+    func move(fromOffsets source: IndexSet, toOffset destination: Int) {
+        grantedURLs.moveItems(fromOffsets: source, toOffset: destination)
+        persistAll()
+    }
+
     /// Inserts a favorite at a specific position (used by drag-to-reorder /
     /// drag-to-insert in the sidebar). If the URL is already a favorite it moves
     /// to the new position instead of duplicating.
@@ -81,9 +86,23 @@ final class BookmarkStore {
         panel.allowsMultipleSelection = false
         panel.directoryURL = url
         panel.prompt = "Grant Access"
-        panel.message = "Panes needs your permission to browse this folder."
+        panel.message = "Workbench needs your permission to browse this folder."
         guard panel.runModal() == .OK, let chosen = panel.url else { return nil }
         save(chosen)
         return chosen
+    }
+}
+
+private extension Array {
+    mutating func moveItems(fromOffsets source: IndexSet, toOffset destination: Int) {
+        let moving = source.sorted().map { self[$0] }
+        for index in source.sorted(by: >) {
+            remove(at: index)
+        }
+        let adjustedDestination = destination - source.filter { $0 < destination }.count
+        insert(
+            contentsOf: moving,
+            at: Swift.min(Swift.max(adjustedDestination, 0), count)
+        )
     }
 }

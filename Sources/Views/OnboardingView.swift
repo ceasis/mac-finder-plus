@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// First-run welcome flow. Walks a new user through the one folder grant Panes
+/// First-run welcome flow. Walks a new user through the one folder grant Workbench
 /// needs to browse their files, plus the Screen Recording and Microphone
 /// permissions the capture tools require — these fail silently if not granted,
 /// so surfacing them up front avoids a "the recorder is broken" first impression.
@@ -40,7 +40,7 @@ struct OnboardingView: View {
     private var welcomeStep: some View {
         stepLayout(
             icon: "square.split.2x1",
-            title: "Welcome to Panes",
+            title: "Welcome to Workbench",
             message: "A fast, keyboard-driven file manager for people who work with photos and video — with a built-in screenshot editor and screen recorder. Let’s get a few things set up."
         ) {
             EmptyView()
@@ -50,7 +50,7 @@ struct OnboardingView: View {
     private var folderStep: some View {
         stepLayout(
             icon: "folder.badge.person.crop",
-            title: "Give Panes access to your files",
+            title: "Give Workbench access to your files",
             message: "macOS asks your permission before an app can browse a folder. Grant your Home folder to get started — you can add more folders anytime from the sidebar."
         ) {
             actionRow(
@@ -71,7 +71,7 @@ struct OnboardingView: View {
         stepLayout(
             icon: "record.circle",
             title: "Enable Screen Recording",
-            message: "Panes’ screenshot and screen-recording tools need macOS’s Screen Recording permission. This is optional — skip it if you only want to manage files."
+            message: "Workbench’s screenshot and screen-recording tools need macOS’s Screen Recording permission. This is optional — skip it if you only want to manage files."
         ) {
             actionRow(
                 granted: permissions.screenRecording == .granted,

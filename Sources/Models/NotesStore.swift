@@ -7,14 +7,18 @@ import UniformTypeIdentifiers
 enum NoteAttachmentKind: String, Codable, Sendable {
     case image
     case audio
+    case video
+    case file
 }
 
-/// Whether a calendar day has any note, and whether those notes carry image or
-/// audio attachments — drives the badges shown under each day.
+/// Whether a calendar day has any note, and whether those notes carry journal
+/// attachments — drives the badges shown under each day.
 struct NoteDayMarker: Equatable, Sendable {
     var hasNote = false
     var hasImage = false
     var hasAudio = false
+    var hasVideo = false
+    var hasFile = false
 }
 
 /// How the notes list is sectioned for browsing by time.
@@ -42,12 +46,15 @@ struct NoteAttachment: Identifiable, Codable, Hashable, Sendable {
     var originalName: String
     var createdAt: Date
     var duration: TimeInterval?
+    var displayWidth: Double?
+    var updatedAt: Date?
 }
 
 struct NoteItem: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var title: String
     var body: String
+    var richBodyData: Data?
     var createdAt: Date
     var updatedAt: Date
     var attachments: [NoteAttachment]
@@ -58,9 +65,66 @@ struct NoteItem: Identifiable, Codable, Hashable, Sendable {
     }
 
     var preview: String {
-        body
+        NoteInlineAttachmentMarkup.displayText(from: body)
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum NoteInlineAttachmentMarkup {
+    private static let markerPattern = #"\[\[note-image:([0-9A-Fa-f-]{36})\]\]"#
+    private static let markerRegex = try? NSRegularExpression(pattern: markerPattern)
+
+    static func marker(for id: UUID) -> String {
+        "[[note-image:\(id.uuidString)]]"
+    }
+
+    static func imageIDs(in body: String) -> Set<UUID> {
+        Set(imageMarkerMatches(in: body).map(\.id))
+    }
+
+    @discardableResult
+    static func appendMissingImageMarkers(to body: inout String, for attachments: [NoteAttachment]) -> Bool {
+        let existingIDs = imageIDs(in: body)
+        let missingMarkers = attachments
+            .filter { $0.kind == .image && !existingIDs.contains($0.id) }
+            .map { marker(for: $0.id) }
+        guard !missingMarkers.isEmpty else { return false }
+
+        if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body += body.hasSuffix("\n") ? "\n" : "\n\n"
+        }
+        body += missingMarkers.joined(separator: "\n\n")
+        return true
+    }
+
+    static func removingImageMarker(for id: UUID, from body: String) -> String {
+        var result = body.replacingOccurrences(of: marker(for: id), with: "")
+        while result.contains("\n\n\n") {
+            result = result.replacingOccurrences(of: "\n\n\n", with: "\n\n")
+        }
+        return result
+    }
+
+    static func displayText(from body: String) -> String {
+        guard let markerRegex else { return body }
+        let range = NSRange(location: 0, length: (body as NSString).length)
+        return markerRegex
+            .stringByReplacingMatches(in: body, range: range, withTemplate: "")
+            .replacingOccurrences(of: "\u{fffc}", with: "")
+    }
+
+    static func imageMarkerMatches(in body: String) -> [(range: NSRange, id: UUID)] {
+        guard let markerRegex else { return [] }
+        let nsBody = body as NSString
+        let range = NSRange(location: 0, length: nsBody.length)
+        return markerRegex.matches(in: body, range: range).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let id = UUID(uuidString: nsBody.substring(with: match.range(at: 1))) else {
+                return nil
+            }
+            return (match.range, id)
+        }
     }
 }
 
@@ -113,7 +177,7 @@ final class NotesStore {
     }
 
     /// Per-day summary used by the calendar to badge days that have notes and
-    /// whether any of those notes carry image or audio attachments.
+    /// whether any of those notes carry media or file attachments.
     func dayMarkers() -> [Date: NoteDayMarker] {
         let calendar = Calendar.current
         var result: [Date: NoteDayMarker] = [:]
@@ -123,6 +187,8 @@ final class NotesStore {
             marker.hasNote = true
             if note.attachments.contains(where: { $0.kind == .image }) { marker.hasImage = true }
             if note.attachments.contains(where: { $0.kind == .audio }) { marker.hasAudio = true }
+            if note.attachments.contains(where: { $0.kind == .video }) { marker.hasVideo = true }
+            if note.attachments.contains(where: { $0.kind == .file }) { marker.hasFile = true }
             result[day] = marker
         }
         return result
@@ -188,6 +254,7 @@ final class NotesStore {
             id: UUID(),
             title: "",
             body: "",
+            richBodyData: nil,
             createdAt: created,
             updatedAt: now,
             attachments: []
@@ -239,19 +306,28 @@ final class NotesStore {
         }
     }
 
+    func updateRichBodyData(_ id: NoteItem.ID, richBodyData: Data?) {
+        updateNote(id) { note in
+            note.richBodyData = richBodyData
+        }
+    }
+
     func saveNow() {
         save()
     }
 
     func chooseAndAttachImages(to noteID: NoteItem.ID) {
+        chooseAndAttachFiles(to: noteID)
+    }
+
+    func chooseAndAttachFiles(to noteID: NoteItem.ID) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = [.image]
         panel.prompt = "Attach"
         guard panel.runModal() == .OK else { return }
-        addImages(panel.urls, to: noteID)
+        addFiles(panel.urls, to: noteID)
     }
 
     func addImages(_ urls: [URL], to noteID: NoteItem.ID) {
@@ -261,7 +337,21 @@ final class NotesStore {
             }
             return NSImage(contentsOf: url) != nil
         }
-        guard !imageURLs.isEmpty else { return }
+        addFiles(imageURLs, to: noteID)
+    }
+
+    @discardableResult
+    func addFiles(
+        _ urls: [URL],
+        to noteID: NoteItem.ID,
+        insertImageMarkers: Bool = true
+    ) -> [NoteAttachment] {
+        let fileURLs = urls.filter { url in
+            guard url.isFileURL else { return false }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+            return values?.isDirectory != true
+        }
+        guard !fileURLs.isEmpty else { return [] }
 
         do {
             try ensureStorage()
@@ -270,13 +360,14 @@ final class NotesStore {
                 withIntermediateDirectories: true
             )
             var newAttachments: [NoteAttachment] = []
-            for url in imageURLs {
+            for url in fileURLs {
                 let accessed = url.startAccessingSecurityScopedResource()
                 defer {
                     if accessed {
                         url.stopAccessingSecurityScopedResource()
                     }
                 }
+                let kind = attachmentKind(for: url)
                 let destination = uniqueAttachmentDestination(
                     noteID: noteID,
                     preferredName: url.lastPathComponent
@@ -285,7 +376,7 @@ final class NotesStore {
                 newAttachments.append(
                     NoteAttachment(
                         id: UUID(),
-                        kind: .image,
+                        kind: kind,
                         filename: destination.lastPathComponent,
                         originalName: url.lastPathComponent,
                         createdAt: Date(),
@@ -293,7 +384,126 @@ final class NotesStore {
                     )
                 )
             }
-            appendAttachments(newAttachments, to: noteID)
+            appendAttachments(newAttachments, to: noteID, insertImageMarkers: insertImageMarkers)
+            return newAttachments
+        } catch {
+            lastError = error.localizedDescription
+            return []
+        }
+    }
+
+    func pasteAttachments(to noteID: NoteItem.ID) {
+        if !pasteAttachmentsIfAvailable(to: noteID) {
+            lastError = "Clipboard does not contain an image or copied file."
+        }
+    }
+
+    @discardableResult
+    func pasteAttachmentsIfAvailable(to noteID: NoteItem.ID) -> Bool {
+        let pasteboard = NSPasteboard.general
+        let urls = Self.fileURLs(from: pasteboard)
+        if !urls.isEmpty {
+            addFiles(urls, to: noteID)
+            return true
+        }
+
+        let images = Self.images(from: pasteboard)
+        if !images.isEmpty {
+            addPastedImages(images, to: noteID)
+            return true
+        }
+
+        return false
+    }
+
+    func canPasteAttachments() -> Bool {
+        Self.hasAttachmentContent(in: NSPasteboard.general)
+    }
+
+    func ensureInlineImageMarkers(in noteID: NoteItem.ID) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        let imageAttachments = notes[index].attachments.filter { $0.kind == .image }
+        guard !imageAttachments.isEmpty else { return }
+        var body = notes[index].body
+        guard NoteInlineAttachmentMarkup.appendMissingImageMarkers(
+            to: &body,
+            for: imageAttachments
+        ) else {
+            return
+        }
+        notes[index].body = body
+        save()
+    }
+
+    func pruneInlineImageAttachments(in noteID: NoteItem.ID, keeping referencedIDs: Set<UUID>) {
+        guard let note = note(for: noteID) else { return }
+        let removals = note.attachments.filter { attachment in
+            attachment.kind == .image && !referencedIDs.contains(attachment.id)
+        }
+        guard !removals.isEmpty else { return }
+
+        for attachment in removals {
+            try? FileManager.default.removeItem(at: attachmentURL(for: noteID, attachment: attachment))
+        }
+        let removalIDs = Set(removals.map(\.id))
+        updateNote(noteID) { note in
+            note.attachments.removeAll { removalIDs.contains($0.id) }
+        }
+    }
+
+    func updateImageDisplayWidth(
+        _ width: Double,
+        for attachmentID: NoteAttachment.ID,
+        in noteID: NoteItem.ID
+    ) {
+        updateNote(noteID) { note in
+            guard let index = note.attachments.firstIndex(where: { $0.id == attachmentID }) else {
+                return
+            }
+            note.attachments[index].displayWidth = width
+            note.attachments[index].updatedAt = Date()
+        }
+    }
+
+    func transformImageAttachment(
+        _ attachmentID: NoteAttachment.ID,
+        in noteID: NoteItem.ID,
+        operation: ImageProcessing.Transform
+    ) {
+        guard let note = note(for: noteID),
+              let attachment = note.attachments.first(where: { $0.id == attachmentID }),
+              attachment.kind == .image else {
+            return
+        }
+        let url = attachmentURL(for: noteID, attachment: attachment)
+        Task {
+            do {
+                try await ImageProcessing.transform(url, operation)
+                bumpAttachmentVersion(attachmentID, in: noteID)
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func replaceImageAttachmentContents(
+        _ attachmentID: NoteAttachment.ID,
+        in noteID: NoteItem.ID,
+        with sourceURL: URL
+    ) {
+        guard let note = note(for: noteID),
+              let attachment = note.attachments.first(where: { $0.id == attachmentID }),
+              attachment.kind == .image else {
+            return
+        }
+        let destination = attachmentURL(for: noteID, attachment: attachment)
+        do {
+            let data = try Data(contentsOf: sourceURL)
+            try data.write(to: destination, options: [.atomic])
+            if sourceURL.standardizedFileURL != destination.standardizedFileURL {
+                try? FileManager.default.removeItem(at: sourceURL)
+            }
+            bumpAttachmentVersion(attachmentID, in: noteID)
         } catch {
             lastError = error.localizedDescription
         }
@@ -307,6 +517,12 @@ final class NotesStore {
         try? FileManager.default.removeItem(at: attachmentURL(for: noteID, attachment: attachment))
         updateNote(noteID) { note in
             note.attachments.removeAll { $0.id == attachmentID }
+            if attachment.kind == .image {
+                note.body = NoteInlineAttachmentMarkup.removingImageMarker(
+                    for: attachment.id,
+                    from: note.body
+                )
+            }
         }
     }
 
@@ -392,6 +608,40 @@ final class NotesStore {
         }
     }
 
+    func prepareVideoAttachmentDestination(for noteID: NoteItem.ID) throws -> URL {
+        try ensureStorage()
+        try FileManager.default.createDirectory(
+            at: noteDirectory(noteID),
+            withIntermediateDirectories: true
+        )
+        return uniqueAttachmentDestination(
+            noteID: noteID,
+            preferredName: "Video Journal \(recordingDateString()).mov"
+        )
+    }
+
+    func finishVideoRecording(at url: URL, for noteID: NoteItem.ID, startedAt: Date) {
+        let duration = max(Date().timeIntervalSince(startedAt), 0)
+        guard duration >= 0.3 else {
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+        appendAttachments([
+            NoteAttachment(
+                id: UUID(),
+                kind: .video,
+                filename: url.lastPathComponent,
+                originalName: "Video Journal",
+                createdAt: Date(),
+                duration: duration
+            ),
+        ], to: noteID)
+    }
+
+    func discardAttachmentFile(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
     func load() {
         do {
             try ensureStorage()
@@ -411,11 +661,212 @@ final class NotesStore {
         }
     }
 
-    private func appendAttachments(_ attachments: [NoteAttachment], to noteID: NoteItem.ID) {
+    private func appendAttachments(
+        _ attachments: [NoteAttachment],
+        to noteID: NoteItem.ID,
+        insertImageMarkers: Bool = false
+    ) {
         guard !attachments.isEmpty else { return }
         updateNote(noteID) { note in
             note.attachments.append(contentsOf: attachments)
+            if insertImageMarkers {
+                NoteInlineAttachmentMarkup.appendMissingImageMarkers(
+                    to: &note.body,
+                    for: attachments
+                )
+            }
         }
+    }
+
+    private func bumpAttachmentVersion(_ attachmentID: NoteAttachment.ID, in noteID: NoteItem.ID) {
+        updateNote(noteID) { note in
+            guard let index = note.attachments.firstIndex(where: { $0.id == attachmentID }) else {
+                return
+            }
+            note.attachments[index].updatedAt = Date()
+        }
+    }
+
+    @discardableResult
+    func addPastedImage(
+        _ image: NSImage,
+        to noteID: NoteItem.ID,
+        insertImageMarker: Bool = true
+    ) -> NoteAttachment? {
+        addPastedImages([image], to: noteID, insertImageMarker: insertImageMarker).first
+    }
+
+    @discardableResult
+    func addPastedImages(
+        _ images: [NSImage],
+        to noteID: NoteItem.ID,
+        insertImageMarker: Bool = true
+    ) -> [NoteAttachment] {
+        do {
+            try ensureStorage()
+            try FileManager.default.createDirectory(
+                at: noteDirectory(noteID),
+                withIntermediateDirectories: true
+            )
+
+            var attachments: [NoteAttachment] = []
+            for image in images {
+                guard let data = Self.pngData(for: image) else {
+                    continue
+                }
+                let destination = uniqueAttachmentDestination(
+                    noteID: noteID,
+                    preferredName: "Pasted Image \(recordingDateString()).png"
+                )
+                try data.write(to: destination, options: [.atomic])
+                attachments.append(NoteAttachment(
+                    id: UUID(),
+                    kind: .image,
+                    filename: destination.lastPathComponent,
+                    originalName: "Pasted Image",
+                    createdAt: Date(),
+                    duration: nil
+                ))
+            }
+
+            guard !attachments.isEmpty else {
+                throw NotesStoreError.pastedImageFailed
+            }
+            appendAttachments(attachments, to: noteID, insertImageMarkers: insertImageMarker)
+            return attachments
+        } catch {
+            lastError = error.localizedDescription
+            return []
+        }
+    }
+
+    private func attachmentKind(for url: URL) -> NoteAttachmentKind {
+        if let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType {
+            if type.conforms(to: .image) { return .image }
+            if type.conforms(to: .audio) { return .audio }
+            if type.conforms(to: .movie) || type.conforms(to: .video) { return .video }
+        }
+        if NSImage(contentsOf: url) != nil {
+            return .image
+        }
+        return .file
+    }
+
+    nonisolated static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        var urls: [URL] = []
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+        ]
+        if let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) {
+            urls.append(contentsOf: objects.compactMap { object in
+                if let url = object as? URL, url.isFileURL {
+                    return url
+                }
+                if let url = object as? NSURL, (url as URL).isFileURL {
+                    return url as URL
+                }
+                return nil
+            })
+        }
+        let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        if let paths = pasteboard.propertyList(forType: filenamesType) as? [String],
+           !paths.isEmpty {
+            urls.append(contentsOf: paths.map { URL(fileURLWithPath: $0) })
+        }
+        let itemURLs = pasteboard.pasteboardItems?.compactMap { item -> URL? in
+            let urlTypes: [NSPasteboard.PasteboardType] = [
+                .fileURL,
+                .URL,
+                NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url"),
+            ]
+            for type in urlTypes {
+                if let string = item.string(forType: type),
+                   let url = fileURL(from: string) {
+                    return url
+                }
+            }
+            if let paths = item.propertyList(forType: filenamesType) as? [String],
+               let path = paths.first {
+                return URL(fileURLWithPath: path)
+            }
+            return nil
+        } ?? []
+        urls.append(contentsOf: itemURLs)
+        return uniqueFileURLs(urls)
+    }
+
+    private nonisolated static func hasAttachmentContent(in pasteboard: NSPasteboard) -> Bool {
+        !fileURLs(from: pasteboard).isEmpty || !images(from: pasteboard).isEmpty
+    }
+
+    private nonisolated static func fileURL(from string: String) -> URL? {
+        if let url = URL(string: string), url.isFileURL {
+            return url
+        }
+        if string.hasPrefix("/") {
+            return URL(fileURLWithPath: string)
+        }
+        return nil
+    }
+
+    private nonisolated static func uniqueFileURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { url in
+            let key = url.standardizedFileURL.path
+            return seen.insert(key).inserted
+        }
+    }
+
+    nonisolated static func image(from pasteboard: NSPasteboard) -> NSImage? {
+        images(from: pasteboard).first
+    }
+
+    nonisolated static func images(from pasteboard: NSPasteboard) -> [NSImage] {
+        let preferredTypes: [NSPasteboard.PasteboardType] = [
+            .png,
+            .tiff,
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType(UTType.jpeg.identifier),
+            NSPasteboard.PasteboardType(UTType.heic.identifier),
+        ]
+
+        let itemImages = pasteboard.pasteboardItems?.compactMap { item -> NSImage? in
+            for type in preferredTypes where item.types.contains(type) {
+                if let data = item.data(forType: type),
+                   let image = NSImage(data: data) {
+                    return image
+                }
+            }
+            for type in item.types where UTType(type.rawValue)?.conforms(to: .image) == true {
+                if let data = item.data(forType: type),
+                   let image = NSImage(data: data) {
+                    return image
+                }
+            }
+            return nil
+        } ?? []
+        if !itemImages.isEmpty {
+            return itemImages
+        }
+
+        if let image = NSImage(pasteboard: pasteboard) {
+            return [image]
+        }
+        for type in preferredTypes {
+            if let data = pasteboard.data(forType: type),
+               let image = NSImage(data: data) {
+                return [image]
+            }
+        }
+        return []
+    }
+
+    private static func pngData(for image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else {
+            return nil
+        }
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     private func updateNote(_ id: NoteItem.ID, mutation: (inout NoteItem) -> Void) {
@@ -504,6 +955,7 @@ final class NotesStore {
 private enum NotesStoreError: LocalizedError {
     case microphoneDenied
     case recordingFailed
+    case pastedImageFailed
 
     var errorDescription: String? {
         switch self {
@@ -511,6 +963,8 @@ private enum NotesStoreError: LocalizedError {
             "Microphone access is required to record voice notes."
         case .recordingFailed:
             "Voice recording could not be started."
+        case .pastedImageFailed:
+            "Pasted image could not be saved."
         }
     }
 }

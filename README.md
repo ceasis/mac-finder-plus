@@ -1,4 +1,4 @@
-# Panes (working title)
+# Workbench
 
 A fast, keyboard-driven, dual-pane file manager for macOS, built to be sold on the Mac App Store.
 Product and technical spec: [SPEC.md](SPEC.md).
@@ -10,10 +10,10 @@ The `.xcodeproj` is generated, not committed — sources and `project.yml` are t
 
 ```sh
 xcodegen generate
-xcodebuild -project MacFinderPlus.xcodeproj -scheme Panes -configuration Debug build
+xcodebuild -project MacFinderPlus.xcodeproj -scheme Workbench -configuration Debug build
 ```
 
-Or open `MacFinderPlus.xcodeproj` in Xcode and run the `Panes` scheme.
+Or open `MacFinderPlus.xcodeproj` in Xcode and run the `Workbench` scheme.
 
 ## Sandbox note
 

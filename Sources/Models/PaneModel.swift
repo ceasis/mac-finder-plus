@@ -18,6 +18,175 @@ enum PaneViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum ModifiedDateFilter: String, Identifiable, Sendable {
+    case all
+    case withinHour
+    case today
+    case withinWeek
+    case withinMonth
+    case olderThanOneYear
+    case olderThanTwoYears
+
+    var id: Self { self }
+
+    var shortTitle: String {
+        switch self {
+        case .all: "All"
+        case .withinHour: "HOUR"
+        case .today: "TODAY"
+        case .withinWeek: "WEEK"
+        case .withinMonth: "MONTH"
+        case .olderThanOneYear: "+1YR"
+        case .olderThanTwoYears: "+2YRs"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .all: "All creation and modification dates"
+        case .withinHour: "Created or modified within the last hour"
+        case .today: "Created or modified within the last 24 hours"
+        case .withinWeek: "Created or modified within the last 7 days"
+        case .withinMonth: "Created or modified within the last month"
+        case .olderThanOneYear: "Created or modified more than 1 year ago"
+        case .olderThanTwoYears: "Created or modified more than 2 years ago"
+        }
+    }
+
+    func matches(
+        created: Date,
+        modified: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        matches(date: created, now: now, calendar: calendar)
+            || matches(date: modified, now: now, calendar: calendar)
+    }
+
+    func matches(
+        modified: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        matches(date: modified, now: now, calendar: calendar)
+    }
+
+    private func matches(
+        date: Date,
+        now: Date,
+        calendar: Calendar
+    ) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .withinHour:
+            guard let cutoff = calendar.date(byAdding: .hour, value: -1, to: now) else { return false }
+            return date >= cutoff && date <= now
+        case .today:
+            guard let cutoff = calendar.date(byAdding: .hour, value: -24, to: now) else { return false }
+            return date >= cutoff && date <= now
+        case .withinWeek:
+            guard let cutoff = calendar.date(byAdding: .day, value: -7, to: now) else { return false }
+            return date >= cutoff && date <= now
+        case .withinMonth:
+            guard let cutoff = calendar.date(byAdding: .month, value: -1, to: now) else { return false }
+            return date >= cutoff && date <= now
+        case .olderThanOneYear:
+            guard let cutoff = calendar.date(byAdding: .year, value: -1, to: now) else { return false }
+            return date < cutoff
+        case .olderThanTwoYears:
+            guard let cutoff = calendar.date(byAdding: .year, value: -2, to: now) else { return false }
+            return date < cutoff
+        }
+    }
+}
+
+enum FileSizeFilter: String, Identifiable, Sendable {
+    case all
+    case upToOneMegabyte
+    case oneToTenMegabytes
+    case tenToHundredMegabytes
+    case hundredMegabytesToOneGigabyte
+    case oneGigabyteOrLarger
+
+    var id: Self { self }
+
+    var shortTitle: String {
+        switch self {
+        case .all: "All"
+        case .upToOneMegabyte: "~1MB"
+        case .oneToTenMegabytes: "~10MB"
+        case .tenToHundredMegabytes: "~100MB"
+        case .hundredMegabytesToOneGigabyte: "~1GB"
+        case .oneGigabyteOrLarger: ">1GB"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .all: "All file sizes"
+        case .upToOneMegabyte: "Files around 1 MB (512 KB to 1.5 MB)"
+        case .oneToTenMegabytes: "Files around 10 MB (5 MB to 15 MB)"
+        case .tenToHundredMegabytes: "Files around 100 MB (50 MB to 150 MB)"
+        case .hundredMegabytesToOneGigabyte: "Files and folders 400 MB or larger"
+        case .oneGigabyteOrLarger: "Files larger than 1 GB"
+        }
+    }
+
+    func matches(size: Int64) -> Bool {
+        let megabyte: Int64 = 1_024 * 1_024
+        let gigabyte = megabyte * 1_024
+        guard size >= 0 else { return false }
+
+        return switch self {
+        case .all:
+            true
+        case .upToOneMegabyte:
+            size >= megabyte / 2 && size <= megabyte * 3 / 2
+        case .oneToTenMegabytes:
+            size >= megabyte * 5 && size <= megabyte * 15
+        case .tenToHundredMegabytes:
+            size >= megabyte * 50 && size <= megabyte * 150
+        case .hundredMegabytesToOneGigabyte:
+            size >= megabyte * 400
+        case .oneGigabyteOrLarger:
+            size > gigabyte
+        }
+    }
+}
+
+enum ItemKindFilter: String, Identifiable, Sendable {
+    case all
+    case files
+    case folders
+
+    var id: Self { self }
+
+    var shortTitle: String {
+        switch self {
+        case .all: "All"
+        case .files: "FILE"
+        case .folders: "FOLDER"
+        }
+    }
+
+    var helpText: String {
+        switch self {
+        case .all: "Show files and folders"
+        case .files: "Show files only"
+        case .folders: "Show folders only. With a size filter, only folders containing a matching file are shown."
+        }
+    }
+
+    func matches(isDirectory: Bool) -> Bool {
+        switch self {
+        case .all: true
+        case .files: !isDirectory
+        case .folders: isDirectory
+        }
+    }
+}
+
 struct PaneTab: Identifiable, Hashable {
     let id: UUID
     var url: URL
@@ -27,6 +196,9 @@ struct PaneTab: Identifiable, Hashable {
     var filterText: String
     var typePreset: FileTypePreset
     var ratingFilter: StarRatingFilter
+    var modifiedDateFilter: ModifiedDateFilter
+    var fileSizeFilter: FileSizeFilter
+    var itemKindFilter: ItemKindFilter
     var searchSubfolders: Bool
 
     init(
@@ -38,6 +210,9 @@ struct PaneTab: Identifiable, Hashable {
         filterText: String = "",
         typePreset: FileTypePreset = .all,
         ratingFilter: StarRatingFilter = .all,
+        modifiedDateFilter: ModifiedDateFilter = .all,
+        fileSizeFilter: FileSizeFilter = .all,
+        itemKindFilter: ItemKindFilter = .all,
         searchSubfolders: Bool = false
     ) {
         self.id = id
@@ -48,6 +223,9 @@ struct PaneTab: Identifiable, Hashable {
         self.filterText = filterText
         self.typePreset = typePreset
         self.ratingFilter = ratingFilter
+        self.modifiedDateFilter = modifiedDateFilter
+        self.fileSizeFilter = fileSizeFilter
+        self.itemKindFilter = itemKindFilter
         self.searchSubfolders = searchSubfolders
     }
 
@@ -67,14 +245,26 @@ final class PaneModel {
     var viewMode: PaneViewMode = .list {
         didSet { activeBrowsingStateChanged() }
     }
-    var items: [FileItem] = [] { didSet { rebuildDisplayItems() } }
+    var items: [FileItem] = [] {
+        didSet {
+            if !isUpdatingFolderSize {
+                scheduleSizeFilteredFolderScan()
+            }
+            rebuildDisplayItems()
+        }
+    }
     var selection = Set<FileItem.ID>() {
         didSet { rebuildSelectedItems() }
     }
     var sortOrder: [KeyPathComparator<FileItem>] = [KeyPathComparator(\.name)] {
         didSet { rebuildDisplayItems() }
     }
-    var showHidden = false { didSet { rebuildDisplayItems() } }
+    var showHidden = false {
+        didSet {
+            scheduleSizeFilteredFolderScan()
+            rebuildDisplayItems()
+        }
+    }
     var foldersFirst = true { didSet { rebuildDisplayItems() } }
     var autoCalculateFolderSizes = false {
         didSet {
@@ -93,6 +283,9 @@ final class PaneModel {
     var filterText = "" { didSet { searchCriteriaChanged() } }
     var typePreset: FileTypePreset = .all { didSet { searchCriteriaChanged() } }
     var ratingFilter: StarRatingFilter = .all { didSet { searchCriteriaChanged() } }
+    var modifiedDateFilter: ModifiedDateFilter = .all { didSet { searchCriteriaChanged() } }
+    var fileSizeFilter: FileSizeFilter = .all { didSet { searchCriteriaChanged() } }
+    var itemKindFilter: ItemKindFilter = .all { didSet { itemKindFilterChanged() } }
     var searchSubfolders = false { didSet { searchCriteriaChanged() } }
     var searchResults: [FileItem] = [] { didSet { rebuildDisplayItems() } }
     var isSearching = false
@@ -116,6 +309,10 @@ final class PaneModel {
     @ObservationIgnored var persistentStateChanged: (() -> Void)?
     @ObservationIgnored private var folderSizeTask: Task<Void, Never>?
     @ObservationIgnored private var folderSizeRunID = UUID()
+    @ObservationIgnored private var sizeFilteredFolderScanTask: Task<Void, Never>?
+    @ObservationIgnored private var sizeFilteredFolderScanRunID = UUID()
+    @ObservationIgnored private var sizeMatchingFolderIDs = Set<FileItem.ID>()
+    @ObservationIgnored private var isUpdatingFolderSize = false
     @ObservationIgnored private var isApplyingTabState = false
 
     private var backStack: [URL] = []
@@ -145,6 +342,9 @@ final class PaneModel {
         self.filterText = activeTab.filterText
         self.typePreset = activeTab.typePreset
         self.ratingFilter = activeTab.ratingFilter
+        self.modifiedDateFilter = activeTab.modifiedDateFilter
+        self.fileSizeFilter = activeTab.fileSizeFilter
+        self.itemKindFilter = activeTab.itemKindFilter
         self.searchSubfolders = activeTab.searchSubfolders
     }
 
@@ -201,6 +401,25 @@ final class PaneModel {
                 out = out.filter { ratingFilter.matches($0) }
             }
         }
+        if modifiedDateFilter != .all {
+            out = out.filter {
+                modifiedDateFilter.matches(created: $0.created, modified: $0.modified)
+            }
+        }
+        if itemKindFilter != .all {
+            out = out.filter { itemKindFilter.matches(isDirectory: $0.isDirectory) }
+        }
+        if fileSizeFilter != .all {
+            out = out.filter { item in
+                if item.isDirectory {
+                    if itemKindFilter == .folders {
+                        return fileSizeFilter.matches(size: item.size)
+                    }
+                    return !isRecursiveSearchActive && sizeMatchingFolderIDs.contains(item.id)
+                }
+                return fileSizeFilter.matches(size: item.size)
+            }
+        }
         out.sort(using: sortOrder)
         if foldersFirst {
             out = out.filter(\.isDirectory) + out.filter { !$0.isDirectory }
@@ -221,6 +440,14 @@ final class PaneModel {
         }
     }
 
+    func dateMatchCount(for filter: ModifiedDateFilter, now: Date = Date()) -> Int {
+        visibleSource.lazy.filter { item in
+            !item.isDirectory
+                && (self.showHidden || !item.isHidden)
+                && filter.matches(created: item.created, modified: item.modified, now: now)
+        }.count
+    }
+
     var canGoBack: Bool { !backStack.isEmpty }
     var canGoForward: Bool { !forwardStack.isEmpty }
     var canGoUp: Bool { currentURL.standardizedFileURL.path != "/" }
@@ -237,7 +464,10 @@ final class PaneModel {
     }
 
     func navigate(to url: URL) {
-        guard url != currentURL else { return }
+        guard url.standardizedFileURL != currentURL.standardizedFileURL else {
+            refresh()
+            return
+        }
         resetDuplicateResults()
         resetCompare()
         backStack.append(currentURL)
@@ -355,6 +585,9 @@ final class PaneModel {
         filterText = tab.filterText
         typePreset = tab.typePreset
         ratingFilter = tab.ratingFilter
+        modifiedDateFilter = tab.modifiedDateFilter
+        fileSizeFilter = tab.fileSizeFilter
+        itemKindFilter = tab.itemKindFilter
         searchSubfolders = tab.searchSubfolders
         backStack = tab.backStack
         forwardStack = tab.forwardStack
@@ -373,7 +606,15 @@ final class PaneModel {
     private func searchCriteriaChanged() {
         guard !isApplyingTabState else { return }
         syncActiveTabState()
+        scheduleSizeFilteredFolderScan()
         searchStateChanged()
+        rebuildDisplayItems()
+    }
+
+    private func itemKindFilterChanged() {
+        guard !isApplyingTabState else { return }
+        syncActiveTabState()
+        scheduleSizeFilteredFolderScan()
         rebuildDisplayItems()
     }
 
@@ -393,6 +634,9 @@ final class PaneModel {
         tabs[index].filterText = filterText
         tabs[index].typePreset = typePreset
         tabs[index].ratingFilter = ratingFilter
+        tabs[index].modifiedDateFilter = modifiedDateFilter
+        tabs[index].fileSizeFilter = fileSizeFilter
+        tabs[index].itemKindFilter = itemKindFilter
         tabs[index].searchSubfolders = searchSubfolders
     }
 
@@ -470,6 +714,85 @@ final class PaneModel {
         return urls.map { FileItem.make(url: $0) }
     }
 
+    nonisolated static func folderContainsMatchingFile(
+        in folder: URL,
+        filter: FileSizeFilter,
+        includeHidden: Bool
+    ) async throws -> Bool {
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: options
+        ) else {
+            return false
+        }
+
+        while let url = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            guard values?.isDirectory != true,
+                  let size = values?.fileSize else {
+                continue
+            }
+            if filter.matches(size: Int64(size)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func scheduleSizeFilteredFolderScan() {
+        sizeFilteredFolderScanTask?.cancel()
+        sizeFilteredFolderScanTask = nil
+        let runID = UUID()
+        sizeFilteredFolderScanRunID = runID
+        sizeMatchingFolderIDs.removeAll()
+
+        guard fileSizeFilter != .all,
+              !isRecursiveSearchActive,
+              itemKindFilter == .all else {
+            return
+        }
+        let folders = items.filter(\.isDirectory)
+        guard !folders.isEmpty else { return }
+
+        let filter = fileSizeFilter
+        let includeHidden = showHidden
+        let loadedURL = currentURL
+        sizeFilteredFolderScanTask = Task { [weak self] in
+            var matchingIDs = Set<FileItem.ID>()
+
+            for folder in folders {
+                guard !Task.isCancelled else { return }
+                do {
+                    if try await Self.folderContainsMatchingFile(
+                        in: folder.url,
+                        filter: filter,
+                        includeHidden: includeHidden
+                    ) {
+                        matchingIDs.insert(folder.id)
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    continue
+                }
+
+            }
+
+            guard let self,
+                  !Task.isCancelled,
+                  self.sizeFilteredFolderScanRunID == runID,
+                  self.currentURL == loadedURL else {
+                return
+            }
+            self.sizeMatchingFolderIDs = matchingIDs
+            self.rebuildDisplayItems()
+            self.sizeFilteredFolderScanTask = nil
+        }
+    }
+
     // MARK: - Recursive search
 
     private func searchStateChanged() {
@@ -490,6 +813,8 @@ final class PaneModel {
         let query = filterText
         let preset = typePreset
         let ratingFilter = ratingFilter
+        let modifiedDateFilter = modifiedDateFilter
+        let fileSizeFilter = fileSizeFilter
         let includeHidden = showHidden
         searchTask = Task {
             try? await Task.sleep(for: .milliseconds(250))
@@ -499,6 +824,8 @@ final class PaneModel {
                 query: query,
                 preset: preset,
                 ratingFilter: ratingFilter,
+                modifiedDateFilter: modifiedDateFilter,
+                fileSizeFilter: fileSizeFilter,
                 includeHidden: includeHidden
             )
             guard !Task.isCancelled else { return }
@@ -512,6 +839,8 @@ final class PaneModel {
         query: String,
         preset: FileTypePreset,
         ratingFilter: StarRatingFilter,
+        modifiedDateFilter: ModifiedDateFilter,
+        fileSizeFilter: FileSizeFilter,
         includeHidden: Bool
     ) async -> [FileItem] {
         let maxResults = 2000
@@ -527,6 +856,10 @@ final class PaneModel {
             let item = FileItem.make(url: url)
             guard preset.matches(item) else { continue }
             guard ratingFilter.matches(item) else { continue }
+            guard modifiedDateFilter.matches(created: item.created, modified: item.modified) else { continue }
+            if fileSizeFilter != .all {
+                guard !item.isDirectory, fileSizeFilter.matches(size: item.size) else { continue }
+            }
             results.append(item)
             if results.count >= maxResults { break }
         }
@@ -545,6 +878,9 @@ final class PaneModel {
         searchSubfolders = false
         typePreset = .all
         ratingFilter = .all
+        modifiedDateFilter = .all
+        fileSizeFilter = .all
+        itemKindFilter = .all
         duplicateResultsTitle = title
         duplicateResults = results
         rebuildDisplayItems()
@@ -641,7 +977,9 @@ final class PaneModel {
                           let index = items.firstIndex(where: { $0.id == folder.id }) else {
                         break
                     }
+                    isUpdatingFolderSize = true
                     items[index].size = total
+                    isUpdatingFolderSize = false
                 } catch is CancellationError {
                     break
                 } catch {

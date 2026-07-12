@@ -34,7 +34,8 @@ enum StarRatingFilter: String, CaseIterable, Identifiable {
 
 enum FileRatingStore {
     private static let xattrName = "com.choloasis.panes.rating"
-    private static let tagPrefix = "Panes Rating "
+    private static let tagPrefix = "Workbench Rating "
+    private static let legacyTagPrefix = "Panes Rating "
 
     static func rating(for url: URL, finderTags: [String]?) -> Int {
         if let xattrRating = xattrRating(for: url) {
@@ -54,10 +55,13 @@ enum FileRatingStore {
     }
 
     static func rating(fromTag tag: String) -> Int? {
-        guard tag.hasPrefix(tagPrefix) else { return nil }
-        let suffix = tag.dropFirst(tagPrefix.count)
-        guard let value = Int(suffix), (1...5).contains(value) else { return nil }
-        return value
+        for prefix in [tagPrefix, legacyTagPrefix] where tag.hasPrefix(prefix) {
+            let suffix = tag.dropFirst(prefix.count)
+            if let value = Int(suffix), (1...5).contains(value) {
+                return value
+            }
+        }
+        return nil
     }
 
     private static func xattrRating(for url: URL) -> Int? {

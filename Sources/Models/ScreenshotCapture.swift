@@ -38,7 +38,7 @@ enum ScreenshotCaptureMode: String, CaseIterable, Identifiable, Sendable {
         case .selection: "Area"
         case .window: "Window"
         case .applicationWindow: "App Window"
-        case .appWindow: "Panes Window"
+        case .appWindow: "Workbench Window"
         case .fullScreen: "Screen"
         }
     }
@@ -363,7 +363,7 @@ private enum ScreenshotCaptureError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noWindow:
-            "No visible Panes window was available to capture."
+            "No visible Workbench window was available to capture."
         case let .failed(detail):
             detail.isEmpty ? "Screenshot failed." : detail
         }

@@ -20,9 +20,20 @@ struct FileGridView: View {
     @State private var selectionDragBase = Set<FileItem.ID>()
     @State private var selectionRect: CGRect?
 
-    private let minCellWidth: CGFloat = 110
-    private let cellSpacing: CGFloat = 12
+    private let cellSpacing: CGFloat = 25
     private let gridPadding: CGFloat = 10
+
+    private var thumbnailSide: CGFloat {
+        FileGridThumbnailSettings.clamped(appState.fileGridThumbnailSize)
+    }
+
+    private var minCellWidth: CGFloat {
+        max(82, thumbnailSide + 14)
+    }
+
+    private var maxCellWidth: CGFloat {
+        minCellWidth + 44
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -30,7 +41,7 @@ struct FileGridView: View {
                 ScrollView {
                     LazyVGrid(
                         columns: [GridItem(
-                            .adaptive(minimum: minCellWidth, maximum: 150),
+                            .adaptive(minimum: minCellWidth, maximum: maxCellWidth),
                             spacing: cellSpacing
                         )],
                         spacing: cellSpacing
@@ -39,7 +50,8 @@ struct FileGridView: View {
                             GridCell(
                                 item: item,
                                 isSelected: model.selection.contains(item.id),
-                                compareMarker: model.compareMarker(for: item)
+                                compareMarker: model.compareMarker(for: item),
+                                thumbnailSize: thumbnailSide
                             )
                                 .background(
                                     GeometryReader { proxy in
@@ -247,6 +259,34 @@ private enum FileGridSelectionLayout {
     static let coordinateSpace = "fileGridSelectionCoordinateSpace"
 }
 
+enum FileGridThumbnailSettings {
+    static let defaultsKey = "fileGrid.thumbnailSize"
+    static let defaultSize = 96.0
+    static let range = 64.0...180.0
+
+    static func clamped(_ value: Double) -> CGFloat {
+        CGFloat(clampedValue(value))
+    }
+
+    static func clampedValue(_ value: Double) -> Double {
+        min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    static func normalized(_ value: Double) -> CGFloat {
+        CGFloat((clampedValue(value) - range.lowerBound) / (range.upperBound - range.lowerBound))
+    }
+
+    static func value(forNormalized progress: CGFloat) -> Double {
+        let clampedProgress = min(max(Double(progress), 0), 1)
+        return range.lowerBound + (range.upperBound - range.lowerBound) * clampedProgress
+    }
+
+    static func restoredValue(defaults: UserDefaults = .standard) -> Double {
+        let stored = defaults.object(forKey: defaultsKey) as? Double ?? defaultSize
+        return clampedValue(stored)
+    }
+}
+
 enum FileGridKeyboardSelection {
     static func move<ID: Hashable>(
         ids: [ID],
@@ -321,7 +361,12 @@ private struct GridCell: View {
     let item: FileItem
     let isSelected: Bool
     let compareMarker: FolderCompareMarker?
+    let thumbnailSize: CGFloat
     @State private var thumbnail: NSImage?
+
+    private var fileIconSize: CGFloat {
+        min(max(thumbnailSize * 0.5, 34), 64)
+    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -334,10 +379,10 @@ private struct GridCell: View {
                     Image(nsImage: item.icon)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 48, height: 48)
+                        .frame(width: fileIconSize, height: fileIconSize)
                 }
             }
-            .frame(width: 96, height: 96)
+            .frame(width: thumbnailSize, height: thumbnailSize)
             Text(item.name)
                 .font(.caption)
                 .lineLimit(2)
@@ -350,7 +395,8 @@ private struct GridCell: View {
                     .labelStyle(.iconOnly)
             }
         }
-        .padding(6)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4.5)
         .frame(maxWidth: .infinity)
         .background(
             isSelected
@@ -363,9 +409,13 @@ private struct GridCell: View {
                 .stroke(compareMarker?.color.opacity(0.35) ?? Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
+        .clickableCursor()
         .task(id: "\(item.id)|\(item.modified.timeIntervalSince1970)") {
             thumbnail = nil
-            thumbnail = await ThumbnailLoader.thumbnail(for: item, pixelSize: 96)
+            thumbnail = await ThumbnailLoader.thumbnail(
+                for: item,
+                pixelSize: CGFloat(FileGridThumbnailSettings.range.upperBound)
+            )
         }
     }
 }

@@ -188,7 +188,8 @@ struct ContentView: View {
 
     private func usesRightDockedPanel(_ panel: DockedToolPanel?) -> Bool {
         switch panel {
-        case .notes, .snippets, .screenshot, .recording, .voiceRecorder, .diskSpace:
+        case .notes, .snippets, .dropStack, .workflows, .advancedSearch, .archiveBrowser,
+                .screenshot, .recording, .voiceRecorder, .diskSpace:
             true
         default:
             false
@@ -202,6 +203,14 @@ struct ContentView: View {
             NotesPanelView()
         case .snippets:
             SnippetPanelView()
+        case .dropStack:
+            DropStackPanelView()
+        case .workflows:
+            SavedWorkflowsPanelView()
+        case .advancedSearch:
+            AdvancedSearchPanelView()
+        case .archiveBrowser:
+            ArchiveBrowserPanelView()
         case .screenshot, .recording:
             CapturePanelView()
         case .voiceRecorder:
@@ -283,10 +292,7 @@ struct ContentView: View {
                             .frame(width: rightWidth)
                         }
                     }
-                    if !appState.fileActivities.isEmpty {
-                        FileActivityPanel()
-                            .padding(12)
-                    }
+                    FileActivityOverlay()
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .onChange(of: appState.activeToolPanel) { _, panel in
@@ -310,7 +316,43 @@ struct ContentView: View {
 
     @ViewBuilder
     private var utilityModalLayer: some View {
-        if let prompt = appState.capturePermissionPrompt {
+        if appState.showAboutWorkbench {
+            DismissibleToolModal {
+                appState.showAboutWorkbench = false
+            } content: {
+                AboutWorkbenchView()
+            }
+        } else if appState.showUpdatePanel {
+            DismissibleToolModal {
+                appState.showUpdatePanel = false
+            } content: {
+                UpdateWorkbenchView()
+            }
+        } else if appState.showKeyboardShortcuts {
+            DismissibleToolModal {
+                appState.showKeyboardShortcuts = false
+            } content: {
+                KeyboardShortcutsView()
+            }
+        } else if appState.showActivityHistory {
+            DismissibleToolModal {
+                appState.showActivityHistory = false
+            } content: {
+                ActivityHistoryView()
+            }
+        } else if appState.showReleaseChecklist {
+            DismissibleToolModal {
+                appState.showReleaseChecklist = false
+            } content: {
+                ReleaseReadinessChecklistView()
+            }
+        } else if appState.showCommandPalette {
+            DismissibleToolModal {
+                appState.hideCommandPalette()
+            } content: {
+                CommandPaletteView()
+            }
+        } else if let prompt = appState.capturePermissionPrompt {
             DismissibleToolModal {
                 appState.dismissCapturePermissionPrompt()
             } content: {
@@ -378,6 +420,32 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
+            Button {
+                appState.openCommandPalette()
+            } label: {
+                Label("Commands", systemImage: "command")
+            }
+            .help("Command Palette (⌘K)")
+            .clickableCursor()
+
+            Button {
+                appState.activePane.goBack()
+            } label: {
+                Label("Back", systemImage: "chevron.left")
+            }
+            .help("Back (⌘[)")
+            .disabled(!appState.activePane.canGoBack)
+            .clickableCursor(appState.activePane.canGoBack)
+
+            Button {
+                appState.activePane.goForward()
+            } label: {
+                Label("Forward", systemImage: "chevron.right")
+            }
+            .help("Forward (⌘])")
+            .disabled(!appState.activePane.canGoForward)
+            .clickableCursor(appState.activePane.canGoForward)
+
             Picker("View", selection: Binding(
                 get: { appState.activePane.viewMode },
                 set: { appState.activePane.viewMode = $0 }
@@ -405,62 +473,33 @@ struct ContentView: View {
             } label: {
                 Label("Copy to Other Pane", systemImage: "doc.on.doc")
             }
-            .help("Copy selection to the other pane (F5)")
-            .disabled(!appState.isDualPane)
-            .clickableCursor(appState.isDualPane)
+            .help(appState.selectionTransferUnavailableReason ?? "Copy selection to the other pane (F5)")
+            .disabled(!appState.canTransferSelectionToOtherPane)
+            .clickableCursor(appState.canTransferSelectionToOtherPane)
 
             Button {
                 appState.transferSelection(move: true)
             } label: {
                 Label("Move to Other Pane", systemImage: "arrow.right.doc.on.clipboard")
             }
-            .help("Move selection to the other pane (F6)")
-            .disabled(!appState.isDualPane)
-            .clickableCursor(appState.isDualPane)
+            .help(appState.selectionTransferUnavailableReason ?? "Move selection to the other pane (F6)")
+            .disabled(!appState.canTransferSelectionToOtherPane)
+            .clickableCursor(appState.canTransferSelectionToOtherPane)
 
             Button {
                 appState.shareSelectionViaAirDrop()
             } label: {
                 Label("AirDrop", systemImage: "square.and.arrow.up")
             }
-            .help("Share selected files with AirDrop")
-            .disabled(appState.activePane.selection.isEmpty)
-            .clickableCursor(!appState.activePane.selection.isEmpty)
+            .help(appState.airDropUnavailableReason ?? "Share selected files with AirDrop")
+            .disabled(!appState.canShareSelectionViaAirDrop)
+            .clickableCursor(appState.canShareSelectionViaAirDrop)
 
             Spacer()
 
-            Button {
-                appState.showNotes()
-            } label: {
-                Label("Notes", systemImage: "note.text")
-            }
-            .help("Notes (⌥⌘N)")
-            .clickableCursor()
-
-            Button {
-                appState.showClipboardHistory()
-            } label: {
-                Label("Clipboard", systemImage: "clipboard")
-            }
-            .help("Clipboard history (⌥⌘V)")
-            .clickableCursor()
-
-            Button {
-                appState.beginScreenshot()
-            } label: {
-                Label("Capture", systemImage: "record.circle")
-            }
-            .help("Capture screenshot or recording (⌥⌘5)")
-            .clickableCursor()
-
-            Button {
-                appState.beginAnnotateImage()
-            } label: {
-                Label("Annotate", systemImage: "pencil")
-            }
-            .help("Annotate selected image (⌥⌘A)")
-            .disabled(!appState.activePane.selectedItems.contains(where: \.isImage))
-            .clickableCursor(appState.activePane.selectedItems.contains(where: \.isImage))
+            toolbarToolsMenu
+                .help("Open Workbench tools")
+                .clickableCursor()
 
             Button {
                 appState.showHidden.toggle()
@@ -471,16 +510,6 @@ struct ContentView: View {
                 )
             }
             .help("Show or hide hidden files (⇧⌘.)")
-            .clickableCursor()
-
-            Toggle(isOn: Binding(
-                get: { appState.autoCalculateFolderSizes },
-                set: { appState.autoCalculateFolderSizes = $0 }
-            )) {
-                Label("Folder Sizes", systemImage: "sum")
-            }
-            .toggleStyle(.button)
-            .help("Auto calculate folder sizes")
             .clickableCursor()
 
             Button {
@@ -505,6 +534,105 @@ struct ContentView: View {
             }
             .help("Toggle media preview pane (⌥⌘P)")
             .clickableCursor()
+        }
+    }
+
+    private var toolbarToolsMenu: some View {
+        Menu {
+            Section("Panels") {
+                Button {
+                    appState.showNotes()
+                } label: {
+                    Label("Notes", systemImage: "note.text")
+                }
+
+                Button {
+                    appState.showClipboardHistory()
+                } label: {
+                    Label("Clipboard History", systemImage: "clipboard")
+                }
+
+                Button {
+                    appState.showSnippets()
+                } label: {
+                    Label("Snippets", systemImage: "text.quote")
+                }
+
+                Button {
+                    appState.showDropStack()
+                } label: {
+                    Label("Drop Stack", systemImage: "tray.full")
+                }
+
+                Button {
+                    appState.showSavedWorkflows()
+                } label: {
+                    Label("Workflows", systemImage: "slider.horizontal.3")
+                }
+
+                Button {
+                    appState.showAdvancedSearch()
+                } label: {
+                    Label("Advanced Search", systemImage: "magnifyingglass")
+                }
+
+                Button {
+                    appState.showArchiveBrowser()
+                } label: {
+                    Label("Archive Browser", systemImage: "archivebox")
+                }
+            }
+
+            Section("Actions") {
+                Button {
+                    appState.beginScreenshot()
+                } label: {
+                    Label("Capture Screenshot or Recording", systemImage: "record.circle")
+                }
+
+                Button {
+                    appState.beginAnnotateImage()
+                } label: {
+                    Label("Annotate Image", systemImage: "pencil")
+                }
+                .help(appState.annotateUnavailableReason ?? "Annotate selected image")
+                .disabled(!appState.canAnnotateSelection)
+
+                Button {
+                    appState.showOrganizeTool()
+                } label: {
+                    Label("Organize Folder", systemImage: "folder.badge.gearshape")
+                }
+
+                Button {
+                    appState.showCleanupTool()
+                } label: {
+                    Label("Clean Up", systemImage: "sparkles")
+                }
+
+                Button {
+                    appState.showDiskSpaceAnalyzer()
+                } label: {
+                    Label("Disk Space", systemImage: "chart.pie")
+                }
+
+                Button {
+                    appState.showVoiceRecorderTool()
+                } label: {
+                    Label("Voice Recorder", systemImage: "mic")
+                }
+            }
+
+            Section("View") {
+                Toggle(isOn: Binding(
+                    get: { appState.autoCalculateFolderSizes },
+                    set: { appState.autoCalculateFolderSizes = $0 }
+                )) {
+                    Label("Auto Calculate Folder Sizes", systemImage: "sum")
+                }
+            }
+        } label: {
+            Label("Tools", systemImage: "wrench.and.screwdriver")
         }
     }
 
@@ -591,7 +719,6 @@ private struct CapturePermissionPromptView: View {
                 Button("Open Settings") {
                     appState.openCapturePermissionSettings(requirement)
                 }
-                .controlSize(.small)
             } else {
                 Label("OK", systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.semibold))
@@ -638,8 +765,8 @@ private struct DismissibleToolModal<Content: View>: View {
 
                 content()
                     .frame(
-                        maxWidth: max(geo.size.width - 48, 320),
-                        maxHeight: max(geo.size.height - 48, 240)
+                        maxWidth: max(geo.size.width - 32, 320),
+                        maxHeight: max(geo.size.height - 32, 240)
                     )
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                     .clipShape(RoundedRectangle(cornerRadius: 16))
@@ -674,14 +801,14 @@ private struct DismissibleToolModal<Content: View>: View {
     private var closeButton: some View {
         Button(action: onDismiss) {
             Image(systemName: "xmark")
-                .font(.system(size: 11, weight: .bold))
+                .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
+                .frame(width: 30, height: 30)
                 .background(.regularMaterial, in: Circle())
                 .overlay(Circle().stroke(Color.secondary.opacity(0.2), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .padding(12)
+        .padding(10)
         .help("Close (Esc)")
     }
 }

@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-enum StarRatingFilter: String, CaseIterable, Identifiable {
+enum StarRatingFilter: String, CaseIterable, Codable, Identifiable, Sendable {
     case all = "All Ratings"
     case unrated = "Unrated"
     case onePlus = "1 Star+"

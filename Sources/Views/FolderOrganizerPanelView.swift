@@ -32,29 +32,21 @@ struct FolderOrganizerPanelView: View {
             Spacer()
 
             if store.isPlanning {
-                Button { store.cancelPlanning() } label: {
-                    Image(systemName: "stop.circle")
+                PanelIconButton(systemName: "stop.circle", help: "Stop planning") {
+                    store.cancelPlanning()
                 }
-                .buttonStyle(.plain)
-                .help("Stop planning")
             } else {
-                Button {
+                PanelIconButton(systemName: "arrow.clockwise", help: "Plan again") {
                     store.plan(
                         activeFolder: appState.activePane.currentURL,
                         includeHidden: appState.showHidden
                     )
-                } label: {
-                    Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.plain)
-                .help("Plan again")
             }
 
-            Button { appState.hideOrganizeTool() } label: {
-                Image(systemName: "xmark")
+            PanelIconButton(systemName: "xmark", help: "Hide Organize") {
+                appState.hideOrganizeTool()
             }
-            .buttonStyle(.plain)
-            .help("Hide Organize")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -111,7 +103,7 @@ struct FolderOrganizerPanelView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            .controlSize(.regular)
             .disabled(store.isPlanning || store.isApplying)
         }
         .padding(.horizontal, 12)
@@ -146,6 +138,23 @@ struct FolderOrganizerPanelView: View {
     }
 
     private var footer: some View {
+        ViewThatFits(in: .horizontal) {
+            footerContent
+            VStack(alignment: .leading, spacing: 8) {
+                Text(footerSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    footerButtons
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private var footerContent: some View {
         HStack(spacing: 8) {
             Text(footerSummary)
                 .font(.caption)
@@ -154,6 +163,12 @@ struct FolderOrganizerPanelView: View {
 
             Spacer()
 
+            footerButtons
+        }
+    }
+
+    private var footerButtons: some View {
+        Group {
             Button("Reveal") {
                 revealAll()
             }
@@ -166,8 +181,6 @@ struct FolderOrganizerPanelView: View {
             }
             .disabled(store.allPlanItems.isEmpty || store.isApplying)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
     }
 
     private var footerSummary: String {

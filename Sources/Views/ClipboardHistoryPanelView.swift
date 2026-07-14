@@ -35,22 +35,14 @@ struct ClipboardHistoryColumnView: View {
 
             Spacer()
 
-            Button {
+            PanelIconButton(systemName: "plus.square.on.square", help: "Save current clipboard") {
                 store.captureCurrentPasteboard()
                 store.ensureSelection()
-            } label: {
-                Image(systemName: "plus.square.on.square")
             }
-            .buttonStyle(.plain)
-            .help("Save current clipboard")
 
-            Button {
+            PanelIconButton(systemName: "xmark", help: "Hide clipboard history") {
                 appState.hideClipboardHistory()
-            } label: {
-                Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
-            .help("Hide clipboard history")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -187,6 +179,8 @@ private struct ClipboardHistorySelectedEntryView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Copy item to clipboard")
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
 
                 Button(role: .destructive) {
                     store.deleteEntry(entry.id)
@@ -195,6 +189,8 @@ private struct ClipboardHistorySelectedEntryView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Delete item")
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
             }
 
             preview

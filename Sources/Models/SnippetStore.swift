@@ -202,6 +202,10 @@ final class SnippetStore {
         selectedSnippetID = visible.first?.id ?? snippets.first?.id
     }
 
+    func reloadFromDisk() {
+        load()
+    }
+
     func snippet(for id: SnippetItem.ID?) -> SnippetItem? {
         guard let id else { return nil }
         return snippets.first { $0.id == id }

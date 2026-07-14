@@ -99,6 +99,7 @@ struct ImageAnnotationEditorView: View {
                     .disabled(undoStack.isEmpty)
                     .keyboardShortcut("z", modifiers: .command)
                     .help("Undo")
+                    .frame(width: 30, height: 30)
 
                     Button {
                         redoEdit()
@@ -108,6 +109,7 @@ struct ImageAnnotationEditorView: View {
                     .disabled(redoStack.isEmpty)
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                     .help("Redo")
+                    .frame(width: 30, height: 30)
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -123,6 +125,7 @@ struct ImageAnnotationEditorView: View {
                     .disabled(selectedMarkIndex == nil)
                     .keyboardShortcut("d", modifiers: .command)
                     .help("Duplicate selected annotation")
+                    .frame(width: 30, height: 30)
 
                     Button {
                         sendSelectedBackward()
@@ -131,6 +134,7 @@ struct ImageAnnotationEditorView: View {
                     }
                     .disabled(!canSendSelectedBackward)
                     .help("Send selected annotation backward")
+                    .frame(width: 30, height: 30)
 
                     Button {
                         bringSelectedForward()
@@ -139,6 +143,7 @@ struct ImageAnnotationEditorView: View {
                     }
                     .disabled(!canBringSelectedForward)
                     .help("Bring selected annotation forward")
+                    .frame(width: 30, height: 30)
 
                     Button {
                         deleteSelectedMark()
@@ -148,6 +153,7 @@ struct ImageAnnotationEditorView: View {
                     .disabled(selectedMarkIndex == nil)
                     .keyboardShortcut(.delete, modifiers: [])
                     .help("Delete selected annotation")
+                    .frame(width: 30, height: 30)
 
                     Button {
                         clearMarks()
@@ -156,6 +162,7 @@ struct ImageAnnotationEditorView: View {
                     }
                     .disabled(marks.isEmpty)
                     .help("Clear annotations")
+                    .frame(width: 30, height: 30)
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -457,7 +464,7 @@ private struct ColorSwatchButton: View {
         Button(action: action) {
             Circle()
                 .fill(color.swiftUIColor)
-                .frame(width: 18, height: 18)
+                .frame(width: 20, height: 20)
                 .overlay {
                     Circle()
                         .stroke(
@@ -474,6 +481,8 @@ private struct ColorSwatchButton: View {
                 }
         }
         .buttonStyle(.plain)
+        .frame(width: 30, height: 30)
+        .contentShape(Rectangle())
         .help(color.name)
     }
 }

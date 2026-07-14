@@ -46,6 +46,8 @@ struct FileActivity: Identifiable, Equatable {
     var conflictPolicy: FileConflictPolicy
     var supportsConflictPolicy: Bool
     var progressDetail: String?
+    var undoAction: FileUndoAction?
+    var revealURLs: [URL]
 
     var progress: Double {
         guard bytesTotal > 0 else { return 0 }
@@ -91,4 +93,36 @@ enum FileUndoAction: Equatable {
             return title
         }
     }
+}
+
+struct FileActivityResult: Equatable {
+    var undoAction: FileUndoAction?
+    var revealURLs: [URL]
+    var completionDetail: String?
+
+    static var none: FileActivityResult {
+        FileActivityResult(undoAction: nil, revealURLs: [], completionDetail: nil)
+    }
+
+    static func undo(_ action: FileUndoAction) -> FileActivityResult {
+        FileActivityResult(undoAction: action, revealURLs: [], completionDetail: nil)
+    }
+
+    static func reveal(_ urls: [URL], completionDetail: String? = nil) -> FileActivityResult {
+        FileActivityResult(undoAction: nil, revealURLs: urls, completionDetail: completionDetail)
+    }
+
+    static func undo(
+        _ action: FileUndoAction,
+        reveal urls: [URL],
+        completionDetail: String? = nil
+    ) -> FileActivityResult {
+        FileActivityResult(undoAction: action, revealURLs: urls, completionDetail: completionDetail)
+    }
+}
+
+enum ActivityPopupSettings {
+    static let autoHideDelayKey = "activityPopupAutoHideDelay"
+    static let defaultAutoHideDelay = 3.0
+    static let neverAutoHideDelay = 0.0
 }

@@ -51,6 +51,10 @@ enum ZipArchiveListingReader {
         }.value
     }
 
+    static func listingSync(for url: URL) throws -> ZipArchiveListing {
+        try readListing(for: url)
+    }
+
     private static func readListing(for url: URL) throws -> ZipArchiveListing {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }

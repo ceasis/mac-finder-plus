@@ -72,6 +72,8 @@ struct PathBarView: View {
             .help("Enclosing Folder (⌘↑)")
             .clickableCursor(model.canGoUp)
         }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 
     private var pathControls: some View {
@@ -149,6 +151,9 @@ struct PathBarView: View {
 
     @ViewBuilder
     private var resultBadges: some View {
+        if let title = model.advancedSearchResultsTitle {
+            resultBadge(title, systemImage: "magnifyingglass", clear: model.clearAdvancedSearchResults)
+        }
         if let title = model.duplicateResultsTitle {
             resultBadge(title, systemImage: "doc.on.doc", clear: model.clearDuplicateResults)
         }
@@ -219,6 +224,8 @@ struct PathBarView: View {
                         ? "line.3.horizontal.decrease.circle.fill"
                         : "line.3.horizontal.decrease.circle")
                         .foregroundStyle(filtersActive ? Color.accentColor : Color.secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
@@ -243,14 +250,16 @@ struct PathBarView: View {
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help("Clear filter")
                     .clickableCursor()
                 }
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
             .frame(minWidth: 140, idealWidth: 195, maxWidth: 195)
         }
@@ -333,7 +342,7 @@ struct PathBarView: View {
                         .frame(width: 13, height: 1)
                 }
             }
-            .frame(width: quickDateFilterWidth(filter), height: 22)
+            .frame(width: quickDateFilterWidth(filter), height: 24)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -389,7 +398,7 @@ struct PathBarView: View {
                 .font(.system(size: 9, weight: .semibold))
                 .lineLimit(1)
                 .allowsTightening(true)
-                .frame(width: quickSizeFilterWidth(filter), height: 22)
+                .frame(width: quickSizeFilterWidth(filter), height: 24)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -421,7 +430,7 @@ struct PathBarView: View {
                 .font(.system(size: 9, weight: .semibold))
                 .lineLimit(1)
                 .allowsTightening(true)
-                .frame(width: filter == .files ? 38 : 50, height: 22)
+                .frame(width: filter == .files ? 38 : 50, height: 24)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

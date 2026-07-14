@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Vision
 
 /// All mutating file-system operations. Every function is collision-safe:
 /// destinations that already exist get " 2", " 3", … appended.
@@ -102,10 +103,33 @@ enum FileOperations {
         return records
     }
 
-    static func duplicate(_ urls: [URL]) async throws {
+    @discardableResult
+    static func duplicate(_ urls: [URL]) async throws -> [URL] {
+        var destinations: [URL] = []
         for url in urls {
-            try FileManager.default.copyItem(at: url, to: uniqueDestination(for: url))
+            let destination = uniqueDestination(for: url)
+            try FileManager.default.copyItem(at: url, to: destination)
+            destinations.append(destination)
         }
+        return destinations
+    }
+
+    @discardableResult
+    static func compressToZip(_ urls: [URL]) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            let sources = urls.map(\.standardizedFileURL)
+            guard !sources.isEmpty else { throw FileOperationError.emptyCompressionSelection }
+
+            let parent = sources[0].deletingLastPathComponent().standardizedFileURL
+            guard sources.allSatisfy({ $0.deletingLastPathComponent().standardizedFileURL == parent }) else {
+                throw FileOperationError.compressionRequiresSharedParent
+            }
+
+            let archiveName = sources.count == 1 ? "\(sources[0].lastPathComponent).zip" : "Archive.zip"
+            let destination = uniqueDestination(for: parent.appendingPathComponent(archiveName))
+            try runZipCompression(sources: sources, parent: parent, destination: destination)
+            return destination
+        }.value
     }
 
     @discardableResult
@@ -127,6 +151,32 @@ enum FileOperations {
             }
             throw error
         }
+    }
+
+    @discardableResult
+    static func moveToParentFolder(_ urls: [URL]) async throws -> [FileMoveRecord] {
+        try await Task.detached(priority: .userInitiated) {
+            let sources = urls.map(\.standardizedFileURL)
+            guard !sources.isEmpty else { throw FileOperationError.emptySelection }
+
+            var records: [FileMoveRecord] = []
+            for source in sources {
+                try Task.checkCancellation()
+                let currentFolder = source.deletingLastPathComponent().standardizedFileURL
+                let parentFolder = currentFolder.deletingLastPathComponent().standardizedFileURL
+                guard parentFolder.path != currentFolder.path else { continue }
+
+                let proposedDestination = parentFolder.appendingPathComponent(source.lastPathComponent)
+                guard proposedDestination.standardizedFileURL != source.standardizedFileURL else { continue }
+
+                let destination = uniqueDestination(for: proposedDestination)
+                try FileManager.default.moveItem(at: source, to: destination)
+                records.append(FileMoveRecord(source: source, destination: destination))
+            }
+
+            guard !records.isEmpty else { throw FileOperationError.parentFolderUnavailable }
+            return records
+        }.value
     }
 
     @discardableResult
@@ -448,6 +498,40 @@ enum FileOperations {
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
+    private static func runZipCompression(sources: [URL], parent: URL, destination: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        process.currentDirectoryURL = parent
+        process.arguments = ["-qry", destination.path, "--"] + sources.map(\.lastPathComponent)
+
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let output = String(
+                data: outputPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            let error = String(
+                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
+                encoding: .utf8
+            ) ?? ""
+            let detail = [output, error]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            throw FileOperationError.compressionFailed(
+                selectionName: compressionDisplayName(for: sources),
+                detail: detail
+            )
+        }
+    }
+
     private static func runZipExtraction(archive: URL, destination: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
@@ -516,6 +600,13 @@ enum FileOperations {
                 detail: detail
             )
         }
+    }
+
+    private static func compressionDisplayName(for sources: [URL]) -> String {
+        if sources.count == 1 {
+            return sources[0].lastPathComponent
+        }
+        return "\(sources.count) items"
     }
 }
 
@@ -818,6 +909,117 @@ enum ApplicationBundleTools {
     }
 }
 
+struct ImageTextExtraction: Equatable {
+    let sourceURL: URL
+    let text: String
+}
+
+struct ImageTextExtractionFileResult: Equatable {
+    let clipboardText: String
+    let outputURLs: [URL]
+}
+
+enum ImageTextExtractor {
+    static func extractText(from items: [FileItem]) async throws -> String {
+        let results = try await extractTextResults(from: items)
+        return combinedText(from: results)
+    }
+
+    static func extractTextFiles(from items: [FileItem]) async throws -> ImageTextExtractionFileResult {
+        let results = try await extractTextResults(from: items)
+        let outputURLs = try writeTextFiles(for: results)
+        return ImageTextExtractionFileResult(
+            clipboardText: combinedText(from: results),
+            outputURLs: outputURLs
+        )
+    }
+
+    static func textOutputURL(for imageURL: URL) -> URL {
+        let directory = imageURL.deletingLastPathComponent()
+        let baseName = imageURL.deletingPathExtension().lastPathComponent
+        let textName = baseName.isEmpty ? "\(imageURL.lastPathComponent).txt" : "\(baseName).txt"
+        return FileOperations.uniqueDestination(for: directory.appendingPathComponent(textName))
+    }
+
+    private static func extractTextResults(from items: [FileItem]) async throws -> [ImageTextExtraction] {
+        let imageURLs = items.filter(\.isImage).map(\.url)
+        guard !imageURLs.isEmpty else {
+            throw ImageTextExtractorError.noImages
+        }
+
+        var results: [ImageTextExtraction] = []
+        for url in imageURLs {
+            try Task.checkCancellation()
+            let text = try recognizeText(in: url)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                results.append(ImageTextExtraction(sourceURL: url, text: trimmed))
+            }
+        }
+
+        guard !results.isEmpty else {
+            throw ImageTextExtractorError.noText
+        }
+
+        return results
+    }
+
+    private static func writeTextFiles(for results: [ImageTextExtraction]) throws -> [URL] {
+        var outputURLs: [URL] = []
+        do {
+            for result in results {
+                try Task.checkCancellation()
+                let outputURL = textOutputURL(for: result.sourceURL)
+                try result.text.write(to: outputURL, atomically: true, encoding: .utf8)
+                outputURLs.append(outputURL)
+            }
+        } catch {
+            for outputURL in outputURLs {
+                try? FileManager.default.removeItem(at: outputURL)
+            }
+            throw error
+        }
+        return outputURLs
+    }
+
+    private static func combinedText(from results: [ImageTextExtraction]) -> String {
+        if results.count == 1 {
+            return results[0].text
+        }
+
+        return results
+            .map { "\($0.sourceURL.lastPathComponent):\n\($0.text)" }
+            .joined(separator: "\n\n")
+    }
+
+    private static func recognizeText(in url: URL) throws -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+
+        let handler = VNImageRequestHandler(url: url, options: [:])
+        try handler.perform([request])
+
+        return (request.results ?? [])
+            .compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: "\n")
+    }
+}
+
+private enum ImageTextExtractorError: LocalizedError {
+    case noImages
+    case noText
+
+    var errorDescription: String? {
+        switch self {
+        case .noImages:
+            return "Select one or more images to extract text."
+        case .noText:
+            return "No text was found in the selected image."
+        }
+    }
+}
+
 private enum TextFileToolsError: LocalizedError {
     case fileTooLarge(String, size: Int)
     case unreadableText(String)
@@ -856,11 +1058,27 @@ private enum SpreadsheetToolsError: LocalizedError {
 }
 
 private enum FileOperationError: LocalizedError {
+    case compressionFailed(selectionName: String, detail: String)
+    case compressionRequiresSharedParent
+    case emptyCompressionSelection
+    case emptySelection
     case extractionFailed(archiveName: String, detail: String)
     case invalidArchiveEntry(String)
+    case parentFolderUnavailable
 
     var errorDescription: String? {
         switch self {
+        case let .compressionFailed(selectionName, detail):
+            if detail.isEmpty {
+                return "Couldn’t compress “\(selectionName)”."
+            }
+            return "Couldn’t compress “\(selectionName)”: \(detail)"
+        case .compressionRequiresSharedParent:
+            return "Select folders from the same location to compress them into one ZIP archive."
+        case .emptyCompressionSelection:
+            return "Select a folder to compress."
+        case .emptySelection:
+            return "Select one or more files or folders first."
         case let .extractionFailed(archiveName, detail):
             if detail.isEmpty {
                 return "Couldn’t extract “\(archiveName)”."
@@ -868,6 +1086,8 @@ private enum FileOperationError: LocalizedError {
             return "Couldn’t extract “\(archiveName)”: \(detail)"
         case let .invalidArchiveEntry(path):
             return "Couldn’t extract unsafe ZIP entry “\(path)”."
+        case .parentFolderUnavailable:
+            return "The selected item can’t be moved to a parent folder."
         }
     }
 }

@@ -23,6 +23,10 @@ private enum SidebarSectionID: String, CaseIterable, Identifiable {
 private enum SidebarToolID: String, CaseIterable, Identifiable {
     case notes
     case snippets
+    case dropStack
+    case workflows
+    case advancedSearch
+    case archiveBrowser
     case cleanup
     case diskSpace
     case organize
@@ -37,6 +41,10 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         switch self {
         case .notes: "Notes"
         case .snippets: "Snippets"
+        case .dropStack: "Drop Stack"
+        case .workflows: "Workflows"
+        case .advancedSearch: "Advanced Search"
+        case .archiveBrowser: "Archive Browser"
         case .cleanup: "Clean Up"
         case .diskSpace: "Disk Space"
         case .organize: "Organize"
@@ -51,6 +59,10 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         switch self {
         case .notes: "note.text"
         case .snippets: "text.quote"
+        case .dropStack: "tray.full"
+        case .workflows: "slider.horizontal.3"
+        case .advancedSearch: "magnifyingglass"
+        case .archiveBrowser: "archivebox"
         case .cleanup: "sparkles"
         case .diskSpace: "chart.pie"
         case .organize: "folder.badge.gearshape"
@@ -65,6 +77,10 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         switch self {
         case .notes: .notes
         case .snippets: .snippets
+        case .dropStack: .dropStack
+        case .workflows: .workflows
+        case .advancedSearch: .advancedSearch
+        case .archiveBrowser: .archiveBrowser
         case .cleanup: .cleanup
         case .diskSpace: .diskSpace
         case .organize: .organize
@@ -79,6 +95,10 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         switch self {
         case .notes: "Open notes"
         case .snippets: "Save reusable text, images, and files"
+        case .dropStack: "Collect files from several folders before moving, copying, or processing them"
+        case .workflows: "Run saved multi-step file recipes"
+        case .advancedSearch: "Build regex, content, tag, archive, and metadata searches"
+        case .archiveBrowser: "Browse archive contents like folders"
         case .cleanup: "Find large, old, and unused files"
         case .diskSpace: "Analyze disk space by type, date, size, and apps"
         case .organize: "Sort files in a folder into subfolders"
@@ -357,6 +377,11 @@ struct SidebarView: View {
                         }
                     ))
                     .tag(device.url)
+                    .contextMenu {
+                        Button("Unmount Device") {
+                            appState.unmountDevice(at: device.url)
+                        }
+                    }
                 }
             }
 
@@ -698,6 +723,14 @@ struct SidebarView: View {
             appState.showNotes()
         case .snippets:
             appState.showSnippets()
+        case .dropStack:
+            appState.showDropStack()
+        case .workflows:
+            appState.showSavedWorkflows()
+        case .advancedSearch:
+            appState.showAdvancedSearch()
+        case .archiveBrowser:
+            appState.showArchiveBrowser()
         case .voiceRecorder:
             appState.showVoiceRecorderTool()
         case .screenshot:
@@ -948,7 +981,7 @@ private final class SidebarOrderStore {
         allCases: [ID]
     ) -> [ID] where ID: RawRepresentable, ID.RawValue == String, ID: Hashable {
         let rawValues = UserDefaults.standard.stringArray(forKey: key) ?? []
-        let saved = rawValues.compactMap(ID.init(rawValue:))
+        let saved = rawValues.compactMap { ID(rawValue: $0) }
         let missing = allCases.filter { !saved.contains($0) }
         return saved + missing
     }

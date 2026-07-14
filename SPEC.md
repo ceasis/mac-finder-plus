@@ -31,24 +31,27 @@ workflow: preview → filter by type → resize/move — without opening another
 
 ## 2. Business model
 
-- **Paid upfront on the Mac App Store: $14.99** (launch sale $9.99). No subscription for v1 —
-  paid-upfront converts better in this category and avoids receipt-validation complexity.
-- v2 may add a "Pro" IAP tier (cloud drives, FTP/SFTP) if the free-feature baseline grows.
-- Also plan a notarized direct-download build later (Paddle/Gumroad) — same codebase, sandbox kept.
+- **Paid upfront on Gumroad: $29.99** (launch sale $19.99). No subscription for v1 —
+  paid-upfront converts better in this category and keeps distribution simple.
+- One purchase covers household use on up to 5 Macs for personal/family use.
+- Optional Gumroad supporter tier: $49.99 for customers who want to back development.
+- v2 may add a "Pro" tier (cloud drives, FTP/SFTP) if the free-feature baseline grows.
+- The first public build is a notarized direct-download app with bundle id
+  `com.qnsub.workbench.app`.
 
-## 3. The App Store constraint (critical)
+## 3. Direct-download permissions model
 
-Mac App Store apps **must be sandboxed**. A sandboxed file manager cannot freely read the disk;
-it gets access only to folders the user grants via an open panel, persisted with
-**security-scoped bookmarks**. This shapes the whole UX:
+Workbench ships outside the Mac App Store, so the production build is **not sandboxed**. This keeps
+core file-management behavior predictable and allows screenshot/screen-recording tools to call the
+system utilities they need. macOS privacy prompts still apply:
 
-- First-run onboarding asks the user to grant their Home folder (one click, standard panel).
-- Every granted folder is stored as an app-scoped bookmark and restored at launch.
-- Navigating anywhere not yet granted shows an inline "Grant Access" state instead of an error.
-- Entitlements: `app-sandbox`, `files.user-selected.read-write`, `files.bookmarks.app-scope`.
+- First-run onboarding explains file browsing, screen recording, and microphone permissions.
+- The sidebar can still persist favorite folders and user-chosen locations across launches.
+- Entitlements: hardened runtime plus `com.apple.security.device.audio-input`.
+- Public builds must be signed with Developer ID and notarized so Gatekeeper accepts them cleanly.
 
-This is exactly how ForkLift and Commander One ship on MAS, so it's a proven path — but it must be
-designed in from day one, not bolted on.
+The Mac App Store can be revisited later as a separate sandboxed edition if it becomes worth the
+extra permission and review constraints.
 
 ## 4. V1 scope
 
@@ -106,16 +109,15 @@ iCloud settings sync. All are v2 candidates.
 - **Testing (v1.x):** unit tests for `FileOperations` collision naming and `BookmarkStore`;
   UI smoke test for the grant flow.
 
-## 6. App Store submission checklist
+## 6. Gumroad release checklist
 
-1. Apple Developer Program membership; App ID + MAS provisioning.
-2. Final name/trademark check; app icon (all sizes), screenshots (light+dark), privacy policy URL.
-3. App privacy "nutrition label": no data collected (keep it that way in v1 — no analytics SDK).
-4. Category: Utilities. Price tier: $14.99.
-5. Hardened runtime + sandbox entitlements as above; test the *signed, sandboxed* build heavily —
-   sandbox bugs never appear in dev builds.
-6. Review-risk notes: don't use "Finder" in name/subtitle/keywords; describe Quick Look and trash
-   behavior in review notes; demo video of grant flow helps.
+1. Apple Developer Program membership and a **Developer ID Application** certificate.
+2. Notary credentials configured with `notarytool` keychain profile or app-specific password.
+3. Final app icon, screenshots, demo GIF/video, privacy policy, support email, and version notes.
+4. Category: Productivity or Utilities. Launch price: $19.99, standard price: $29.99.
+5. Build a Release zip with `script/package_gumroad_release.sh`, then verify signing,
+   notarization, install, launch, permissions, and core file operations on a clean Mac account.
+6. Avoid using "Finder" in public product naming, subtitle, or keywords.
 
 ## 7. Risks
 

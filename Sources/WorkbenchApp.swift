@@ -15,6 +15,7 @@ struct WorkbenchApp: App {
         }
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
+            WorkbenchAppInfoCommands(appState: appState)
             AppCommands(appState: appState)
         }
 

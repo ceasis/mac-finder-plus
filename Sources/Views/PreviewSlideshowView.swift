@@ -150,6 +150,8 @@ struct PreviewSlideshowView: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title2)
                         .symbolRenderingMode(.hierarchical)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white.opacity(0.82))
@@ -176,6 +178,8 @@ struct PreviewSlideshowView: View {
                     previous()
                 } label: {
                     Image(systemName: "backward.fill")
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .help("Previous slide")
 
@@ -183,7 +187,8 @@ struct PreviewSlideshowView: View {
                     isPlaying.toggle()
                 } label: {
                     Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .frame(width: 18)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .help(isPlaying ? "Pause" : "Play")
 
@@ -191,6 +196,8 @@ struct PreviewSlideshowView: View {
                     advance()
                 } label: {
                     Image(systemName: "forward.fill")
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .help("Next slide")
 
@@ -223,6 +230,8 @@ struct PreviewSlideshowView: View {
                     chooseMusic()
                 } label: {
                     Image(systemName: musicURL == nil ? "music.note" : "music.note.list")
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .help(musicURL == nil ? "Choose background music" : musicURL?.lastPathComponent ?? "Background music")
 
@@ -231,6 +240,8 @@ struct PreviewSlideshowView: View {
                         clearMusic()
                     } label: {
                         Image(systemName: "speaker.slash")
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
                     }
                     .help("Stop background music")
                 }
@@ -239,11 +250,13 @@ struct PreviewSlideshowView: View {
                     toggleFullScreen()
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
                 .help("Toggle fullscreen")
             }
             .buttonStyle(.borderless)
-            .controlSize(.small)
+            .controlSize(.regular)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))

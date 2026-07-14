@@ -1,6 +1,6 @@
 # Workbench
 
-A fast, keyboard-driven, dual-pane file manager for macOS, built to be sold on the Mac App Store.
+A fast, keyboard-driven, dual-pane file manager for macOS, built for direct download distribution.
 Product and technical spec: [SPEC.md](SPEC.md).
 
 ## Building
@@ -15,12 +15,20 @@ xcodebuild -project MacFinderPlus.xcodeproj -scheme Workbench -configuration Deb
 
 Or open `MacFinderPlus.xcodeproj` in Xcode and run the `Workbench` scheme.
 
-## Sandbox note
+## Gumroad release packaging
 
-The app is sandboxed (a Mac App Store requirement), so on first launch it can only see its own
-container. Use the sidebar's **Add Folder…** button or any pane's **Grant Access…** prompt to
-grant folders; grants persist across launches via security-scoped bookmarks. This is the intended
-App Store behavior, not a bug — see SPEC.md §3.
+Direct-download release material lives in `release/gumroad/`.
+
+```sh
+./script/package_gumroad_release.sh
+```
+
+Public Gumroad builds should be signed with a **Developer ID Application** certificate and
+notarized by Apple. For an internal test zip only, run:
+
+```sh
+./script/package_gumroad_release.sh --allow-adhoc
+```
 
 ## Layout
 

@@ -59,7 +59,7 @@ struct PreviewPane: View {
         return "\(previewItems.count) previews"
     }
     private var controlsScale: CGFloat {
-        CGFloat(min(max(previewControlsSizeScale, 0.8), 2.0))
+        CGFloat(min(max(previewControlsSizeScale, 0.8), 2.0)) * 1.1
     }
     private var previewControlSize: ControlSize {
         if previewControlsSizeScale < 0.9 { return .mini }
@@ -74,7 +74,10 @@ struct PreviewPane: View {
         .system(size: 11 * controlsScale)
     }
     private var previewControlSpacing: CGFloat {
-        max(4, 4 * controlsScale)
+        max(5, 5 * controlsScale)
+    }
+    private var previewButtonSide: CGFloat {
+        16 * controlsScale
     }
 
     var body: some View {
@@ -154,6 +157,7 @@ struct PreviewPane: View {
                     appState.beginAnnotateImage(imagePreviewIDs)
                 } label: {
                     Image(systemName: "pencil")
+                        .frame(width: previewButtonSide, height: previewButtonSide)
                 }
                 .help("Annotate Image (⌥⌘A)")
             }
@@ -183,6 +187,7 @@ struct PreviewPane: View {
                     appState.beginPreviewSlideshow()
                 } label: {
                     Image(systemName: "play.rectangle")
+                        .frame(width: previewButtonSide, height: previewButtonSide)
                 }
                 .help("Play preview slideshow")
             }
@@ -204,6 +209,7 @@ struct PreviewPane: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
+                    .frame(width: previewButtonSide, height: previewButtonSide)
             }
             .help("Close preview (⌥⌘P)")
         }
@@ -219,6 +225,7 @@ struct PreviewPane: View {
             requestMediaTransform(operation)
         } label: {
             image
+                .frame(width: previewButtonSide, height: previewButtonSide)
         }
         .disabled(isTransforming)
         .help(operation.title)

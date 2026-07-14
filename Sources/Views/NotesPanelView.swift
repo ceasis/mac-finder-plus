@@ -64,19 +64,13 @@ private struct NotesSidebar: View {
 
                 Spacer()
 
-                Button {
+                PanelIconButton(systemName: "square.and.pencil", help: store.selectedDay == nil ? "New note" : "New note on selected day") {
                     store.createNote(on: store.selectedDay)
-                } label: {
-                    Image(systemName: "square.and.pencil")
                 }
-                .buttonStyle(.plain)
-                .help(store.selectedDay == nil ? "New note" : "New note on selected day")
 
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
+                PanelIconButton(systemName: "xmark", help: "Hide Notes") {
+                    onClose()
                 }
-                .buttonStyle(.plain)
-                .help("Hide Notes")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -655,7 +649,7 @@ private struct NoteEditorView: View {
         .background(.bar)
         .sheet(isPresented: $isVideoRecorderPresented) {
             NoteVideoRecorderSheet(store: store, noteID: noteID)
-                .frame(width: 620, height: 520)
+                .frame(width: 600, height: 520)
         }
     }
 
@@ -1176,16 +1170,12 @@ private struct NoteVideoRecorderSheet: View {
                 Label("Video Journal", systemImage: "video")
                     .font(.headline)
                 Spacer()
-                Button {
+                PanelIconButton(systemName: "xmark", help: "Close") {
                     if recorder.isRecording {
                         recorder.cancelRecording()
                     }
                     dismiss()
-                } label: {
-                    Image(systemName: "xmark")
                 }
-                .buttonStyle(.plain)
-                .help("Close")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)

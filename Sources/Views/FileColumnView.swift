@@ -11,6 +11,7 @@ struct FileColumnView: View {
     @FocusState private var focused: Bool
     @State private var columnCount = 1
     @State private var anchorID: FileItem.ID?
+    @State private var rangeAnchorID: FileItem.ID?
     @State private var cellFrames: [FileItem.ID: CGRect] = [:]
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDragBase = Set<FileItem.ID>()
@@ -159,17 +160,18 @@ struct FileColumnView: View {
         guard !items.isEmpty else { return }
         appState.activePaneIndex = paneIndex
 
-        let currentIndex: Int
-        if let anchorID, let index = items.firstIndex(where: { $0.id == anchorID }) {
-            currentIndex = index
-        } else {
-            currentIndex = delta > 0 ? -1 : items.count
-        }
-
-        let target = min(max(currentIndex + delta, 0), items.count - 1)
-        let id = items[target].id
-        model.selection = [id]
-        anchorID = id
+        let result = FileKeyboardSelection.move(
+            ids: items.map(\.id),
+            focusedID: anchorID,
+            rangeAnchorID: rangeAnchorID,
+            selectedIDs: model.selection,
+            delta: delta,
+            extending: NSEvent.modifierFlags.contains(.shift)
+        )
+        model.selection = result.selection
+        anchorID = result.focusedID
+        rangeAnchorID = result.rangeAnchorID
+        guard let id = result.focusedID else { return }
         withAnimation {
             scroller.scrollTo(id, anchor: .center)
         }
@@ -179,6 +181,7 @@ struct FileColumnView: View {
         appState.activePaneIndex = paneIndex
         focused = true
         anchorID = item.id
+        rangeAnchorID = item.id
         if NSEvent.modifierFlags.contains(.command) {
             if model.selection.contains(item.id) {
                 model.selection.remove(item.id)
@@ -198,6 +201,7 @@ struct FileColumnView: View {
             appState.activePaneIndex = paneIndex
             focused = true
             anchorID = item.id
+            rangeAnchorID = item.id
         } else {
             select(item)
         }
@@ -231,6 +235,7 @@ struct FileColumnView: View {
         model.selection = selectionDragBase.union(hitIDs)
         if let anchor = model.displayItems.last(where: { hitIDs.contains($0.id) }) {
             anchorID = anchor.id
+            rangeAnchorID = anchor.id
         }
     }
 
@@ -342,7 +347,7 @@ private struct ColumnSelectionDragReporter: NSViewRepresentable {
         override var isFlipped: Bool { true }
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         weak var view: NSView?
         var shouldBegin: (CGPoint, NSEvent.ModifierFlags) -> Bool
         var onBegin: (CGPoint, NSEvent.ModifierFlags) -> Void
@@ -445,7 +450,7 @@ private struct ColumnMouseDownReporter: NSViewRepresentable {
         coordinator.removeMonitor()
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         weak var view: NSView?
         var onMouseDown: (Int) -> Void
         private var monitor: Any?

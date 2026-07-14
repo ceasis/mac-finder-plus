@@ -30,6 +30,26 @@ class EngineTestCase: XCTestCase {
         return url
     }
 
+    func runFixtureProcess(
+        _ executable: String,
+        _ arguments: [String],
+        currentDirectory: URL? = nil
+    ) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.currentDirectoryURL = currentDirectory
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(
+                domain: "EngineTestCase",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "\(executable) failed during fixture setup."]
+            )
+        }
+    }
+
     @discardableResult
     func makePNG(_ name: String, width: Int, height: Int, gray: CGFloat = 0.5, in directory: URL? = nil) throws -> URL {
         let context = CGContext(
@@ -107,6 +127,41 @@ final class FileOperationsTests: EngineTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "original must remain")
     }
 
+    func testCompressFolderCreatesZipWithContents() async throws {
+        let folder = tempDir.appendingPathComponent("Project", isDirectory: true)
+        let nested = folder.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try writeFile("note.txt", "hello zip", in: nested)
+
+        let archive = try await FileOperations.compressToZip([folder])
+        let entries = try ArchiveTools.entriesSync(in: archive)
+
+        XCTAssertEqual(archive.lastPathComponent, "Project.zip")
+        XCTAssertTrue(entries.contains("Project/Nested/note.txt"), "got \(entries)")
+    }
+
+    func testCompressSingleFileCreatesZipWithFile() async throws {
+        let file = try writeFile("report.txt", "single file zip")
+
+        let archive = try await FileOperations.compressToZip([file])
+        let entries = try ArchiveTools.entriesSync(in: archive)
+
+        XCTAssertEqual(archive.lastPathComponent, "report.txt.zip")
+        XCTAssertTrue(entries.contains("report.txt"), "got \(entries)")
+    }
+
+    func testCompressMultipleFilesCreatesArchiveZip() async throws {
+        let first = try writeFile("first.txt", "one")
+        let second = try writeFile("second.txt", "two")
+
+        let archive = try await FileOperations.compressToZip([first, second])
+        let entries = try ArchiveTools.entriesSync(in: archive)
+
+        XCTAssertEqual(archive.lastPathComponent, "Archive.zip")
+        XCTAssertTrue(entries.contains("first.txt"), "got \(entries)")
+        XCTAssertTrue(entries.contains("second.txt"), "got \(entries)")
+    }
+
     func testRenameMovesFile() async throws {
         let file = try writeFile("before.txt", "data")
         let record = try await FileOperations.rename(file, to: "after.txt")
@@ -155,6 +210,52 @@ final class FileOperationsTests: EngineTestCase {
         )
     }
 
+    func testMoveToParentFolderMovesFileUpOneLevel() async throws {
+        let child = tempDir.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        let file = try writeFile("report.txt", "up", in: child)
+
+        let records = try await FileOperations.moveToParentFolder([file])
+        let moved = tempDir.appendingPathComponent("report.txt")
+
+        XCTAssertEqual(records, [FileMoveRecord(source: file.standardizedFileURL, destination: moved)])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(try String(contentsOf: moved, encoding: .utf8), "up")
+    }
+
+    func testMoveToParentFolderMovesFolderUpOneLevel() async throws {
+        let child = tempDir.appendingPathComponent("Child", isDirectory: true)
+        let bundle = child.appendingPathComponent("Bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        try writeFile("inside.txt", "folder", in: bundle)
+
+        let records = try await FileOperations.moveToParentFolder([bundle])
+        let moved = tempDir.appendingPathComponent("Bundle", isDirectory: true)
+
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].source.path, bundle.standardizedFileURL.path)
+        XCTAssertEqual(records[0].destination.path, moved.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: bundle.path))
+        XCTAssertEqual(
+            try String(contentsOf: moved.appendingPathComponent("inside.txt"), encoding: .utf8),
+            "folder"
+        )
+    }
+
+    func testMoveToParentFolderAvoidsNameCollision() async throws {
+        let child = tempDir.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try writeFile("report.txt", "existing")
+        let file = try writeFile("report.txt", "moved", in: child)
+
+        let records = try await FileOperations.moveToParentFolder([file])
+        let moved = tempDir.appendingPathComponent("report 2.txt")
+
+        XCTAssertEqual(records, [FileMoveRecord(source: file.standardizedFileURL, destination: moved)])
+        XCTAssertEqual(try String(contentsOf: tempDir.appendingPathComponent("report.txt"), encoding: .utf8), "existing")
+        XCTAssertEqual(try String(contentsOf: moved, encoding: .utf8), "moved")
+    }
+
     func testTransferIntoSameFolderDoesNotDestroyFile() async throws {
         // Copying a file into its own directory must collision-rename, never delete.
         let src = try writeFile("keep.txt", "important")
@@ -187,6 +288,58 @@ final class FolderOrganizerTests: EngineTestCase {
         XCTAssertTrue(names.contains("2 - Small (1–10 MB)"), "got \(names)")
         let tiny = groups.first { $0.folderName.contains("Tiny") }
         XCTAssertEqual(tiny?.items.first?.name, "tiny.txt")
+    }
+}
+
+final class ImageTextExtractorTests: EngineTestCase {
+    func testTextOutputURLUsesImageBaseNameInSameFolder() throws {
+        let image = try writeFile("receipt.png")
+
+        let output = ImageTextExtractor.textOutputURL(for: image)
+
+        XCTAssertEqual(output.deletingLastPathComponent().path, tempDir.path)
+        XCTAssertEqual(output.lastPathComponent, "receipt.txt")
+    }
+
+    func testTextOutputURLAvoidsExistingTextFile() throws {
+        let image = try writeFile("receipt.png")
+        _ = try writeFile("receipt.txt", "existing text")
+
+        let output = ImageTextExtractor.textOutputURL(for: image)
+
+        XCTAssertEqual(output.lastPathComponent, "receipt 2.txt")
+    }
+}
+
+final class FilePasteboardTests: EngineTestCase {
+    func testReadsWorkbenchWrittenFileURLs() throws {
+        let file = try writeFile("copy-me.txt")
+        let pasteboard = NSPasteboard.withUniqueName()
+
+        FilePasteboard.write([file], to: pasteboard)
+
+        XCTAssertEqual(FilePasteboard.fileURLs(from: pasteboard).map(\.path), [file.path])
+    }
+
+    func testReadsLegacyFilenamePasteboardType() throws {
+        let file = try writeFile("finder-style.txt")
+        let pasteboard = NSPasteboard.withUniqueName()
+        let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+
+        pasteboard.clearContents()
+        pasteboard.setPropertyList([file.path], forType: filenamesType)
+
+        XCTAssertEqual(FilePasteboard.fileURLs(from: pasteboard).map(\.path), [file.path])
+    }
+
+    func testReadsPathTextFallback() throws {
+        let file = try writeFile("path-text.txt")
+        let pasteboard = NSPasteboard.withUniqueName()
+
+        pasteboard.clearContents()
+        pasteboard.setString(file.path, forType: .string)
+
+        XCTAssertEqual(FilePasteboard.fileURLs(from: pasteboard).map(\.path), [file.path])
     }
 }
 
@@ -241,13 +394,13 @@ final class TextLineOperationsTests: XCTestCase {
     }
 }
 
-// MARK: - FileGridKeyboardSelection
+// MARK: - FileKeyboardSelection
 
-final class FileGridKeyboardSelectionTests: XCTestCase {
+final class FileKeyboardSelectionTests: XCTestCase {
     private let ids = ["a", "b", "c", "d"]
 
     func testShiftRightExtendsSingleSelectionToTwoItems() {
-        let result = FileGridKeyboardSelection.move(
+        let result = FileKeyboardSelection.move(
             ids: ids,
             focusedID: "a",
             rangeAnchorID: "a",
@@ -261,8 +414,23 @@ final class FileGridKeyboardSelectionTests: XCTestCase {
         XCTAssertEqual(result.rangeAnchorID, "a")
     }
 
+    func testShiftDownExtendsFromMouseSelectedItemWithoutKeyboardAnchor() {
+        let result = FileKeyboardSelection.move(
+            ids: ids,
+            focusedID: nil,
+            rangeAnchorID: nil,
+            selectedIDs: Set(["b"]),
+            delta: 1,
+            extending: true
+        )
+
+        XCTAssertEqual(result.selection, Set(["b", "c"]))
+        XCTAssertEqual(result.focusedID, "c")
+        XCTAssertEqual(result.rangeAnchorID, "b")
+    }
+
     func testRepeatedShiftRightKeepsOriginalAnchor() {
-        let first = FileGridKeyboardSelection.move(
+        let first = FileKeyboardSelection.move(
             ids: ids,
             focusedID: "a",
             rangeAnchorID: "a",
@@ -270,7 +438,7 @@ final class FileGridKeyboardSelectionTests: XCTestCase {
             delta: 1,
             extending: true
         )
-        let second = FileGridKeyboardSelection.move(
+        let second = FileKeyboardSelection.move(
             ids: ids,
             focusedID: first.focusedID,
             rangeAnchorID: first.rangeAnchorID,
@@ -285,7 +453,7 @@ final class FileGridKeyboardSelectionTests: XCTestCase {
     }
 
     func testShiftLeftExtendsBackFromAnchor() {
-        let result = FileGridKeyboardSelection.move(
+        let result = FileKeyboardSelection.move(
             ids: ids,
             focusedID: "b",
             rangeAnchorID: "b",
@@ -300,7 +468,7 @@ final class FileGridKeyboardSelectionTests: XCTestCase {
     }
 
     func testPlainArrowCollapsesExtendedSelectionAndResetsAnchor() {
-        let result = FileGridKeyboardSelection.move(
+        let result = FileKeyboardSelection.move(
             ids: ids,
             focusedID: "b",
             rangeAnchorID: "a",
@@ -978,6 +1146,24 @@ final class AdditionalFileToolsTests: EngineTestCase {
         )
     }
 
+    func testListsZipArchiveSynchronously() throws {
+        let source = tempDir.appendingPathComponent("zip-source", isDirectory: true)
+        let nested = source.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try writeFile("inside.txt", "zip contents", in: nested)
+
+        let archive = tempDir.appendingPathComponent("payload.zip")
+        try runFixtureProcess(
+            "/usr/bin/zip",
+            ["-q", "-r", archive.path, "nested"],
+            currentDirectory: source
+        )
+
+        let entries = try ArchiveTools.entriesSync(in: archive)
+
+        XCTAssertTrue(entries.contains("nested/inside.txt"), "got \(entries)")
+    }
+
     private func runProcess(
         _ executable: String,
         _ arguments: [String],
@@ -996,6 +1182,70 @@ final class AdditionalFileToolsTests: EngineTestCase {
                 userInfo: [NSLocalizedDescriptionKey: "\(executable) failed during test setup."]
             )
         }
+    }
+}
+
+final class AdvancedSearchTests: EngineTestCase {
+    func testSearchOptionsRequireActualCriteria() {
+        var options = AdvancedSearchOptions()
+        XCTAssertFalse(options.hasSearchCriteria)
+
+        options.searchContents = true
+        options.searchArchives = true
+        options.includeHidden = true
+        options.scope = .home
+        XCTAssertFalse(options.hasSearchCriteria)
+
+        options.query = "needle"
+        XCTAssertTrue(options.hasSearchCriteria)
+
+        options.query = ""
+        options.typePreset = .documents
+        XCTAssertTrue(options.hasSearchCriteria)
+    }
+
+    func testSearchMatchesTextFileContents() async throws {
+        let notes = tempDir.appendingPathComponent("Notes", isDirectory: true)
+        try FileManager.default.createDirectory(at: notes, withIntermediateDirectories: true)
+        try writeFile("meeting.txt", "agenda\nneedle lives here", in: notes)
+        try writeFile("plain.txt", "also has a needle", in: tempDir)
+        try writeFile("photo.jpg", "needle", in: tempDir)
+
+        var options = AdvancedSearchOptions()
+        options.query = "needle"
+        options.searchContents = true
+        options.includeSubfolders = true
+        options.typePreset = .documents
+
+        let results = try await AdvancedFileSearch.search(root: tempDir, options: options) { _ in }
+
+        XCTAssertEqual(Set(results.map { $0.item.name }), ["meeting.txt", "plain.txt"])
+        XCTAssertTrue(results.allSatisfy { $0.matchDescription.hasPrefix("Contents line") })
+    }
+
+    func testSearchMatchesZipArchiveEntries() async throws {
+        let source = tempDir.appendingPathComponent("zip-source", isDirectory: true)
+        let nested = source.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try writeFile("secret.txt", "hidden payload", in: nested)
+
+        let archive = tempDir.appendingPathComponent("bundle.zip")
+        try runFixtureProcess(
+            "/usr/bin/zip",
+            ["-q", "-r", archive.path, "nested"],
+            currentDirectory: source
+        )
+        try FileManager.default.removeItem(at: source)
+
+        var options = AdvancedSearchOptions()
+        options.query = "secret.txt"
+        options.searchArchives = true
+        options.includeSubfolders = false
+
+        let results = try await AdvancedFileSearch.search(root: tempDir, options: options) { _ in }
+
+        XCTAssertEqual(results.map { $0.item.name }, ["bundle.zip"])
+        XCTAssertEqual(results.first?.matchDescription, "Archive entry: nested/secret.txt")
     }
 }
 

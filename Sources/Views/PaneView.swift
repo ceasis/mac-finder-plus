@@ -6,6 +6,9 @@ struct PaneView: View {
     @Environment(AppState.self) private var appState
     let paneIndex: Int
 
+    @State private var listAnchorID: FileItem.ID?
+    @State private var listRangeAnchorID: FileItem.ID?
+
     private var model: PaneModel { appState.panes[paneIndex] }
     private var isActive: Bool { appState.activePaneIndex == paneIndex }
 
@@ -24,6 +27,8 @@ struct PaneView: View {
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )
+            } else if model.isLoading && model.displayItems.isEmpty {
+                loadingFolderView
             } else if model.viewMode == .columns {
                 FileColumnView(model: model, paneIndex: paneIndex)
             } else if model.viewMode == .icons {
@@ -76,8 +81,8 @@ struct PaneView: View {
                     isEnabled: item.isDirectory
                 )
                 .overlay(
-                    TableNameMouseDownReporter {
-                        selectListItem(item, in: model)
+                    TableNameMouseDownReporter { clickCount in
+                        handleListNameMouseDown(item, clickCount: clickCount, in: model)
                     }
                 )
             }
@@ -123,12 +128,28 @@ struct PaneView: View {
             appState.quickLookSelection()
             return .handled
         }
+        .onKeyPress(.upArrow) {
+            moveListSelection(by: -1, extending: NSEvent.modifierFlags.contains(.shift), in: model)
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            moveListSelection(by: 1, extending: NSEvent.modifierFlags.contains(.shift), in: model)
+            return .handled
+        }
         .onKeyPress("0") { rateSelection(0); return .handled }
         .onKeyPress("1") { rateSelection(1); return .handled }
         .onKeyPress("2") { rateSelection(2); return .handled }
         .onKeyPress("3") { rateSelection(3); return .handled }
         .onKeyPress("4") { rateSelection(4); return .handled }
         .onKeyPress("5") { rateSelection(5); return .handled }
+        .background(
+            TableKeyboardSelectionReporter(isEnabled: isActive) { delta in
+                moveListSelection(by: delta, extending: true, in: model)
+            }
+        )
+        .onChange(of: model.selection) { _, selection in
+            syncListAnchor(after: selection, in: model)
+        }
         .fileDropTarget(to: model.currentURL, paneIndex: paneIndex, appState: appState)
     }
 
@@ -137,18 +158,97 @@ struct PaneView: View {
         appState.rateSelection(rating)
     }
 
+    private func moveListSelection(by delta: Int, extending: Bool, in model: PaneModel) {
+        let ids = model.displayItems.map(\.id)
+        guard !ids.isEmpty else { return }
+        appState.activePaneIndex = paneIndex
+
+        let result = FileKeyboardSelection.move(
+            ids: ids,
+            focusedID: listAnchorID,
+            rangeAnchorID: listRangeAnchorID,
+            selectedIDs: model.selection,
+            delta: delta,
+            extending: extending
+        )
+        model.selection = result.selection
+        listAnchorID = result.focusedID
+        listRangeAnchorID = result.rangeAnchorID
+    }
+
+    private func syncListAnchor(after selection: Set<FileItem.ID>, in model: PaneModel) {
+        guard model.viewMode == .list else { return }
+        if selection.isEmpty {
+            listAnchorID = nil
+            listRangeAnchorID = nil
+            return
+        }
+        if selection.count == 1, let id = selection.first {
+            listAnchorID = id
+            listRangeAnchorID = id
+            return
+        }
+        if let listAnchorID,
+           let listRangeAnchorID,
+           selection.contains(listAnchorID),
+           selection.contains(listRangeAnchorID) {
+            return
+        }
+        let visibleSelection = model.displayItems.filter { selection.contains($0.id) }
+        listAnchorID = visibleSelection.last?.id
+        listRangeAnchorID = visibleSelection.first?.id
+    }
+
+    private func handleListNameMouseDown(
+        _ item: FileItem,
+        clickCount: Int,
+        in model: PaneModel
+    ) -> Bool {
+        appState.activePaneIndex = paneIndex
+        guard clickCount >= 2 else {
+            selectListItem(item, in: model)
+            return false
+        }
+
+        listAnchorID = item.id
+        listRangeAnchorID = item.id
+        let ids = model.selection.contains(item.id) ? model.selection : [item.id]
+        model.selection = ids
+        model.open(ids)
+        return true
+    }
+
+    private var loadingFolderView: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Loading \(model.currentURL.lastPathComponent.isEmpty ? model.currentURL.path : model.currentURL.lastPathComponent)")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private func selectListItem(_ item: FileItem, in model: PaneModel) {
         let modifiers = NSEvent.modifierFlags
         guard !modifiers.contains(.shift) else { return }
-        appState.activePaneIndex = paneIndex
-        if modifiers.contains(.command) {
-            if model.selection.contains(item.id) {
-                model.selection.remove(item.id)
-            } else {
-                model.selection.insert(item.id)
+        let itemID = item.id
+        let paneIndex = paneIndex
+        Task { @MainActor in
+            appState.activePaneIndex = paneIndex
+            listAnchorID = itemID
+            listRangeAnchorID = itemID
+            if modifiers.contains(.command) {
+                if model.selection.contains(itemID) {
+                    model.selection.remove(itemID)
+                } else {
+                    model.selection.insert(itemID)
+                }
+            } else if !model.selection.contains(itemID) {
+                model.selection = [itemID]
             }
-        } else if !model.selection.contains(item.id) {
-            model.selection = [item.id]
         }
     }
 
@@ -169,8 +269,114 @@ struct PaneView: View {
     }
 }
 
+private struct TableKeyboardSelectionReporter: NSViewRepresentable {
+    let isEnabled: Bool
+    let onShiftMove: (Int) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isEnabled: isEnabled, onShiftMove: onShiftMove)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PassthroughEventView()
+        context.coordinator.view = view
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.view = view
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onShiftMove = onShiftMove
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    final class Coordinator: @unchecked Sendable {
+        weak var view: NSView?
+        var isEnabled: Bool
+        var onShiftMove: (Int) -> Void
+        private var monitor: Any?
+
+        init(isEnabled: Bool, onShiftMove: @escaping (Int) -> Void) {
+            self.isEnabled = isEnabled
+            self.onShiftMove = onShiftMove
+        }
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                MainActor.assumeIsolated {
+                    guard let self,
+                          self.shouldHandle(event),
+                          let delta = Self.shiftVerticalDelta(for: event) else {
+                        return event
+                    }
+                    self.onShiftMove(delta)
+                    return nil
+                }
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+        }
+
+        deinit {
+            removeMonitor()
+        }
+
+        private func shouldHandle(_ event: NSEvent) -> Bool {
+            guard isEnabled,
+                  let view,
+                  let window = view.window,
+                  event.window === window,
+                  !Self.isEditingText(window.firstResponder) else {
+                return false
+            }
+            return true
+        }
+
+        private static func shiftVerticalDelta(for event: NSEvent) -> Int? {
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard modifiers.contains(.shift),
+                  !modifiers.contains(.command),
+                  !modifiers.contains(.option),
+                  !modifiers.contains(.control) else {
+                return nil
+            }
+            switch event.keyCode {
+            case 126: return -1
+            case 125: return 1
+            default: return nil
+            }
+        }
+
+        private static func isEditingText(_ responder: NSResponder?) -> Bool {
+            if responder is NSTextView || responder is NSText {
+                return true
+            }
+            if let textField = responder as? NSTextField {
+                return textField.currentEditor() != nil
+            }
+            return false
+        }
+    }
+
+    private final class PassthroughEventView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+    }
+}
+
 private struct TableNameMouseDownReporter: NSViewRepresentable {
-    let onMouseDown: () -> Void
+    let onMouseDown: (Int) -> Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onMouseDown: onMouseDown)
@@ -192,12 +398,12 @@ private struct TableNameMouseDownReporter: NSViewRepresentable {
         coordinator.removeMonitor()
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         weak var view: NSView?
-        var onMouseDown: () -> Void
+        var onMouseDown: (Int) -> Bool
         private var monitor: Any?
 
-        init(onMouseDown: @escaping () -> Void) {
+        init(onMouseDown: @escaping (Int) -> Bool) {
             self.onMouseDown = onMouseDown
         }
 
@@ -205,15 +411,16 @@ private struct TableNameMouseDownReporter: NSViewRepresentable {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
                 let location = event.locationInWindow
+                let clickCount = event.clickCount
                 let windowID = event.window.map(ObjectIdentifier.init)
-                MainActor.assumeIsolated {
+                let swallow = MainActor.assumeIsolated { () -> Bool in
                     guard let self, let view = self.view,
-                          view.window.map(ObjectIdentifier.init) == windowID else { return }
+                          view.window.map(ObjectIdentifier.init) == windowID else { return false }
                     let point = view.convert(location, from: nil)
-                    guard view.bounds.contains(point) else { return }
-                    self.onMouseDown()
+                    guard view.bounds.contains(point) else { return false }
+                    return self.onMouseDown(clickCount)
                 }
-                return event
+                return swallow ? nil : event
             }
         }
 

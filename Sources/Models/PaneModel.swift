@@ -18,7 +18,7 @@ enum PaneViewMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum ModifiedDateFilter: String, Identifiable, Sendable {
+enum ModifiedDateFilter: String, CaseIterable, Codable, Identifiable, Sendable {
     case all
     case withinHour
     case today
@@ -101,7 +101,7 @@ enum ModifiedDateFilter: String, Identifiable, Sendable {
     }
 }
 
-enum FileSizeFilter: String, Identifiable, Sendable {
+enum FileSizeFilter: String, CaseIterable, Codable, Identifiable, Sendable {
     case all
     case upToOneMegabyte
     case oneToTenMegabytes
@@ -155,7 +155,7 @@ enum FileSizeFilter: String, Identifiable, Sendable {
     }
 }
 
-enum ItemKindFilter: String, Identifiable, Sendable {
+enum ItemKindFilter: String, CaseIterable, Codable, Identifiable, Sendable {
     case all
     case files
     case folders
@@ -256,8 +256,9 @@ final class PaneModel {
     var selection = Set<FileItem.ID>() {
         didSet { rebuildSelectedItems() }
     }
-    var sortOrder: [KeyPathComparator<FileItem>] = [KeyPathComparator(\.name)] {
-        didSet { rebuildDisplayItems() }
+    @ObservationIgnored
+    var sortOrder: [KeyPathComparator<FileItem>] = [] {
+        didSet { scheduleDisplayItemsRebuild() }
     }
     var showHidden = false {
         didSet {
@@ -290,6 +291,8 @@ final class PaneModel {
     var searchResults: [FileItem] = [] { didSet { rebuildDisplayItems() } }
     var isSearching = false
     private var searchTask: Task<Void, Never>?
+    private var advancedSearchResults: [FileItem] = []
+    private(set) var advancedSearchResultsTitle: String?
     private var duplicateResults: [FileItem] = []
     private(set) var duplicateResultsTitle: String?
     private(set) var tabs: [PaneTab]
@@ -308,6 +311,7 @@ final class PaneModel {
     @ObservationIgnored private var visibleItemsByID: [FileItem.ID: FileItem] = [:]
     @ObservationIgnored var persistentStateChanged: (() -> Void)?
     @ObservationIgnored private var folderSizeTask: Task<Void, Never>?
+    @ObservationIgnored private var displayItemsRebuildTask: Task<Void, Never>?
     @ObservationIgnored private var folderSizeRunID = UUID()
     @ObservationIgnored private var sizeFilteredFolderScanTask: Task<Void, Never>?
     @ObservationIgnored private var sizeFilteredFolderScanRunID = UUID()
@@ -350,7 +354,11 @@ final class PaneModel {
 
     /// True when the pane is showing recursive search results instead of a folder listing.
     var isRecursiveSearchActive: Bool {
-        !isDuplicateResultsActive && searchSubfolders && !filterText.isEmpty
+        !isAdvancedSearchResultsActive && !isDuplicateResultsActive && searchSubfolders && !filterText.isEmpty
+    }
+
+    var isAdvancedSearchResultsActive: Bool {
+        advancedSearchResultsTitle != nil
     }
 
     var isDuplicateResultsActive: Bool {
@@ -363,14 +371,17 @@ final class PaneModel {
 
     /// The collection the table's selection IDs refer to.
     var visibleSource: [FileItem] {
+        if isAdvancedSearchResultsActive { return advancedSearchResults }
         if isDuplicateResultsActive { return duplicateResults }
         return isRecursiveSearchActive ? searchResults : items
     }
 
     private func rebuildDisplayItems() {
+        displayItemsRebuildTask?.cancel()
+        displayItemsRebuildTask = nil
         var out: [FileItem]
-        if isDuplicateResultsActive {
-            out = duplicateResults
+        if isAdvancedSearchResultsActive || isDuplicateResultsActive {
+            out = isAdvancedSearchResultsActive ? advancedSearchResults : duplicateResults
             if !filterText.isEmpty {
                 out = out.filter { $0.name.localizedCaseInsensitiveContains(filterText) }
             }
@@ -420,13 +431,26 @@ final class PaneModel {
                 return fileSizeFilter.matches(size: item.size)
             }
         }
-        out.sort(using: sortOrder)
+        if sortOrder.isEmpty {
+            out.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        } else {
+            out.sort(using: sortOrder)
+        }
         if foldersFirst {
             out = out.filter(\.isDirectory) + out.filter { !$0.isDirectory }
         }
         visibleItemsByID = Dictionary(uniqueKeysWithValues: out.map { ($0.id, $0) })
         displayItems = out
         rebuildSelectedItems()
+    }
+
+    private func scheduleDisplayItemsRebuild() {
+        displayItemsRebuildTask?.cancel()
+        displayItemsRebuildTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            self.rebuildDisplayItems()
+        }
     }
 
     private func rebuildSelectedItems() {
@@ -468,6 +492,7 @@ final class PaneModel {
             refresh()
             return
         }
+        resetAdvancedSearchResults()
         resetDuplicateResults()
         resetCompare()
         backStack.append(currentURL)
@@ -481,6 +506,7 @@ final class PaneModel {
 
     func goBack() {
         guard let previous = backStack.popLast() else { return }
+        resetAdvancedSearchResults()
         resetDuplicateResults()
         resetCompare()
         forwardStack.append(currentURL)
@@ -491,6 +517,7 @@ final class PaneModel {
 
     func goForward() {
         guard let next = forwardStack.popLast() else { return }
+        resetAdvancedSearchResults()
         resetDuplicateResults()
         resetCompare()
         backStack.append(currentURL)
@@ -519,6 +546,7 @@ final class PaneModel {
     }
 
     func refresh() {
+        resetAdvancedSearchResults()
         resetDuplicateResults()
         resetCompare()
         load()
@@ -594,6 +622,7 @@ final class PaneModel {
         selection.removeAll()
         searchResults = []
         isSearching = false
+        resetAdvancedSearchResults()
         resetDuplicateResults()
         resetCompare()
         isApplyingTabState = false
@@ -797,7 +826,7 @@ final class PaneModel {
 
     private func searchStateChanged() {
         searchTask?.cancel()
-        if isDuplicateResultsActive {
+        if isAdvancedSearchResultsActive || isDuplicateResultsActive {
             searchResults = []
             isSearching = false
             rebuildDisplayItems()
@@ -866,10 +895,44 @@ final class PaneModel {
         return results
     }
 
+    // MARK: - External results
+
+    func showAdvancedSearchResults(_ results: [FileItem], title: String) {
+        searchTask?.cancel()
+        resetDuplicateResults()
+        resetCompare()
+        searchResults = []
+        isSearching = false
+        selection.removeAll()
+        filterText = ""
+        searchSubfolders = false
+        typePreset = .all
+        ratingFilter = .all
+        modifiedDateFilter = .all
+        fileSizeFilter = .all
+        itemKindFilter = .all
+        advancedSearchResultsTitle = title
+        advancedSearchResults = results
+        rebuildDisplayItems()
+    }
+
+    func clearAdvancedSearchResults() {
+        guard isAdvancedSearchResultsActive else { return }
+        resetAdvancedSearchResults()
+        selection.removeAll()
+        rebuildDisplayItems()
+    }
+
+    private func resetAdvancedSearchResults() {
+        advancedSearchResultsTitle = nil
+        advancedSearchResults = []
+    }
+
     // MARK: - Duplicate results
 
     func showDuplicateResults(_ results: [FileItem], title: String) {
         searchTask?.cancel()
+        resetAdvancedSearchResults()
         resetCompare()
         searchResults = []
         isSearching = false
@@ -890,6 +953,7 @@ final class PaneModel {
         guard !ids.isEmpty else { return }
         updateRating(in: &items, ids: ids, rating: rating)
         updateRating(in: &searchResults, ids: ids, rating: rating)
+        updateRating(in: &advancedSearchResults, ids: ids, rating: rating)
         updateRating(in: &duplicateResults, ids: ids, rating: rating)
         rebuildDisplayItems()
     }

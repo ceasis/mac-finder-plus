@@ -23,6 +23,8 @@ let renditions: [IconRendition] = [
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
 let outputURL = root.appendingPathComponent("Assets.xcassets/AppIcon.appiconset", isDirectory: true)
 let masterURL = root.appendingPathComponent("Design/AppIconConcepts/workbench-icon-02a-hammer-anvil.png")
+let appIconVisualScale: CGFloat = 0.86
+let appIconOpticalCenter = CGPoint(x: 538.5, y: 512)
 
 try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
 try FileManager.default.createDirectory(
@@ -72,6 +74,9 @@ private func makeIconBitmap(pixels: Int) -> NSBitmapImageRep {
     context.saveGState()
     let scale = CGFloat(pixels) / 1024.0
     context.scaleBy(x: scale, y: scale)
+    context.translateBy(x: 512, y: 512)
+    context.scaleBy(x: appIconVisualScale, y: appIconVisualScale)
+    context.translateBy(x: -appIconOpticalCenter.x, y: -appIconOpticalCenter.y)
     drawWorkbenchIcon(in: context)
     context.restoreGState()
 

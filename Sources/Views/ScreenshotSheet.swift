@@ -128,11 +128,9 @@ struct CapturePanelView: View {
 
             Spacer()
 
-            Button { appState.hideCaptureTool() } label: {
-                Image(systemName: "xmark")
+            PanelIconButton(systemName: "xmark", help: "Hide capture panel") {
+                appState.hideCaptureTool()
             }
-            .buttonStyle(.plain)
-            .help("Hide capture panel")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -182,13 +180,9 @@ struct CapturePanelView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .help("Choose the app window to capture")
 
-                Button {
+                PanelIconButton(systemName: "arrow.clockwise", help: "Refresh windows") {
                     reloadWindowTargets()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.borderless)
-                .help("Refresh windows")
             }
         }
     }

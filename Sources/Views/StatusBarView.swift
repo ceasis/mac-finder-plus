@@ -8,7 +8,9 @@ struct StatusBarView: View {
         let pane = appState.activePane
         HStack(spacing: 4) {
             Text(
-                pane.isDuplicateResultsActive
+                pane.isAdvancedSearchResultsActive
+                    ? "\(pane.displayItems.count) search results"
+                    : pane.isDuplicateResultsActive
                     ? "\(pane.displayItems.count) duplicates"
                     : pane.isRecursiveSearchActive
                     ? "\(pane.displayItems.count) results"

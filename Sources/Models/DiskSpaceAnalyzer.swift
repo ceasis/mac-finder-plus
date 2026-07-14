@@ -649,8 +649,17 @@ final class DiskSpaceAnalyzerStore {
         scanDetail = "Disk scan cancelled."
     }
 
+    func reloadSavedSnapshot() {
+        restoreSnapshot()
+    }
+
     private func restoreSnapshot() {
-        guard FileManager.default.fileExists(atPath: snapshotFile.path) else { return }
+        guard FileManager.default.fileExists(atPath: snapshotFile.path) else {
+            analysis = nil
+            lastScannedAt = nil
+            scanDetail = ""
+            return
+        }
         do {
             let snapshot = try JSONDecoder().decode(
                 DiskSpaceAnalysisSnapshot.self,

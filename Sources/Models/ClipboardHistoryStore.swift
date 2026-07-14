@@ -27,6 +27,107 @@ enum ClipboardHistoryKind: String, Codable, Sendable {
     }
 }
 
+enum FilePasteboard {
+    private static let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+    private static let promisedFileURLType = NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url")
+
+    static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        var urls: [URL] = []
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+        ]
+
+        if let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) {
+            urls.append(contentsOf: objects.compactMap(fileURL(from:)))
+        }
+
+        if let paths = pasteboard.propertyList(forType: filenamesType) as? [String] {
+            urls.append(contentsOf: paths.map { URL(fileURLWithPath: $0) })
+        }
+
+        let itemURLs = pasteboard.pasteboardItems?.flatMap { item -> [URL] in
+            var itemResults: [URL] = []
+            let urlTypes: [NSPasteboard.PasteboardType] = [
+                .fileURL,
+                .URL,
+                promisedFileURLType,
+            ]
+            for type in urlTypes {
+                if let string = item.string(forType: type),
+                   let url = fileURL(from: string) {
+                    itemResults.append(url)
+                }
+            }
+            if let paths = item.propertyList(forType: filenamesType) as? [String] {
+                itemResults.append(contentsOf: paths.map { URL(fileURLWithPath: $0) })
+            }
+            return itemResults
+        } ?? []
+        urls.append(contentsOf: itemURLs)
+
+        if urls.isEmpty,
+           let text = pasteboard.string(forType: .string) {
+            urls.append(contentsOf: fileURLs(fromPathText: text))
+        }
+
+        return uniqueExistingFileURLs(urls)
+    }
+
+    static func write(_ urls: [URL], to pasteboard: NSPasteboard) {
+        let existingURLs = uniqueExistingFileURLs(urls)
+        guard !existingURLs.isEmpty else { return }
+        let paths = existingURLs.map(\.path)
+
+        pasteboard.clearContents()
+        pasteboard.writeObjects(existingURLs as [NSURL])
+        pasteboard.setPropertyList(paths, forType: filenamesType)
+        pasteboard.setString(paths.joined(separator: "\n"), forType: .string)
+    }
+
+    private static func fileURL(from object: Any) -> URL? {
+        if let url = object as? URL, url.isFileURL {
+            return url
+        }
+        if let url = object as? NSURL {
+            let bridgedURL = url as URL
+            if bridgedURL.isFileURL {
+                return bridgedURL
+            }
+        }
+        return nil
+    }
+
+    private static func fileURL(from string: String) -> URL? {
+        if let url = URL(string: string), url.isFileURL {
+            return url
+        }
+        if string.hasPrefix("/") {
+            return URL(fileURLWithPath: string)
+        }
+        return nil
+    }
+
+    private static func fileURLs(fromPathText text: String) -> [URL] {
+        text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .compactMap(fileURL(from:))
+    }
+
+    private static func uniqueExistingFileURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { url in
+            let standardized = url.standardizedFileURL
+            guard standardized.isFileURL,
+                  FileManager.default.fileExists(atPath: standardized.path) else {
+                return false
+            }
+            return seen.insert(standardized.path).inserted
+        }
+    }
+}
+
 struct ClipboardHistoryEntry: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var kind: ClipboardHistoryKind
@@ -106,6 +207,10 @@ final class ClipboardHistoryStore {
             return
         }
         selectedEntryID = filteredEntries.first?.id ?? entries.first?.id
+    }
+
+    func reloadFromDisk() {
+        load()
     }
 
     func entry(for id: ClipboardHistoryEntry.ID?) -> ClipboardHistoryEntry? {
@@ -239,16 +344,7 @@ final class ClipboardHistoryStore {
 
     @discardableResult
     private func recordPasteboard(_ pasteboard: NSPasteboard) -> Bool {
-        let objects = pasteboard.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) ?? []
-        let urls = objects.compactMap { object -> URL? in
-            if let url = object as? URL { return url }
-            if let url = object as? NSURL { return url as URL }
-            return nil
-        }
-        .filter { FileManager.default.fileExists(atPath: $0.path) }
+        let urls = FilePasteboard.fileURLs(from: pasteboard)
 
         if !urls.isEmpty {
             let paths = urls.map(\.path)
@@ -297,9 +393,7 @@ final class ClipboardHistoryStore {
     private func writeFilesToPasteboard(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.writeObjects(urls as [NSURL])
-        pasteboard.setString(urls.map(\.path).joined(separator: "\n"), forType: .string)
+        FilePasteboard.write(urls, to: pasteboard)
         lastSeenPasteboardChangeCount = pasteboard.changeCount
     }
 

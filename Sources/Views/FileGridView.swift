@@ -156,7 +156,7 @@ struct FileGridView: View {
         let items = model.displayItems
         guard !items.isEmpty else { return }
         appState.activePaneIndex = paneIndex
-        let result = FileGridKeyboardSelection.move(
+        let result = FileKeyboardSelection.move(
             ids: items.map(\.id),
             focusedID: anchorID,
             rangeAnchorID: rangeAnchorID,
@@ -287,7 +287,7 @@ enum FileGridThumbnailSettings {
     }
 }
 
-enum FileGridKeyboardSelection {
+enum FileKeyboardSelection {
     static func move<ID: Hashable>(
         ids: [ID],
         focusedID: ID?,
@@ -458,7 +458,7 @@ private struct SelectionDragReporter: NSViewRepresentable {
         override var isFlipped: Bool { true }
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         weak var view: NSView?
         var shouldBegin: (CGPoint, NSEvent.ModifierFlags) -> Bool
         var onBegin: (CGPoint, NSEvent.ModifierFlags) -> Void
@@ -562,7 +562,7 @@ private struct MouseDownReporter: NSViewRepresentable {
         coordinator.removeMonitor()
     }
 
-    final class Coordinator {
+    final class Coordinator: @unchecked Sendable {
         weak var view: NSView?
         var onMouseDown: (Int) -> Void
         private var monitor: Any?

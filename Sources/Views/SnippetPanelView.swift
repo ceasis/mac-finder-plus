@@ -160,31 +160,19 @@ struct SnippetPanelView: View {
                     .help("Adding \(store.pendingImportFileCount) file\(store.pendingImportFileCount == 1 ? "" : "s")")
             }
 
-            Button {
+            PanelIconButton(systemName: "plus.square.on.square", help: "Save current clipboard") {
                 store.addCurrentClipboard()
                 store.ensureSelection()
-            } label: {
-                Image(systemName: "plus.square.on.square")
             }
-            .buttonStyle(.plain)
-            .help("Save current clipboard")
 
-            Button {
+            PanelIconButton(systemName: "paperclip", help: "Add files") {
                 store.chooseFiles()
                 store.ensureSelection()
-            } label: {
-                Image(systemName: "paperclip")
             }
-            .buttonStyle(.plain)
-            .help("Add files")
 
-            Button {
+            PanelIconButton(systemName: "xmark", help: "Hide snippets") {
                 appState.hideSnippets()
-            } label: {
-                Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
-            .help("Hide snippets")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -313,6 +301,8 @@ struct SnippetPanelView: View {
                 .foregroundStyle(.secondary)
                 .disabled(draftText.isEmpty)
                 .help("Clear")
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
 
                 Spacer()
 

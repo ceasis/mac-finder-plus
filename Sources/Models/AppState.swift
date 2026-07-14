@@ -10,6 +10,10 @@ enum DockedToolPanel: String, Equatable {
     case clipboard
     case notes
     case snippets
+    case dropStack
+    case workflows
+    case advancedSearch
+    case archiveBrowser
     case preview
     case organize
     case screenshot
@@ -86,7 +90,7 @@ private struct FileDragSession {
 @MainActor
 final class AppState {
     static let shared = AppState()
-    static let internalFileDragType = UTType(exportedAs: "com.choloasis.panes.file-drag")
+    static let internalFileDragType = UTType(exportedAs: "com.qnsub.workbench.file-drag")
 
     let panes: [PaneModel]
     var activePaneIndex = 0 {
@@ -157,6 +161,12 @@ final class AppState {
     var annotationTarget: FileItem?
     var editingTextFile: FileItem?
     var showOnboarding = false
+    var showAboutWorkbench = false
+    var showUpdatePanel = false
+    var showKeyboardShortcuts = false
+    var showActivityHistory = false
+    var showReleaseChecklist = false
+    var showCommandPalette = false
     var capturePermissionPrompt: CapturePermissionPrompt?
     /// Non-nil while a video merge render is in flight (0…1).
     var mergeIntoVideoProgress: Double?
@@ -178,8 +188,79 @@ final class AppState {
     var inactivePane: PaneModel { panes[activePaneIndex == 0 ? 1 : 0] }
     var canUndoFileOperation: Bool { !undoStack.isEmpty }
     var canPasteFilesFromClipboard: Bool { !fileURLsFromPasteboard().isEmpty }
+    var hasActiveSelection: Bool { !activePane.selection.isEmpty }
+    var hasSelectedImage: Bool { activePane.selectedItems.contains(where: \.isImage) }
+    var canTransferSelectionToOtherPane: Bool { isDualPane && hasActiveSelection }
+    var canShareSelectionViaAirDrop: Bool { hasActiveSelection }
+    var canAnnotateSelection: Bool { hasSelectedImage }
+    var canAddSelectionToDropStack: Bool { hasActiveSelection }
+    var canTransferDropStackToOtherPane: Bool {
+        isDualPane && !DropStackStore.shared.existingItems.isEmpty
+    }
     var undoFileOperationTitle: String {
         undoStack.last.map { "Undo \($0.title)" } ?? "Undo"
+    }
+
+    var selectionTransferUnavailableReason: String? {
+        switch (isDualPane, hasActiveSelection) {
+        case (false, false):
+            "Open two panes and select one or more files."
+        case (false, true):
+            "Open two panes to copy or move files there."
+        case (true, false):
+            "Select one or more files first."
+        case (true, true):
+            nil
+        }
+    }
+
+    var airDropUnavailableReason: String? {
+        hasActiveSelection ? nil : "Select one or more files to share."
+    }
+
+    var annotateUnavailableReason: String? {
+        hasSelectedImage ? nil : "Select an image to annotate."
+    }
+
+    var addSelectionToDropStackUnavailableReason: String? {
+        hasActiveSelection ? nil : "Select one or more files first."
+    }
+
+    var dropStackTransferUnavailableReason: String? {
+        switch (isDualPane, DropStackStore.shared.existingItems.isEmpty) {
+        case (false, true):
+            "Open two panes and add files to the drop stack."
+        case (false, false):
+            "Open two panes to copy or move the drop stack there."
+        case (true, true):
+            "Add files to the drop stack first."
+        case (true, false):
+            nil
+        }
+    }
+
+    func workflowRunUnavailableReason(source: SavedWorkflowRunSource) -> String? {
+        guard let workflow = SavedWorkflowStore.shared.selectedWorkflow else {
+            return "Select or create a workflow first."
+        }
+        guard !workflow.steps.isEmpty else {
+            return "Add at least one step to the selected workflow."
+        }
+        if workflow.steps.contains(where: \.requiresDualPane), !isDualPane {
+            return "Open two panes for this workflow."
+        }
+        switch source {
+        case .selection:
+            return hasActiveSelection ? nil : "Select one or more files first."
+        case .dropStack:
+            return DropStackStore.shared.existingItems.isEmpty
+                ? "Add files to the drop stack first."
+                : nil
+        }
+    }
+
+    func canRunSelectedWorkflow(source: SavedWorkflowRunSource) -> Bool {
+        workflowRunUnavailableReason(source: source) == nil
     }
 
     func setFileGridThumbnailSize(_ size: Double, persist: Bool = false) {
@@ -321,6 +402,7 @@ final class AppState {
     /// Hides every docked tool panel and modal tool so only one is visible at a time.
     private func closeAllTools() {
         activeToolPanel = nil
+        showCommandPalette = false
         showResizeSheet = false
         showBatchRenameSheet = false
         showConvertSheet = false
@@ -333,6 +415,7 @@ final class AppState {
     }
 
     private func closeModalTools() {
+        showCommandPalette = false
         showResizeSheet = false
         showBatchRenameSheet = false
         showConvertSheet = false
@@ -535,6 +618,72 @@ final class AppState {
         if activeToolPanel == .clipboard { activeToolPanel = nil }
     }
 
+    func openCommandPalette() {
+        closeModalTools()
+        capturePermissionPrompt = nil
+        showCommandPalette = true
+    }
+
+    func hideCommandPalette() {
+        showCommandPalette = false
+    }
+
+    func showDropStack() {
+        presentTool(.dropStack)
+    }
+
+    func hideDropStack() {
+        if activeToolPanel == .dropStack { activeToolPanel = nil }
+    }
+
+    func showSavedWorkflows() {
+        SavedWorkflowStore.shared.ensureSelection()
+        presentTool(.workflows)
+    }
+
+    func hideSavedWorkflows() {
+        if activeToolPanel == .workflows { activeToolPanel = nil }
+    }
+
+    func showAdvancedSearch() {
+        presentTool(.advancedSearch)
+    }
+
+    func hideAdvancedSearch() {
+        if activeToolPanel == .advancedSearch { activeToolPanel = nil }
+    }
+
+    func publishAdvancedSearchResultsToActivePane() {
+        let store = AdvancedSearchStore.shared
+        let items = store.resultItems
+        guard !items.isEmpty else {
+            lastError = "Run an advanced search first."
+            return
+        }
+        let title = "Search: \(store.options.query.isEmpty ? "Filters" : store.options.query)"
+        activePane.showAdvancedSearchResults(items, title: title)
+    }
+
+    func browseArchive(_ ids: Set<FileItem.ID>? = nil) {
+        guard let archive = resolvedDisplayItems(ids).first(where: \.isArchive) else {
+            lastError = "Select an archive to browse."
+            return
+        }
+        ArchiveBrowserStore.shared.open(archive)
+        presentTool(.archiveBrowser)
+    }
+
+    func showArchiveBrowser() {
+        if let archive = activePane.selectedItems.first(where: \.isArchive) {
+            ArchiveBrowserStore.shared.open(archive)
+        }
+        presentTool(.archiveBrowser)
+    }
+
+    func hideArchiveBrowser() {
+        if activeToolPanel == .archiveBrowser { activeToolPanel = nil }
+    }
+
     func showCleanupTool() {
         presentTool(.cleanup)
     }
@@ -601,13 +750,16 @@ final class AppState {
                 let policy = fileActivities.first(where: { $0.id == activityID })?
                     .conflictPolicy ?? fileOperationConflictPolicy
                 let records = try await FolderOrganizerEngine.apply(items, conflictPolicy: policy)
+                let undo = FileUndoAction.moveBack(title: "Organize Folder", records: records)
                 if !records.isEmpty {
-                    undoStack.append(.moveBack(title: "Organize Folder", records: records))
+                    undoStack.append(undo)
                 }
                 updateActivity(activityID) { activity in
                     activity.status = .completed
                     activity.finishedAt = Date()
                     activity.bytesCompleted = activity.bytesTotal
+                    activity.undoAction = records.isEmpty ? nil : undo
+                    activity.revealURLs = records.map(\.destination)
                 }
                 FolderOrganizerStore.shared.isApplying = false
                 onSuccess()
@@ -637,6 +789,7 @@ final class AppState {
     ) {
         let urls = suggestions.map(\.url)
         guard !urls.isEmpty else { return }
+        guard confirmMoveToTrashIfNeeded(urls) else { return }
         let activityID = addActivity(title: "Move to Trash", detail: operationDetail(for: urls))
         let task = Task {
             updateActivity(activityID) { activity in
@@ -644,13 +797,16 @@ final class AppState {
             }
             do {
                 let records = try await FileOperations.trash(urls)
+                let undo = FileUndoAction.putBack(title: "Move to Trash", records: records)
                 if !records.isEmpty {
-                    undoStack.append(.putBack(title: "Move to Trash", records: records))
+                    undoStack.append(undo)
                 }
                 updateActivity(activityID) { activity in
                     activity.status = .completed
                     activity.finishedAt = Date()
                     activity.bytesCompleted = activity.bytesTotal
+                    activity.undoAction = records.isEmpty ? nil : undo
+                    activity.revealURLs = records.map(\.trashedURL)
                 }
                 onSuccess()
             } catch is CancellationError {
@@ -774,13 +930,13 @@ final class AppState {
         guard !trimmed.isEmpty else { return }
         let destination = activePane.currentURL
         let targetPane = activePane
-        runTracked(title: "New Folder", detail: trimmed) {
+        runTrackedResult(title: "New Folder", detail: trimmed) {
             let createdFolder = try await FileOperations.newFolder(named: trimmed, in: destination)
             guard targetPane.currentURL.standardizedFileURL == destination.standardizedFileURL else {
-                return nil
+                return .reveal([createdFolder])
             }
             targetPane.selection = [createdFolder.path]
-            return nil
+            return .reveal([createdFolder])
         }
     }
 
@@ -807,7 +963,7 @@ final class AppState {
         let urls = moveIntoNewFolderURLs
         cancelMoveIntoNewFolder()
 
-        runTracked(
+        runTrackedResult(
             title: "Move to New Folder",
             detail: "\(operationDetail(for: urls)) to \(trimmed)"
         ) {
@@ -816,9 +972,10 @@ final class AppState {
                 folderName: trimmed,
                 in: parentURL
             )
-            return result.records.isEmpty
+            let undo = result.records.isEmpty
                 ? nil
-                : .moveBack(title: "Move to New Folder", records: result.records)
+                : FileUndoAction.moveBack(title: "Move to New Folder", records: result.records)
+            return FileActivityResult(undoAction: undo, revealURLs: [result.folder])
         }
     }
 
@@ -835,13 +992,13 @@ final class AppState {
         let fileName = trimmed.contains(".") ? trimmed : "\(trimmed).txt"
         let destination = activePane.currentURL
         let targetPane = activePane
-        runTracked(title: "New Text File", detail: fileName) {
+        runTrackedResult(title: "New Text File", detail: fileName) {
             let createdFile = try await FileOperations.newTextFile(named: fileName, in: destination)
             guard targetPane.currentURL.standardizedFileURL == destination.standardizedFileURL else {
-                return nil
+                return .reveal([createdFile])
             }
             targetPane.selection = [createdFile.path]
-            return nil
+            return .reveal([createdFile])
         }
     }
 
@@ -869,9 +1026,23 @@ final class AppState {
     func duplicateSelection(_ ids: Set<FileItem.ID>? = nil) {
         let urls = resolvedURLs(ids)
         guard !urls.isEmpty else { return }
-        runTracked(title: "Duplicate", detail: operationDetail(for: urls)) {
-            try await FileOperations.duplicate(urls)
-            return nil
+        runTrackedResult(title: "Duplicate", detail: operationDetail(for: urls)) {
+            let copies = try await FileOperations.duplicate(urls)
+            return .reveal(copies)
+        }
+    }
+
+    func compressSelectionToZip(_ ids: Set<FileItem.ID>? = nil) {
+        let items = resolvedDisplayItems(ids)
+        guard !items.isEmpty else {
+            lastError = "Select one or more items to compress."
+            return
+        }
+
+        let urls = items.map(\.url)
+        runTrackedResult(title: "Compress to ZIP", detail: operationDetail(for: urls)) {
+            let archive = try await FileOperations.compressToZip(urls)
+            return .reveal([archive])
         }
     }
 
@@ -880,9 +1051,9 @@ final class AppState {
             lastError = "Select an archive to extract."
             return
         }
-        runTracked(title: "Extract Archive", detail: archive.name) {
-            _ = try await ArchiveTools.extract(at: archive.url)
-            return nil
+        runTrackedResult(title: "Extract Archive", detail: archive.name) {
+            let output = try await ArchiveTools.extract(at: archive.url)
+            return .reveal([output])
         }
     }
 
@@ -913,9 +1084,44 @@ final class AppState {
         }
     }
 
+    func extractArchiveBrowserSelection() {
+        let store = ArchiveBrowserStore.shared
+        guard let archiveURL = store.archiveURL else {
+            lastError = "Open an archive first."
+            return
+        }
+
+        if store.isZipArchive {
+            let paths = store.selectedFilePathsForZipExtraction
+            guard !paths.isEmpty else {
+                lastError = "Select a file or folder inside the ZIP archive to extract."
+                return
+            }
+            runTrackedResult(
+                title: "Extract Archive Items",
+                detail: "\(paths.count) item\(paths.count == 1 ? "" : "s")"
+            ) {
+                var outputs: [URL] = []
+                for path in paths {
+                    outputs.append(try await FileOperations.extractZipEntry(archiveURL, entryPath: path))
+                }
+                return .reveal(outputs)
+            }
+        } else {
+            runTrackedResult(
+                title: "Extract Archive",
+                detail: archiveURL.lastPathComponent
+            ) {
+                let output = try await ArchiveTools.extract(at: archiveURL)
+                return .reveal([output])
+            }
+        }
+    }
+
     func trashSelection(_ ids: Set<FileItem.ID>? = nil) {
         let urls = resolvedURLs(ids)
         guard !urls.isEmpty else { return }
+        guard confirmMoveToTrashIfNeeded(urls) else { return }
         runTracked(title: "Move to Trash", detail: operationDetail(for: urls)) {
             let records = try await FileOperations.trash(urls)
             return records.isEmpty ? nil : .putBack(title: "Move to Trash", records: records)
@@ -929,6 +1135,20 @@ final class AppState {
         let destination = inactivePane.currentURL
         guard !urls.isEmpty else { return }
         enqueueTransfer(urls, to: destination, move: move)
+    }
+
+    func moveSelectionToParentFolder(_ ids: Set<FileItem.ID>? = nil) {
+        let urls = resolvedDisplayItems(ids).map(\.url)
+        guard !urls.isEmpty else {
+            lastError = "Select one or more files or folders to move."
+            return
+        }
+
+        runTrackedResult(title: "Move to Parent Folder", detail: operationDetail(for: urls)) {
+            let records = try await FileOperations.moveToParentFolder(urls)
+            let undo = FileUndoAction.moveBack(title: "Move to Parent Folder", records: records)
+            return .undo(undo, reveal: records.map(\.destination))
+        }
     }
 
     func fileDragProvider(for item: FileItem, paneIndex: Int) -> NSItemProvider {
@@ -946,6 +1166,37 @@ final class AppState {
 
         let provider = NSItemProvider(contentsOf: item.url) ?? NSItemProvider(object: item.url as NSURL)
         provider.suggestedName = item.name
+        provider.registerDataRepresentation(
+            forTypeIdentifier: Self.internalFileDragType.identifier,
+            visibility: .ownProcess
+        ) { completion in
+            completion(Data(sessionID.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    func dropStackDragProvider(for item: DropStackItem) -> NSItemProvider {
+        let store = DropStackStore.shared
+        let itemURL = item.url
+        let dragURLs: [URL]
+        if store.selection.contains(item.id) {
+            dragURLs = store.selectedURLs
+        } else if FileManager.default.fileExists(atPath: item.path) {
+            dragURLs = [itemURL]
+        } else {
+            dragURLs = []
+        }
+
+        guard let firstURL = dragURLs.first else {
+            return NSItemProvider(object: item.name as NSString)
+        }
+
+        let sessionID = UUID().uuidString
+        currentFileDragSession = FileDragSession(id: sessionID, urls: dragURLs, sourcePaneIndex: activePaneIndex)
+
+        let provider = NSItemProvider(contentsOf: firstURL) ?? NSItemProvider(object: firstURL as NSURL)
+        provider.suggestedName = dragURLs.count == 1 ? firstURL.lastPathComponent : "\(dragURLs.count) items"
         provider.registerDataRepresentation(
             forTypeIdentifier: Self.internalFileDragType.identifier,
             visibility: .ownProcess
@@ -1236,6 +1487,7 @@ final class AppState {
                     activity.bytesCompleted = activity.bytesTotal
                     activity.detail = output.lastPathComponent
                     activity.progressDetail = nil
+                    activity.revealURLs = [output]
                 }
                 activePane.selection = [output.path]
             } catch is CancellationError {
@@ -1293,19 +1545,36 @@ final class AppState {
         }
     }
 
+    func extractTextFromImages(_ ids: Set<FileItem.ID>? = nil) {
+        let images = resolvedDisplayItems(ids).filter(\.isImage)
+        guard !images.isEmpty else {
+            lastError = "Select one or more images to extract text."
+            return
+        }
+
+        runTrackedResult(title: "Extract Text", detail: operationDetail(for: images.map(\.url))) {
+            let result = try await ImageTextExtractor.extractTextFiles(from: images)
+            ClipboardHistoryStore.shared.copyText(result.clipboardText)
+            let completionDetail = result.outputURLs.count == 1
+                ? "Saved \(result.outputURLs[0].lastPathComponent) and copied text to clipboard."
+                : "Saved \(result.outputURLs.count) text files and copied text to clipboard."
+            return .reveal(result.outputURLs, completionDetail: completionDetail)
+        }
+    }
+
     func formatJSON(_ ids: Set<FileItem.ID>? = nil, minify: Bool) {
         guard let json = resolvedDisplayItems(ids).first(where: \.isJSONFile) else {
             lastError = "Select a JSON file to format."
             return
         }
-        runTracked(
+        runTrackedResult(
             title: minify ? "Minify JSON" : "Format JSON",
             detail: json.name
         ) {
-            _ = try await (minify
+            let output = try await (minify
                 ? TextFileTools.minifyJSON(at: json.url)
                 : TextFileTools.formatJSON(at: json.url))
-            return nil
+            return .reveal([output])
         }
     }
 
@@ -1349,12 +1618,12 @@ final class AppState {
             lastError = "Select a CSV or TSV file to convert."
             return
         }
-        runTracked(title: "Convert to \(destinationFormat.title)", detail: spreadsheet.name) {
-            _ = try await SpreadsheetTools.convertDelimitedText(
+        runTrackedResult(title: "Convert to \(destinationFormat.title)", detail: spreadsheet.name) {
+            let output = try await SpreadsheetTools.convertDelimitedText(
                 at: spreadsheet.url,
                 to: destinationFormat
             )
-            return nil
+            return .reveal([output])
         }
     }
 
@@ -1379,9 +1648,9 @@ final class AppState {
             lastError = "Select a spreadsheet to export to CSV."
             return
         }
-        runTracked(title: "Export Spreadsheet", detail: spreadsheet.name) {
-            _ = try await SpreadsheetTools.exportToCSVUsingNumbers(at: spreadsheet.url)
-            return nil
+        runTrackedResult(title: "Export Spreadsheet", detail: spreadsheet.name) {
+            let output = try await SpreadsheetTools.exportToCSVUsingNumbers(at: spreadsheet.url)
+            return .reveal([output])
         }
     }
 
@@ -1496,9 +1765,9 @@ final class AppState {
             lastError = "Select a presentation to export to PDF."
             return
         }
-        runTracked(title: "Export Presentation", detail: presentation.name) {
-            _ = try await PresentationTools.exportToPDFUsingKeynote(at: presentation.url)
-            return nil
+        runTrackedResult(title: "Export Presentation", detail: presentation.name) {
+            let output = try await PresentationTools.exportToPDFUsingKeynote(at: presentation.url)
+            return .reveal([output])
         }
     }
 
@@ -2380,6 +2649,254 @@ final class AppState {
         return activityID
     }
 
+    func addSelectionToDropStack(_ ids: Set<FileItem.ID>? = nil) {
+        let urls = resolvedURLs(ids)
+        guard !urls.isEmpty else {
+            lastError = "Select one or more files to add to the drop stack."
+            return
+        }
+        DropStackStore.shared.add(urls)
+        if activeToolPanel != .dropStack {
+            activeToolPanel = .dropStack
+        }
+    }
+
+    func addURLsToDropStack(_ urls: [URL]) {
+        DropStackStore.shared.add(urls)
+    }
+
+    func transferDropStackToOtherPane(move: Bool) {
+        guard isDualPane else {
+            lastError = "Open two panes to use the drop stack with the other pane."
+            return
+        }
+        transferDropStack(to: inactivePane.currentURL, move: move)
+    }
+
+    func transferDropStackToActiveFolder(move: Bool) {
+        transferDropStack(to: activePane.currentURL, move: move)
+    }
+
+    func transferDropStack(to destination: URL, move: Bool) {
+        let urls = DropStackStore.shared.selectedURLs
+        guard !urls.isEmpty else {
+            lastError = "Add one or more files to the drop stack first."
+            return
+        }
+        if move {
+            DropStackStore.shared.remove(Set(urls.map { $0.standardizedFileURL.path }))
+        }
+        enqueueTransfer(urls, to: destination, move: move)
+    }
+
+    func revealDropStackSelection() {
+        let urls = DropStackStore.shared.selectedURLs
+        guard !urls.isEmpty else {
+            lastError = "Add one or more files to the drop stack first."
+            return
+        }
+        revealInFinder(urls)
+    }
+
+    func runSelectedWorkflow(source: SavedWorkflowRunSource) {
+        guard let workflow = SavedWorkflowStore.shared.selectedWorkflow else {
+            lastError = "Create or select a workflow first."
+            return
+        }
+        runWorkflow(workflow, source: source)
+    }
+
+    func runWorkflow(_ workflow: SavedWorkflow, source: SavedWorkflowRunSource) {
+        guard !workflow.steps.isEmpty else {
+            lastError = "Add at least one step to “\(workflow.name)”."
+            return
+        }
+        if workflow.steps.contains(where: \.requiresDualPane), !isDualPane {
+            lastError = "Open two panes before running “\(workflow.name)”."
+            return
+        }
+
+        let urls = workflowURLs(from: source)
+        guard !urls.isEmpty else {
+            lastError = source == .dropStack
+                ? "Add one or more files to the drop stack first."
+                : "Select one or more files first."
+            return
+        }
+
+        let destination = inactivePane.currentURL
+        let activeFolder = activePane.currentURL
+        let policy = fileOperationConflictPolicy
+        let activityID = addActivity(
+            title: "Workflow",
+            detail: "\(workflow.name) · \(operationDetail(for: urls))",
+            supportsConflictPolicy: workflow.steps.contains { $0 == .copyToOtherPane || $0 == .moveToOtherPane }
+        )
+        updateActivity(activityID) { activity in
+            activity.conflictPolicy = policy
+            activity.bytesTotal = 1_000
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            self.updateActivity(activityID) { activity in
+                activity.status = .running
+            }
+
+            var moveRecords: [FileMoveRecord] = []
+            var revealURLs: [URL] = []
+
+            do {
+                for (offset, step) in workflow.steps.enumerated() {
+                    try Task.checkCancellation()
+                    let baseProgress = Double(offset) / Double(workflow.steps.count)
+                    let stepWeight = 1.0 / Double(workflow.steps.count)
+                    self.updateActivity(activityID) { activity in
+                        activity.progressDetail = step.title
+                        activity.bytesCompleted = Int64((baseProgress * 1_000).rounded())
+                    }
+
+                    switch step {
+                    case .optimizeImages:
+                        for item in self.workflowItems(from: urls).filter(\.isImage) {
+                            try await ImageProcessing.optimize(item.url)
+                        }
+                    case .createThumbnails:
+                        for item in self.workflowItems(from: urls).filter(\.isImage) {
+                            let output = try await ImageProcessing.createThumbnail(item.url)
+                            revealURLs.append(output)
+                        }
+                    case .grayscaleImages:
+                        for item in self.workflowItems(from: urls).filter(\.isImage) {
+                            let output = try await ImageProcessing.grayscale(item.url)
+                            revealURLs.append(output)
+                        }
+                    case .contactSheetPDF:
+                        let images = self.workflowItems(from: urls).filter(\.isImage)
+                        if !images.isEmpty {
+                            let output = try await ContactSheetExporter.export(
+                                items: images,
+                                toFolder: activeFolder
+                            ) { progress in
+                                await MainActor.run {
+                                    self.updateActivity(activityID) { activity in
+                                        let total = baseProgress + (progress * stepWeight)
+                                        activity.bytesCompleted = Int64((total * 1_000).rounded())
+                                    }
+                                }
+                            }
+                            revealURLs.append(output)
+                        }
+                    case .copyPaths:
+                        ClipboardHistoryStore.shared.copyPaths(urls.map(\.path))
+                    case .copyNames:
+                        ClipboardHistoryStore.shared.copyNames(urls.map(\.lastPathComponent))
+                    case .createSnippets:
+                        let files = self.workflowItems(from: urls)
+                            .filter { !$0.isDirectory }
+                            .map(\.url)
+                        if !files.isEmpty {
+                            SnippetStore.shared.createSnippet(withFiles: files)
+                        }
+                    case .rateThreeStars:
+                        try self.applyWorkflowRating(3, urls: urls)
+                    case .rateFiveStars:
+                        try self.applyWorkflowRating(5, urls: urls)
+                    case .copyToOtherPane:
+                        _ = try await FileOperations.transfer(
+                            urls,
+                            to: destination,
+                            move: false,
+                            conflictPolicy: policy,
+                            progress: { completed, total in
+                                await MainActor.run {
+                                    self.updateActivity(activityID) { activity in
+                                        guard total > 0 else { return }
+                                        let fileProgress = Double(completed) / Double(total)
+                                        let totalProgress = baseProgress + (fileProgress * stepWeight)
+                                        activity.bytesCompleted = Int64((totalProgress * 1_000).rounded())
+                                    }
+                                }
+                            },
+                            isPaused: { [weak self] in
+                                guard let self else { return false }
+                                return await MainActor.run {
+                                    self.pausedActivityIDs.contains(activityID)
+                                }
+                            }
+                        )
+                        revealURLs.append(destination)
+                    case .moveToOtherPane:
+                        let records = try await FileOperations.transfer(
+                            urls,
+                            to: destination,
+                            move: true,
+                            conflictPolicy: policy,
+                            progress: { completed, total in
+                                await MainActor.run {
+                                    self.updateActivity(activityID) { activity in
+                                        guard total > 0 else { return }
+                                        let fileProgress = Double(completed) / Double(total)
+                                        let totalProgress = baseProgress + (fileProgress * stepWeight)
+                                        activity.bytesCompleted = Int64((totalProgress * 1_000).rounded())
+                                    }
+                                }
+                            },
+                            isPaused: { [weak self] in
+                                guard let self else { return false }
+                                return await MainActor.run {
+                                    self.pausedActivityIDs.contains(activityID)
+                                }
+                            }
+                        )
+                        moveRecords.append(contentsOf: records)
+                        revealURLs.append(contentsOf: records.map(\.destination))
+                    }
+
+                    self.updateActivity(activityID) { activity in
+                        let completed = Double(offset + 1) / Double(workflow.steps.count)
+                        activity.bytesCompleted = Int64((completed * 1_000).rounded())
+                    }
+                }
+
+                let undo = moveRecords.isEmpty
+                    ? nil
+                    : FileUndoAction.moveBack(title: workflow.name, records: moveRecords)
+                if let undo {
+                    self.undoStack.append(undo)
+                }
+                if source == .dropStack, !moveRecords.isEmpty {
+                    DropStackStore.shared.remove(Set(moveRecords.map { $0.source.standardizedFileURL.path }))
+                }
+
+                self.updateActivity(activityID) { activity in
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = activity.bytesTotal
+                    activity.progressDetail = nil
+                    activity.undoAction = undo
+                    activity.revealURLs = revealURLs.isEmpty ? self.defaultRevealURLs(for: undo) : revealURLs
+                }
+            } catch is CancellationError {
+                self.updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                self.updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                self.lastError = error.localizedDescription
+            }
+
+            self.activityTasks[activityID] = nil
+            self.pausedActivityIDs.remove(activityID)
+            self.panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
+    }
+
     func copyPathOfSelection(_ ids: Set<FileItem.ID>? = nil) {
         let paths = resolvedURLs(ids).map(\.path)
         guard !paths.isEmpty else { return }
@@ -2425,6 +2942,10 @@ final class AppState {
         enqueueTransfer(urls, to: destination, move: move)
     }
 
+    func pasteClipboardFilesToActiveFolder(move: Bool = false) {
+        pasteClipboardFiles(to: activePane.currentURL, move: move)
+    }
+
     func pasteClipboardHistoryFiles(_ entry: ClipboardHistoryEntry, move: Bool) {
         guard entry.kind == .files else {
             ClipboardHistoryStore.shared.restoreToPasteboard(entry)
@@ -2451,6 +2972,173 @@ final class AppState {
         NSWorkspace.shared.activateFileViewerSelecting(existingURLs)
     }
 
+    func unmountDevice(at url: URL) {
+        let deviceURL = url.standardizedFileURL
+        let name = deviceURL.lastPathComponent.isEmpty ? deviceURL.path : deviceURL.lastPathComponent
+        Task {
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try NSWorkspace.shared.unmountAndEjectDevice(at: deviceURL)
+                }.value
+            } catch {
+                lastError = "Couldn’t unmount “\(name)”: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func reportProblem() {
+        WorkbenchSupportActions.openSupportEmail()
+    }
+
+    func copySupportDiagnostics() {
+        WorkbenchSupportActions.copyDiagnostics()
+    }
+
+    func revealWorkbenchSupportFolder() {
+        WorkbenchSupportActions.revealSupportFolder()
+    }
+
+    func exportWorkbenchDataBackup() {
+        let panel = NSSavePanel()
+        panel.title = "Export Workbench Data"
+        panel.message = "Save a backup of Workbench notes, snippets, clipboard history, disk analysis cache, and preferences."
+        panel.nameFieldStringValue = WorkbenchDataBackup.suggestedFilename()
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        let activityID = addActivity(title: "Export Workbench Data", detail: destination.lastPathComponent)
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+            }
+            do {
+                let output = try await WorkbenchDataBackup.export(to: destination)
+                updateActivity(activityID) { activity in
+                    activity.detail = output.lastPathComponent
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = 1
+                    activity.bytesTotal = 1
+                    activity.revealURLs = [output]
+                }
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+        }
+        activityTasks[activityID] = task
+    }
+
+    func importWorkbenchDataBackup() {
+        let panel = NSOpenPanel()
+        panel.title = "Import Workbench Data"
+        panel.message = "Choose a Workbench backup ZIP to restore notes, snippets, clipboard history, disk analysis cache, and preferences."
+        panel.allowedContentTypes = [.zip]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK,
+              let source = panel.url,
+              confirmImportWorkbenchData(from: source) else {
+            return
+        }
+
+        let activityID = addActivity(title: "Import Workbench Data", detail: source.lastPathComponent)
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+            }
+            do {
+                let result = try await WorkbenchDataBackup.importBackup(from: source)
+                reloadWorkbenchStoresAfterImport()
+                updateActivity(activityID) { activity in
+                    activity.detail = result.summary
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = 1
+                    activity.bytesTotal = 1
+                    activity.revealURLs = [result.safetyBackupURL].compactMap { $0 }
+                    if result.restoredPreferences {
+                        activity.progressDetail = "Restart Workbench to apply restored preferences."
+                    }
+                }
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+        }
+        activityTasks[activityID] = task
+    }
+
+    func exportWorkbenchDiagnostics() {
+        let panel = NSSavePanel()
+        panel.title = "Export Workbench Diagnostics"
+        panel.message = "Save a support ZIP with version info, recent Workbench logs, crash reports, and activity history."
+        panel.nameFieldStringValue = WorkbenchDiagnostics.suggestedFilename()
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        let activityDiagnostics = fileActivities.map { WorkbenchActivityDiagnostic(activity: $0) }
+        let activityID = addActivity(title: "Export Diagnostics", detail: destination.lastPathComponent)
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+            }
+            do {
+                let output = try await WorkbenchDiagnostics.export(
+                    to: destination,
+                    activities: activityDiagnostics
+                )
+                updateActivity(activityID) { activity in
+                    activity.detail = output.lastPathComponent
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = 1
+                    activity.bytesTotal = 1
+                    activity.revealURLs = [output]
+                }
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+        }
+        activityTasks[activityID] = task
+    }
+
     func moveItemsToExternalDrive(_ urls: [URL], destination: URL) {
         let existingURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !existingURLs.isEmpty else {
@@ -2465,6 +3153,43 @@ final class AppState {
             NSSound.beep()
             return
         }
+        markUndoActionConsumed(action)
+        performUndo(action)
+    }
+
+    func canUndoActivity(_ id: UUID) -> Bool {
+        guard let action = fileActivities.first(where: { $0.id == id })?.undoAction else {
+            return false
+        }
+        return undoStack.contains(action)
+    }
+
+    func undoActivity(_ id: UUID) {
+        guard let action = fileActivities.first(where: { $0.id == id })?.undoAction,
+              let stackIndex = undoStack.lastIndex(of: action) else {
+            NSSound.beep()
+            return
+        }
+        undoStack.remove(at: stackIndex)
+        markUndoActionConsumed(action)
+        performUndo(action)
+    }
+
+    func canRevealActivity(_ id: UUID) -> Bool {
+        guard let activity = fileActivities.first(where: { $0.id == id }) else { return false }
+        return activity.revealURLs.contains { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    func revealActivity(_ id: UUID) {
+        guard let urls = fileActivities.first(where: { $0.id == id })?.revealURLs,
+              urls.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) else {
+            NSSound.beep()
+            return
+        }
+        revealInFinder(urls)
+    }
+
+    private func performUndo(_ action: FileUndoAction) {
         let title = action.title
         let activityID = addActivity(title: "Undo \(title)", detail: "Restoring files")
         let task = Task {
@@ -2490,6 +3215,12 @@ final class AppState {
             panes.forEach { $0.refresh() }
         }
         activityTasks[activityID] = task
+    }
+
+    private func markUndoActionConsumed(_ action: FileUndoAction) {
+        for index in fileActivities.indices where fileActivities[index].undoAction == action {
+            fileActivities[index].undoAction = nil
+        }
     }
 
     func togglePauseActivity(_ id: UUID) {
@@ -2522,6 +3253,45 @@ final class AppState {
     }
 
     // MARK: - Helpers
+
+    private func confirmMoveToTrashIfNeeded(_ urls: [URL]) -> Bool {
+        guard DeletionSafetySettings.shouldConfirmMoveToTrash else { return true }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        if urls.count == 1 {
+            alert.messageText = "Move “\(urls[0].lastPathComponent)” to Trash?"
+            alert.informativeText = "You can undo this from Activity History while the item is still in the Trash."
+        } else {
+            alert.messageText = "Move \(urls.count) items to Trash?"
+            alert.informativeText = "This may include folders and many files. You can undo this from Activity History while the items are still in the Trash."
+        }
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func confirmImportWorkbenchData(from source: URL) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Import Workbench Data?"
+        alert.informativeText = """
+        This will restore data from “\(source.lastPathComponent)” and replace the current Workbench notes, snippets, clipboard history, disk analysis cache, and preferences included in the backup.
+
+        Workbench will first create a pre-import safety backup.
+        """
+        alert.addButton(withTitle: "Import")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func reloadWorkbenchStoresAfterImport() {
+        NotesStore.shared.load()
+        SnippetStore.shared.reloadFromDisk()
+        ClipboardHistoryStore.shared.reloadFromDisk()
+        DiskSpaceAnalyzerStore.shared.reloadSavedSnapshot()
+        panes.forEach { $0.refresh() }
+    }
 
     private func applyFolderCompare(
         _ result: FolderCompareResult,
@@ -2606,17 +3376,34 @@ final class AppState {
         return result
     }
 
-    private func fileURLsFromPasteboard() -> [URL] {
-        let objects = NSPasteboard.general.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) ?? []
-        return objects.compactMap { object -> URL? in
-            if let url = object as? URL { return url }
-            if let url = object as? NSURL { return url as URL }
-            return nil
+    private func workflowURLs(from source: SavedWorkflowRunSource) -> [URL] {
+        switch source {
+        case .selection:
+            resolvedURLs(nil)
+        case .dropStack:
+            DropStackStore.shared.selectedURLs
         }
-        .filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func workflowItems(from urls: [URL]) -> [FileItem] {
+        urls.compactMap { PaneModel.itemIfReachable(id: $0.standardizedFileURL.path) }
+    }
+
+    private func applyWorkflowRating(_ rating: Int, urls: [URL]) throws {
+        let items = workflowItems(from: urls).filter { !$0.isDirectory }
+        guard !items.isEmpty else { return }
+
+        let clamped = min(max(rating, 0), 5)
+        let ids = Set(items.map(\.id))
+        panes.forEach { $0.updateRating(for: ids, rating: clamped) }
+
+        for item in items {
+            try FileRatingStore.setRating(clamped, for: item.url)
+        }
+    }
+
+    private func fileURLsFromPasteboard() -> [URL] {
+        FilePasteboard.fileURLs(from: NSPasteboard.general)
     }
 
     private func enqueueTransfer(_ urls: [URL], to destination: URL, move: Bool) {
@@ -2655,7 +3442,16 @@ final class AppState {
                     }
                 )
                 if move, !records.isEmpty {
-                    undoStack.append(.moveBack(title: "Move", records: records))
+                    let undo = FileUndoAction.moveBack(title: "Move", records: records)
+                    undoStack.append(undo)
+                    updateActivity(activityID) { activity in
+                        activity.undoAction = undo
+                        activity.revealURLs = records.map(\.destination)
+                    }
+                } else if !move {
+                    updateActivity(activityID) { activity in
+                        activity.revealURLs = [destination]
+                    }
                 }
                 updateActivity(activityID) { activity in
                     activity.status = .completed
@@ -2736,19 +3532,41 @@ final class AppState {
         detail: String,
         operation: @escaping () async throws -> FileUndoAction?
     ) {
+        runTrackedResult(title: title, detail: detail) {
+            if let undo = try await operation() {
+                return .undo(undo)
+            }
+            return .none
+        }
+    }
+
+    private func runTrackedResult(
+        title: String,
+        detail: String,
+        operation: @escaping () async throws -> FileActivityResult
+    ) {
         let activityID = addActivity(title: title, detail: detail)
         let task = Task {
             updateActivity(activityID) { activity in
                 activity.status = .running
             }
             do {
-                if let undo = try await operation() {
+                let result = try await operation()
+                if let undo = result.undoAction {
                     undoStack.append(undo)
                 }
+                let revealURLs = result.revealURLs.isEmpty
+                    ? defaultRevealURLs(for: result.undoAction)
+                    : result.revealURLs
                 updateActivity(activityID) { activity in
                     activity.status = .completed
                     activity.finishedAt = Date()
                     activity.bytesCompleted = activity.bytesTotal
+                    activity.undoAction = result.undoAction
+                    activity.revealURLs = revealURLs
+                    if let completionDetail = result.completionDetail {
+                        activity.progressDetail = completionDetail
+                    }
                 }
             } catch is CancellationError {
                 updateActivity(activityID) { activity in
@@ -2784,7 +3602,9 @@ final class AppState {
             finishedAt: nil,
             conflictPolicy: fileOperationConflictPolicy,
             supportsConflictPolicy: supportsConflictPolicy,
-            progressDetail: nil
+            progressDetail: nil,
+            undoAction: nil,
+            revealURLs: []
         )
         fileActivities.insert(activity, at: 0)
         return activity.id
@@ -2800,6 +3620,16 @@ final class AppState {
             return urls[0].lastPathComponent
         }
         return "\(urls.count) items"
+    }
+
+    private func defaultRevealURLs(for undoAction: FileUndoAction?) -> [URL] {
+        guard let undoAction else { return [] }
+        switch undoAction {
+        case let .moveBack(_, records):
+            return records.map(\.destination)
+        case let .putBack(_, records):
+            return records.map(\.trashedURL)
+        }
     }
 
     /// Runs a file operation, surfaces any error, and refreshes both panes.

@@ -36,7 +36,7 @@ targets:
         NSHumanReadableCopyright: "© 2026 Cholo Asis. All rights reserved."
         NSMicrophoneUsageDescription: Workbench uses the microphone for narrated screen recordings, voice notes, and note attachments.
         UTExportedTypeDeclarations:
-          - UTTypeIdentifier: com.choloasis.panes.file-drag
+          - UTTypeIdentifier: com.qnsub.workbench.file-drag
             UTTypeDescription: Workbench File Drag
             UTTypeConformsTo:
               - public.data

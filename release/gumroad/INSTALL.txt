@@ -1,0 +1,20 @@
+Workbench for macOS - Install
+
+Requirements:
+- macOS 14 Sonoma or later
+
+Install:
+1. Unzip the downloaded file.
+2. Drag Workbench.app to your Applications folder.
+3. Open Workbench from Applications.
+4. If macOS asks for confirmation, choose Open.
+
+Optional permissions:
+- Screen Recording is only needed for screenshot and screen recording tools.
+- Microphone is only needed for voice recorder, voice notes, and narrated recordings.
+
+Updates:
+Download newer versions from your Gumroad library when updates are published.
+
+Support:
+Use the support email shown on the Gumroad product page.

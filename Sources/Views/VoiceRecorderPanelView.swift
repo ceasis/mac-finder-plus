@@ -48,14 +48,13 @@ struct VoiceRecorderPanelView: View {
 
             Spacer()
 
-            Button {
+            PanelIconButton(
+                systemName: "xmark",
+                help: store.isRecording ? "Stop or cancel recording before closing" : "Hide Voice Recorder",
+                isDisabled: store.isRecording
+            ) {
                 appState.hideVoiceRecorderTool()
-            } label: {
-                Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
-            .disabled(store.isRecording)
-            .help(store.isRecording ? "Stop or cancel recording before closing" : "Hide Voice Recorder")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

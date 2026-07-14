@@ -358,15 +358,22 @@ enum ArchiveTools {
         }
 
         return try await Task.detached(priority: .userInitiated) {
-            if isTarArchive(url) {
-                let data = try SystemProcess.output(executable: "/usr/bin/tar", arguments: ["-tf", url.path])
-                return String(data: data, encoding: .utf8)?
-                    .split(whereSeparator: \.isNewline)
-                    .map(String.init) ?? []
-            }
-            _ = try decompressor(for: url)
-            return [uncompressedName(for: url)]
+            try entriesSync(in: url)
         }.value
+    }
+
+    static func entriesSync(in url: URL) throws -> [String] {
+        if url.pathExtension.localizedCaseInsensitiveCompare("zip") == .orderedSame {
+            return try ZipArchiveListingReader.listingSync(for: url).entries.map(\.path)
+        }
+        if isTarArchive(url) {
+            let data = try SystemProcess.output(executable: "/usr/bin/tar", arguments: ["-tf", url.path])
+            return String(data: data, encoding: .utf8)?
+                .split(whereSeparator: \.isNewline)
+                .map(String.init) ?? []
+        }
+        _ = try decompressor(for: url)
+        return [uncompressedName(for: url)]
     }
 
     private static func isTarArchive(_ url: URL) -> Bool {

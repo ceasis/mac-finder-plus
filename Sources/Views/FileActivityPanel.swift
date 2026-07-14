@@ -1,7 +1,84 @@
 import SwiftUI
 
+struct FileActivityOverlay: View {
+    @Environment(AppState.self) private var appState
+    @AppStorage(ActivityPopupSettings.autoHideDelayKey)
+    private var autoHideDelay = ActivityPopupSettings.defaultAutoHideDelay
+    @State private var isVisible = false
+    @State private var hideTask: Task<Void, Never>?
+
+    var body: some View {
+        Group {
+            if isVisible && !appState.fileActivities.isEmpty {
+                FileActivityPanel {
+                    hidePanel()
+                }
+                .padding(12)
+                .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+            }
+        }
+        .animation(.easeOut(duration: 0.16), value: isVisible)
+        .onAppear {
+            updatePresentation()
+        }
+        .onChange(of: presentationKey) { _, _ in
+            updatePresentation()
+        }
+        .onDisappear {
+            hideTask?.cancel()
+        }
+    }
+
+    private var presentationKey: String {
+        appState.fileActivities.prefix(4)
+            .map { activity in
+                "\(activity.id.uuidString):\(statusKey(activity.status)):\(activity.finishedAt?.timeIntervalSince1970 ?? 0)"
+            }
+            .joined(separator: "|")
+    }
+
+    private func updatePresentation() {
+        guard !appState.fileActivities.isEmpty else {
+            hidePanel()
+            return
+        }
+        isVisible = true
+        scheduleAutoHideIfReady()
+    }
+
+    private func scheduleAutoHideIfReady() {
+        hideTask?.cancel()
+        guard autoHideDelay > ActivityPopupSettings.neverAutoHideDelay else { return }
+        guard appState.fileActivities.prefix(4).allSatisfy({ $0.status.isTerminal }) else { return }
+
+        let delay = UInt64(max(autoHideDelay, 0.1) * 1_000_000_000)
+        hideTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            isVisible = false
+        }
+    }
+
+    private func hidePanel() {
+        hideTask?.cancel()
+        isVisible = false
+    }
+
+    private func statusKey(_ status: FileActivityStatus) -> String {
+        switch status {
+        case .queued: "queued"
+        case .running: "running"
+        case .paused: "paused"
+        case .completed: "completed"
+        case .cancelled: "cancelled"
+        case .failed: "failed"
+        }
+    }
+}
+
 struct FileActivityPanel: View {
     @Environment(AppState.self) private var appState
+    var onDismiss: () -> Void = {}
 
     var body: some View {
         @Bindable var appState = appState
@@ -20,14 +97,9 @@ struct FileActivityPanel: View {
                     .frame(width: 108)
                     .help("Conflict handling for copy, move, and sync operations")
                 }
-                Button {
-                    appState.clearCompletedActivities()
-                } label: {
-                    Image(systemName: "xmark")
+                PanelIconButton(systemName: "xmark", help: "Hide Activity") {
+                    onDismiss()
                 }
-                .buttonStyle(.plain)
-                .disabled(!appState.fileActivities.contains { $0.status.isTerminal })
-                .help("Clear completed activities")
             }
 
             ForEach(appState.fileActivities.prefix(4)) { activity in
@@ -82,6 +154,27 @@ struct FileActivityPanel: View {
                     }
                     .buttonStyle(.plain)
                     .help("Cancel")
+                } else {
+                    if appState.canUndoActivity(activity.id) {
+                        Button {
+                            appState.undoActivity(activity.id)
+                        } label: {
+                            Image(systemName: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Undo")
+                    }
+                    if appState.canRevealActivity(activity.id) {
+                        Button {
+                            appState.revealActivity(activity.id)
+                        } label: {
+                            Image(systemName: "arrow.up.forward.square")
+                                .frame(width: 30, height: 30)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Reveal in Finder")
+                    }
                 }
             }
 

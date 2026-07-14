@@ -2,7 +2,7 @@ import Foundation
 import UniformTypeIdentifiers
 
 /// Quick file-type scopes used by both the browse filter and recursive search.
-enum FileTypePreset: String, CaseIterable, Identifiable {
+enum FileTypePreset: String, CaseIterable, Codable, Identifiable, Sendable {
     case all = "All"
     case images = "Images"
     case videos = "Videos"

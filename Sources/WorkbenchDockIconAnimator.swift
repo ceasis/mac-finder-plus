@@ -2,24 +2,105 @@ import AppKit
 
 enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
     static let defaultsKey = "appIconMode"
+    static let allCases: [WorkbenchAppIconMode] = [
+        .forge,
+        .mark,
+        .spark,
+        .done,
+        .bolt,
+        .classic,
+        .glass,
+        .pro,
+    ]
 
-    case animated
+    case forge = "animated"
+    case mark
+    case spark
+    case done
+    case bolt
+    case classic
+    case glass
+    case pro
     case staticIcon = "static"
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .animated: "Animated"
-        case .staticIcon: "Static"
+        case .forge, .staticIcon: "Forge"
+        case .mark: "Mark"
+        case .spark: "Spark"
+        case .done: "Done"
+        case .bolt: "Bolt"
+        case .classic: "Classic"
+        case .glass: "Glass"
+        case .pro: "Pro"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .forge, .staticIcon: "Animated"
+        case .mark: "Simple"
+        case .spark: "Catchy"
+        case .done: "Clean"
+        case .bolt: "Fast"
+        case .classic: "Folders"
+        case .glass: "Translucent"
+        case .pro: "Dark"
+        }
+    }
+
+    var assetName: String {
+        switch self.normalized {
+        case .forge: "WorkbenchIconForge"
+        case .mark: "WorkbenchIconMark"
+        case .spark: "WorkbenchIconSpark"
+        case .done: "WorkbenchIconDone"
+        case .bolt: "WorkbenchIconBolt"
+        case .classic: "WorkbenchIconClassic"
+        case .glass: "WorkbenchIconGlass"
+        case .pro: "WorkbenchIconPro"
+        case .staticIcon: "WorkbenchIconForge"
         }
     }
 
     static var preferred: WorkbenchAppIconMode {
         guard let rawValue = UserDefaults.standard.string(forKey: defaultsKey) else {
-            return .animated
+            return .forge
         }
-        return WorkbenchAppIconMode(rawValue: rawValue) ?? .animated
+        return mode(for: rawValue)
+    }
+
+    static func mode(for rawValue: String?) -> WorkbenchAppIconMode {
+        guard let rawValue else {
+            return .forge
+        }
+
+        let mode = WorkbenchAppIconMode(rawValue: rawValue) ?? .forge
+        return mode.normalized
+    }
+
+    var usesAnimatedDockTile: Bool {
+        normalized == .forge
+    }
+
+    var removesOuterRim: Bool {
+        switch normalized {
+        case .forge, .classic, .glass, .pro:
+            true
+        case .mark, .spark, .done, .bolt, .staticIcon:
+            false
+        }
+    }
+
+    private var normalized: WorkbenchAppIconMode {
+        switch self {
+        case .staticIcon:
+            .forge
+        case .forge, .mark, .spark, .done, .bolt, .classic, .glass, .pro:
+            self
+        }
     }
 }
 
@@ -37,10 +118,13 @@ final class WorkbenchAppDelegate: NSObject, NSApplicationDelegate {
 final class WorkbenchDockIconAnimator {
     static let shared = WorkbenchDockIconAnimator()
 
+    static let dockIconVisualScale: CGFloat = 0.86
+
     private let view = WorkbenchDockIconView(frame: NSRect(x: 0, y: 0, width: 128, height: 128))
     private var timer: Timer?
     private var defaultsObserver: NSObjectProtocol?
     private var startedAt = CACurrentMediaTime()
+    private var appliedMode: WorkbenchAppIconMode?
 
     private init() {}
 
@@ -67,18 +151,24 @@ final class WorkbenchDockIconAnimator {
             self.defaultsObserver = nil
         }
         stop()
+        appliedMode = nil
     }
 
     func applyPreferredMode() {
-        switch WorkbenchAppIconMode.preferred {
-        case .animated:
-            start()
-        case .staticIcon:
-            stop()
+        let mode = WorkbenchAppIconMode.preferred
+        guard mode != appliedMode else { return }
+
+        appliedMode = mode
+        if mode.usesAnimatedDockTile {
+            start(with: mode)
+        } else {
+            stop(using: Self.image(for: mode))
         }
     }
 
-    func start() {
+    func start(with mode: WorkbenchAppIconMode = .forge) {
+        NSApplication.shared.applicationIconImage = Self.image(for: mode)
+
         guard timer == nil else { return }
 
         startedAt = CACurrentMediaTime()
@@ -92,17 +182,68 @@ final class WorkbenchDockIconAnimator {
         }
     }
 
-    func stop() {
+    func stop(using image: NSImage? = nil) {
         timer?.invalidate()
         timer = nil
         NSApplication.shared.dockTile.contentView = nil
+        NSApplication.shared.applicationIconImage = image ?? Self.image(for: .forge)
         NSApplication.shared.dockTile.display()
+    }
+
+    static func image(for mode: WorkbenchAppIconMode) -> NSImage {
+        if let image = NSImage(named: mode.assetName) {
+            return appIconCopy(of: image, removingOuterRim: mode.removesOuterRim)
+        }
+
+        return loadPrimaryIconImage()
     }
 
     private func tick() {
         view.elapsed = CACurrentMediaTime() - startedAt
         view.needsDisplay = true
         NSApplication.shared.dockTile.display()
+    }
+
+    private static func loadPrimaryIconImage() -> NSImage {
+        if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let image = NSImage(contentsOf: iconURL) {
+            return appIconCopy(of: image)
+        }
+
+        if let image = NSImage(named: "AppIcon") {
+            return appIconCopy(of: image)
+        }
+
+        let fallback = NSApplication.shared.applicationIconImage ?? NSImage(size: NSSize(width: 1024, height: 1024))
+        return appIconCopy(of: fallback)
+    }
+
+    private static func appIconCopy(of image: NSImage, removingOuterRim: Bool = false) -> NSImage {
+        let canvas = NSSize(width: 1024, height: 1024)
+        let drawScale = dockIconVisualScale
+        let drawSize = NSSize(width: canvas.width * drawScale, height: canvas.height * drawScale)
+        let drawRect = NSRect(
+            x: (canvas.width - drawSize.width) / 2,
+            y: (canvas.height - drawSize.height) / 2,
+            width: drawSize.width,
+            height: drawSize.height
+        )
+        let output = NSImage(size: canvas)
+
+        output.lockFocus()
+        defer { output.unlockFocus() }
+
+        NSColor.clear.setFill()
+        NSRect(origin: .zero, size: canvas).fill()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        NSBezierPath(
+            roundedRect: NSRect(origin: .zero, size: canvas),
+            xRadius: 230,
+            yRadius: 230
+        ).addClip()
+        image.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1)
+        output.size = canvas
+        return output
     }
 }
 
@@ -121,6 +262,12 @@ private final class WorkbenchDockIconView: NSView {
         context.saveGState()
         context.translateBy(x: bounds.minX, y: bounds.minY)
         context.scaleBy(x: bounds.width / 1024.0, y: bounds.height / 1024.0)
+        context.translateBy(x: 512, y: 512)
+        context.scaleBy(
+            x: WorkbenchDockIconAnimator.dockIconVisualScale,
+            y: WorkbenchDockIconAnimator.dockIconVisualScale
+        )
+        context.translateBy(x: -512, y: -512)
 
         let phase = CGFloat(elapsed.truncatingRemainder(dividingBy: TimeInterval(cycleDuration))) / cycleDuration
         let impact = impactPulse(for: phase)
@@ -162,13 +309,6 @@ private final class WorkbenchDockIconView: NSView {
         )
         context.restoreGState()
 
-        strokeRoundedRect(
-            tile.insetBy(dx: 16, dy: 16),
-            radius: 186,
-            lineWidth: 26,
-            color: NSColor(red: 0.095, green: 0.118, blue: 0.135, alpha: 1.0),
-            in: context
-        )
         strokeRoundedRect(
             tile.insetBy(dx: 38, dy: 38),
             radius: 170,

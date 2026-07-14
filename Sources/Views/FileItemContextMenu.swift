@@ -35,77 +35,97 @@ struct FileItemContextMenu: View {
             && !items.contains(where: \.isToolPackage)
         let archiveSelection = items.count == 1 && items.first?.isArchive == true
         if ids.isEmpty {
-            Button("New Folder") {
+            menuButton("New Folder", systemImage: "folder.badge.plus") {
                 activate()
                 appState.showNewFolderPrompt = true
             }
-            Button("New Text File") {
+            menuButton("New Text File", systemImage: "doc.badge.plus") {
                 activate()
                 appState.showNewFilePrompt = true
             }
             if appState.canPasteFilesFromClipboard {
                 Divider()
-                Button("Paste Item") {
+                menuButton("Paste Item", systemImage: "clipboard") {
                     activate()
                     appState.pasteClipboardFiles(to: model.currentURL, move: false)
                 }
             }
             Divider()
-            Button("Open in Terminal") {
+            menuButton("Open in Terminal", systemImage: "terminal") {
                 activate()
                 appState.openTerminal(at: model.currentURL)
             }
-            Button("Refresh") { model.refresh() }
+            menuButton("Refresh", systemImage: "arrow.clockwise") { model.refresh() }
         } else {
-            Button("Open") {
+            menuButton("Open", systemImage: "arrow.up.forward.app") {
                 activate()
                 model.open(ids)
             }
             if ids.count == 1, let item = items.first, !item.isDirectory, !item.isText {
-                Button("Edit in Text Editor") {
+                menuButton("Edit in Text Editor", systemImage: "square.and.pencil") {
                     activate()
                     appState.beginEditText(ids)
                 }
             }
-            Button("Quick Look") {
+            menuButton("Quick Look", systemImage: "eye") {
                 activate()
                 appState.quickLookSelection()
             }
-            Button("Share via AirDrop") {
+            menuButton("Share via AirDrop", systemImage: "airdrop") {
                 activate()
                 appState.shareSelectionViaAirDrop(ids)
             }
             if items.contains(where: { !$0.isDirectory }) {
-                Button("Create As Snippet") {
+                menuButton("Create As Snippet", systemImage: "text.quote") {
                     activate()
                     appState.createSnippetFromSelection(ids)
                 }
             }
+            if imageOnlySelection {
+                menuButton("Extract Text", systemImage: "text.viewfinder") {
+                    activate()
+                    appState.extractTextFromImages(ids)
+                }
+            }
+            menuButton("Add to Drop Stack", systemImage: "tray.and.arrow.down") {
+                activate()
+                appState.addSelectionToDropStack(ids)
+            }
             Divider()
             if appState.isDualPane {
-                Button("Copy to Other Pane") {
+                menuButton("Copy to Other Pane", systemImage: "rectangle.split.2x1") {
                     activate()
                     appState.transferSelection(ids, move: false)
                 }
-                Button("Move to Other Pane") {
+                menuButton("Move to Other Pane", systemImage: "arrow.right.square") {
                     activate()
                     appState.transferSelection(ids, move: true)
                 }
                 Divider()
             }
-            Button("Move into New Folder…") {
+            menuButton("Move into New Folder…", systemImage: "folder.badge.plus") {
                 activate()
                 appState.beginMoveSelectionIntoNewFolder(ids)
             }
-            Button("Duplicate") {
+            menuButton("Move to Parent Folder", systemImage: "arrow.up.folder") {
+                activate()
+                appState.moveSelectionToParentFolder(ids)
+            }
+            menuButton("Duplicate", systemImage: "plus.square.on.square") {
                 activate()
                 appState.duplicateSelection(ids)
             }
-            Button("Batch Rename…") {
+            if !items.isEmpty {
+                menuButton("Compress to ZIP", systemImage: "doc.zipper") {
+                    activate()
+                    appState.compressSelectionToZip(ids)
+                }
+            }
+            menuButton("Batch Rename…", systemImage: "textformat") {
                 activate()
                 appState.beginBatchRename(ids)
             }
-            Menu("Rating") {
+            Menu {
                 Button("Clear Rating") {
                     activate()
                     appState.rateSelection(0, ids: ids)
@@ -117,9 +137,11 @@ struct FileItemContextMenu: View {
                         appState.rateSelection(rating, ids: ids)
                     }
                 }
+            } label: {
+                Label("Rating", systemImage: "star")
             }
             if imageOnlySelection {
-                Menu("Image Tools…") {
+                Menu {
                     if items.count == 1 {
                         Button("Annotate Image…") {
                             activate()
@@ -181,10 +203,12 @@ struct FileItemContextMenu: View {
                             appState.beginMergeIntoVideo(ids)
                         }
                     }
+                } label: {
+                    Label("Image Tools…", systemImage: "photo")
                 }
             }
             if visualMediaSelection, !imageOnlySelection {
-                Menu("Media Tools…") {
+                Menu {
                     Button("Convert Media…") {
                         activate()
                         appState.beginConvert(ids)
@@ -199,10 +223,12 @@ struct FileItemContextMenu: View {
                             appState.beginMergeIntoVideo(ids)
                         }
                     }
+                } label: {
+                    Label("Media Tools…", systemImage: "play.rectangle")
                 }
             }
             if audioOnlySelection {
-                Menu("Audio Tools…") {
+                Menu {
                     Button("Play in Preview") {
                         activate()
                         appState.showPreviewForSelection(ids)
@@ -216,10 +242,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.showVoiceRecorderTool()
                     }
+                } label: {
+                    Label("Audio Tools…", systemImage: "waveform")
                 }
             }
             if spreadsheetOnlySelection {
-                Menu("Spreadsheet Tools…") {
+                Menu {
                     Button("Open in Numbers") {
                         activate()
                         appState.openSpreadsheetsInNumbers(ids)
@@ -244,10 +272,12 @@ struct FileItemContextMenu: View {
                             }
                         }
                     }
+                } label: {
+                    Label("Spreadsheet Tools…", systemImage: "tablecells")
                 }
             }
             if textCodeSelection, let textFile = items.first {
-                Menu("Text & Code Tools…") {
+                Menu {
                     Button("Open in Text Editor") {
                         activate()
                         appState.beginEditText(ids)
@@ -275,10 +305,12 @@ struct FileItemContextMenu: View {
                             appState.validateJSON(ids)
                         }
                     }
+                } label: {
+                    Label("Text & Code Tools…", systemImage: "curlybraces")
                 }
             }
             if documentOnlySelection {
-                Menu("Document Tools…") {
+                Menu {
                     Button("Convert to PDF") {
                         activate()
                         appState.convertDocumentToPDF(ids)
@@ -287,10 +319,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.openDocumentsInPages(ids)
                     }
+                } label: {
+                    Label("Document Tools…", systemImage: "doc.text")
                 }
             }
             if applicationSelection, let application = items.first {
-                Menu("App Tools…") {
+                Menu {
                     Button("Launch App") {
                         activate()
                         appState.launchApplication(ids)
@@ -308,10 +342,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.copyApplicationDetails(ids)
                     }
+                } label: {
+                    Label("App Tools…", systemImage: "app")
                 }
             }
             if diskImageSelection {
-                Menu("Disk Image Tools…") {
+                Menu {
                     Button("Mount Disk Image") {
                         activate()
                         appState.mountDiskImage(ids)
@@ -321,10 +357,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.copyDiskImageChecksum(ids)
                     }
+                } label: {
+                    Label("Disk Image Tools…", systemImage: "externaldrive")
                 }
             }
             if installerSelection, let installer = items.first {
-                Menu("Installer Tools…") {
+                Menu {
                     Button("Open Installer") {
                         activate()
                         appState.openInstallerPackage(ids)
@@ -340,10 +378,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.copyInstallerDetails(ids)
                     }
+                } label: {
+                    Label("Installer Tools…", systemImage: "shippingbox")
                 }
             }
             if presentationOnlySelection {
-                Menu("Presentation Tools…") {
+                Menu {
                     Button("Open in Keynote") {
                         activate()
                         appState.openPresentationsInKeynote(ids)
@@ -354,10 +394,12 @@ struct FileItemContextMenu: View {
                             appState.exportPresentationToPDF(ids)
                         }
                     }
+                } label: {
+                    Label("Presentation Tools…", systemImage: "rectangle.on.rectangle")
                 }
             }
             if fontOnlySelection {
-                Menu("Font Tools…") {
+                Menu {
                     Button("Open in Font Book") {
                         activate()
                         appState.openFontsInFontBook(ids)
@@ -371,10 +413,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.copyFontDetails(ids)
                     }
+                } label: {
+                    Label("Font Tools…", systemImage: "textformat.size")
                 }
             }
             if eBookSelection {
-                Menu("EPUB Tools…") {
+                Menu {
                     Button("Open in Books") {
                         activate()
                         appState.openEBooksInBooks(ids)
@@ -383,10 +427,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.copyEBookDetails(ids)
                     }
+                } label: {
+                    Label("EPUB Tools…", systemImage: "book")
                 }
             }
             if contactCardOnlySelection {
-                Menu("Contact Tools…") {
+                Menu {
                     Button("Open in Contacts") {
                         activate()
                         appState.openContactCardsInContacts(ids)
@@ -395,10 +441,12 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.copyContactDetails(ids)
                     }
+                } label: {
+                    Label("Contact Tools…", systemImage: "person.crop.rectangle")
                 }
             }
             if folderOnlySelection {
-                Menu("Folder Tools…") {
+                Menu {
                     Button("Calculate Size") {
                         activate()
                         model.calculateSizes(ids)
@@ -418,10 +466,16 @@ struct FileItemContextMenu: View {
                             appState.cleanUpFolder(at: folder.url)
                         }
                     }
+                } label: {
+                    Label("Folder Tools…", systemImage: "folder")
                 }
             }
             if archiveSelection, let archive = items.first {
-                Menu("Archive Tools…") {
+                Menu {
+                    Button("Browse Archive") {
+                        activate()
+                        appState.browseArchive(ids)
+                    }
                     if archive.isZipArchive {
                         Button("View Archive Contents") {
                             activate()
@@ -437,18 +491,20 @@ struct FileItemContextMenu: View {
                         activate()
                         appState.extractArchive(ids)
                     }
+                } label: {
+                    Label("Archive Tools…", systemImage: "archivebox")
                 }
             }
             if items.contains(where: MediaConverter.canConvert),
                !imageOnlySelection,
                !visualMediaSelection {
-                Button("Convert…") {
+                menuButton("Convert…", systemImage: "arrow.triangle.2.circlepath") {
                     activate()
                     appState.beginConvert(ids)
                 }
             }
             if !items.isEmpty, items.allSatisfy(PDFTools.isPDF) {
-                Menu("PDF Tools…") {
+                Menu {
                     if items.count >= 2 {
                         Button("Merge PDFs") {
                             activate()
@@ -504,18 +560,20 @@ struct FileItemContextMenu: View {
                             appState.copyPDFDetails(ids)
                         }
                     }
+                } label: {
+                    Label("PDF Tools…", systemImage: "doc.richtext")
                 }
             }
             if ids.count == 1, let item = items.first {
-                Button("Rename…") { appState.renameTarget = item }
+                menuButton("Rename…", systemImage: "pencil") { appState.renameTarget = item }
                 if item.isDirectory, !item.isToolPackage {
                     if appState.canPasteFilesFromClipboard {
                         Divider()
-                        Button("Move files here") {
+                        menuButton("Move Items Here", systemImage: "arrow.down.doc") {
                             activate()
                             appState.pasteClipboardFiles(to: item.url, move: true)
                         }
-                        Button("Copy files here") {
+                        menuButton("Paste Items Here", systemImage: "clipboard") {
                             activate()
                             appState.pasteClipboardFiles(to: item.url, move: false)
                         }
@@ -523,31 +581,42 @@ struct FileItemContextMenu: View {
                 }
             }
             Divider()
-            Button("Copy Files") {
+            menuButton("Copy Files", systemImage: "doc.on.doc") {
                 activate()
                 appState.copyFilesOfSelection(ids)
             }
-            Button("Copy Path") {
+            menuButton("Copy Path", systemImage: "point.topleft.down.curvedto.point.bottomright.up") {
                 activate()
                 appState.copyPathOfSelection(ids)
             }
-            Button("Copy Names As Text") {
+            menuButton("Copy Names As Text", systemImage: "textformat.abc") {
                 activate()
                 appState.copyNamesOfSelection(ids)
             }
-            Button("Show Clipboard History") {
+            menuButton("Show Clipboard History", systemImage: "clock.arrow.circlepath") {
                 activate()
                 appState.showClipboardHistory()
             }
-            Button("Reveal in Finder") {
+            menuButton("Reveal in Finder", systemImage: "folder") {
                 activate()
                 appState.revealSelectionInFinder(ids)
             }
             Divider()
-            Button("Move to Trash", role: .destructive) {
+            menuButton("Move to Trash", systemImage: "trash", role: .destructive) {
                 activate()
                 appState.trashSelection(ids)
             }
+        }
+    }
+
+    private func menuButton(
+        _ title: String,
+        systemImage: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Label(title, systemImage: systemImage)
         }
     }
 

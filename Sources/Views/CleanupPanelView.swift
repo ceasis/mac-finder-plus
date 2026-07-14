@@ -32,30 +32,18 @@ struct CleanupPanelView: View {
             Spacer()
 
             if store.isScanning {
-                Button {
+                PanelIconButton(systemName: "stop.circle", help: "Stop scan") {
                     store.cancelScan()
-                } label: {
-                    Image(systemName: "stop.circle")
                 }
-                .buttonStyle(.plain)
-                .help("Stop scan")
             } else {
-                Button {
+                PanelIconButton(systemName: "arrow.clockwise", help: "Scan again") {
                     store.startScan(activeFolder: appState.activePane.currentURL)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.plain)
-                .help("Scan again")
             }
 
-            Button {
+            PanelIconButton(systemName: "xmark", help: "Hide Clean Up") {
                 appState.hideCleanupTool()
-            } label: {
-                Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
-            .help("Hide Clean Up")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -100,7 +88,7 @@ struct CleanupPanelView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+            .controlSize(.regular)
             .disabled(store.isScanning)
         }
         .padding(.horizontal, 12)
@@ -149,6 +137,23 @@ struct CleanupPanelView: View {
     }
 
     private var footer: some View {
+        ViewThatFits(in: .horizontal) {
+            footerContent
+            VStack(alignment: .leading, spacing: 8) {
+                Text(selectionSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    footerButtons
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    private var footerContent: some View {
         HStack(spacing: 8) {
             Text(selectionSummary)
                 .font(.caption)
@@ -157,6 +162,12 @@ struct CleanupPanelView: View {
 
             Spacer()
 
+            footerButtons
+        }
+    }
+
+    private var footerButtons: some View {
+        Group {
             Button("Reveal") {
                 revealSelected()
             }
@@ -167,8 +178,6 @@ struct CleanupPanelView: View {
             }
             .disabled(store.selectedSuggestions.isEmpty)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
     }
 
     private var selectionSummary: String {
@@ -234,9 +243,10 @@ private struct CleanupCategoryHeader: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.caption)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
-            .frame(width: 16)
         }
         .help(category.kind.detail)
         .overlay(alignment: .bottomLeading) {

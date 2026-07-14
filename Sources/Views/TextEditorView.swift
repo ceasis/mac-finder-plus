@@ -100,16 +100,20 @@ struct TextEditorView: View {
 
             Button { fontSize = max(9, fontSize - 1) } label: { Image(systemName: "textformat.size.smaller") }
                 .help("Zoom out")
+                .frame(minWidth: 30, minHeight: 28)
             Button { fontSize = min(28, fontSize + 1) } label: { Image(systemName: "textformat.size.larger") }
                 .help("Zoom in")
+                .frame(minWidth: 30, minHeight: 28)
 
             Button { wrapsLines.toggle() } label: {
                 Image(systemName: wrapsLines ? "text.alignleft" : "text.append")
             }
             .help(wrapsLines ? "Word wrap on" : "Word wrap off")
+            .frame(minWidth: 30, minHeight: 28)
 
             Button { showGoToLine = true } label: { Image(systemName: "arrow.right.to.line") }
                 .help("Go to line")
+                .frame(minWidth: 30, minHeight: 28)
 
             Button { save() } label: { Label("Save", systemImage: "square.and.arrow.down") }
                 .buttonStyle(.borderedProminent)
@@ -119,6 +123,8 @@ struct TextEditorView: View {
             Button { attemptClose() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                 .buttonStyle(.plain)
                 .help("Close editor")
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.bordered)
         .padding(.horizontal, 14)

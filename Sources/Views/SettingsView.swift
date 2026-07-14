@@ -16,7 +16,7 @@ struct SettingsView: View {
             PermissionsSettingsView()
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
         }
-        .frame(width: 460)
+        .frame(width: 560, height: 620)
     }
 }
 
@@ -91,23 +91,65 @@ private struct PermissionsSettingsView: View {
 
 private struct GeneralSettingsView: View {
     @Environment(AppState.self) private var appState
-    @AppStorage(WorkbenchAppIconMode.defaultsKey) private var appIconMode = WorkbenchAppIconMode.animated.rawValue
+    @AppStorage(WorkbenchAppIconMode.defaultsKey) private var appIconMode = WorkbenchAppIconMode.forge.rawValue
+    @AppStorage(ActivityPopupSettings.autoHideDelayKey)
+    private var activityAutoHideDelay = ActivityPopupSettings.defaultAutoHideDelay
+    @AppStorage(DeletionSafetySettings.confirmMoveToTrashKey) private var confirmMoveToTrash = true
 
     var body: some View {
         @Bindable var appState = appState
         Form {
             Section("Appearance") {
-                Picker("App icon", selection: $appIconMode) {
-                    ForEach(WorkbenchAppIconMode.allCases) { mode in
-                        Text(mode.title).tag(mode.rawValue)
-                    }
+                AppIconPicker(selection: $appIconMode)
+            }
+            Section("Activity") {
+                Picker("Hide popup after", selection: $activityAutoHideDelay) {
+                    Text("Never").tag(ActivityPopupSettings.neverAutoHideDelay)
+                    Text("1 second").tag(1.0)
+                    Text("3 seconds").tag(3.0)
+                    Text("5 seconds").tag(5.0)
+                    Text("10 seconds").tag(10.0)
                 }
-                .pickerStyle(.segmented)
+                Button("Reset Activity Popup") {
+                    activityAutoHideDelay = ActivityPopupSettings.defaultAutoHideDelay
+                }
+            }
+            Section("Safety") {
+                Toggle("Confirm before moving files to Trash", isOn: $confirmMoveToTrash)
+                Text("Activity History keeps undo and reveal controls for file operations when macOS still allows them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Browsing") {
                 Toggle("Show hidden files", isOn: $appState.showHidden)
                 Toggle("Show folders first", isOn: $appState.foldersFirst)
                 Toggle("Calculate folder sizes automatically", isOn: $appState.autoCalculateFolderSizes)
+            }
+            Section("Support & Data") {
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Button("Export Data") {
+                            appState.exportWorkbenchDataBackup()
+                        }
+                        Button("Import Data") {
+                            appState.importWorkbenchDataBackup()
+                        }
+                        Button("Export Diagnostics") {
+                            appState.exportWorkbenchDiagnostics()
+                        }
+                    }
+                    VStack(alignment: .leading) {
+                        Button("Export Data") {
+                            appState.exportWorkbenchDataBackup()
+                        }
+                        Button("Import Data") {
+                            appState.importWorkbenchDataBackup()
+                        }
+                        Button("Export Diagnostics") {
+                            appState.exportWorkbenchDiagnostics()
+                        }
+                    }
+                }
             }
             Section("Sidebar") {
                 Button("Reset Sidebar Layout") {
@@ -124,6 +166,94 @@ private struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct AppIconPicker: View {
+    @Binding var selection: String
+
+    private let columns = [
+        GridItem(.flexible(minimum: 92), spacing: 8),
+        GridItem(.flexible(minimum: 92), spacing: 8),
+        GridItem(.flexible(minimum: 92), spacing: 8),
+        GridItem(.flexible(minimum: 92), spacing: 8),
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 8) {
+            ForEach(WorkbenchAppIconMode.allCases) { mode in
+                iconButton(for: mode)
+            }
+        }
+        .padding(.vertical, 4)
+        .onAppear(perform: normalizeSelection)
+        .onChange(of: selection) { _, _ in
+            WorkbenchDockIconAnimator.shared.applyPreferredMode()
+        }
+    }
+
+    private func iconButton(for mode: WorkbenchAppIconMode) -> some View {
+        let isSelected = selectedMode == mode
+
+        return Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                selection = mode.rawValue
+            }
+        } label: {
+            VStack(spacing: 8) {
+                ZStack(alignment: .topTrailing) {
+                    Image(nsImage: WorkbenchDockIconAnimator.image(for: mode))
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 52, height: 52)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .shadow(color: .black.opacity(0.16), radius: 6, y: 3)
+
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, Color.accentColor)
+                            .background(Circle().fill(.white))
+                            .offset(x: 4, y: -4)
+                    }
+                }
+
+                VStack(spacing: 1) {
+                    Text(mode.title)
+                        .font(.caption.weight(.semibold))
+                    Text(mode.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color(nsColor: .controlBackgroundColor))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected ? Color.accentColor.opacity(0.64) : Color.primary.opacity(0.08), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(mode.title))
+        .accessibilityValue(Text(isSelected ? "Selected" : mode.detail))
+    }
+
+    private var selectedMode: WorkbenchAppIconMode {
+        WorkbenchAppIconMode.mode(for: selection)
+    }
+
+    private func normalizeSelection() {
+        let normalized = WorkbenchAppIconMode.mode(for: selection).rawValue
+        if selection != normalized {
+            selection = normalized
+        }
     }
 }
 

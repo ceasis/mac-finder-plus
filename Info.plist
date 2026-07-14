@@ -40,7 +40,7 @@
 			<key>UTTypeDescription</key>
 			<string>Workbench File Drag</string>
 			<key>UTTypeIdentifier</key>
-			<string>com.choloasis.panes.file-drag</string>
+			<string>com.qnsub.workbench.file-drag</string>
 		</dict>
 	</array>
 </dict>

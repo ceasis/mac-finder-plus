@@ -31,7 +31,7 @@ struct DiskSpaceAnalyzerPanelView: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Analyzing Disk Space")
+                    Text("Analyzing...")
                         .font(.subheadline.weight(.medium))
                 }
                 Button {
@@ -45,20 +45,15 @@ struct DiskSpaceAnalyzerPanelView: View {
                 Button {
                     store.startScan(containing: appState.activePane.currentURL, force: true)
                 } label: {
-                    Label("Analyze Disk Space", systemImage: "chart.pie.fill")
+                    Label("Analyze", systemImage: "chart.pie.fill")
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .help("Analyze the disk containing the active folder")
             }
 
-            Button {
+            PanelIconButton(systemName: "xmark", help: "Hide Disk Space") {
                 appState.hideDiskSpaceAnalyzer()
-            } label: {
-                Image(systemName: "xmark")
             }
-            .buttonStyle(.plain)
-            .help("Hide Disk Space")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -412,7 +407,7 @@ private struct DiskSpaceDeletionCandidateRow: View {
                         Label("Reveal", systemImage: "finder")
                     }
                     .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .controlSize(.regular)
 
                     Menu {
                         if destinations.isEmpty {
@@ -430,7 +425,7 @@ private struct DiskSpaceDeletionCandidateRow: View {
                         Label("Move to SSD", systemImage: "externaldrive.badge.plus")
                     }
                     .menuStyle(.borderedButton)
-                    .controlSize(.small)
+                    .controlSize(.regular)
                     .disabled(destinations.isEmpty || candidate.isSystemItem)
                     .help(moveHelp)
                 }

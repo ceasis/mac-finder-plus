@@ -106,7 +106,7 @@ struct AppCommands: Commands {
                 .keyboardShortcut(.upArrow, modifiers: .command)
                 .disabled(!appState.activePane.canGoUp)
             Button("Open Selection") {
-                appState.activePane.open(appState.activePane.selection)
+                appState.openSelection()
             }
             .keyboardShortcut(.downArrow, modifiers: .command)
             .disabled(!appState.hasActiveSelection)

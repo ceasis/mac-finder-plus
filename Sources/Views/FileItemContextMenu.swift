@@ -59,7 +59,7 @@ struct FileItemContextMenu: View {
         } else {
             menuButton("Open", systemImage: "arrow.up.forward.app") {
                 activate()
-                model.open(ids)
+                appState.openItems(ids, in: paneIndex)
             }
             if ids.count == 1, let item = items.first, !item.isDirectory, !item.isText {
                 menuButton("Edit in Text Editor", systemImage: "square.and.pencil") {

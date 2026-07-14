@@ -120,8 +120,7 @@ struct PaneView: View {
         .contextMenu(forSelectionType: FileItem.ID.self) { ids in
             FileItemContextMenu(ids: ids, model: model, paneIndex: paneIndex)
         } primaryAction: { ids in
-            appState.activePaneIndex = paneIndex
-            model.open(ids)
+            appState.openItems(ids, in: paneIndex)
         }
         .onKeyPress(.space) {
             appState.activePaneIndex = paneIndex
@@ -214,7 +213,7 @@ struct PaneView: View {
         listRangeAnchorID = item.id
         let ids = model.selection.contains(item.id) ? model.selection : [item.id]
         model.selection = ids
-        model.open(ids)
+        appState.openItems(ids, in: paneIndex)
         return true
     }
 

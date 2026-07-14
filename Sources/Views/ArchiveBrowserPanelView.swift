@@ -1,3 +1,4 @@
+import QuickLookUI
 import SwiftUI
 
 struct ArchiveBrowserPanelView: View {
@@ -53,16 +54,25 @@ struct ArchiveBrowserPanelView: View {
                         description: Text("Clear the archive search to show all entries.")
                     )
                 } else {
-                    ArchiveEntryList(
-                        entries: store.visibleEntries,
-                        selectedEntryID: Binding(
-                            get: { store.selectedEntryID },
-                            set: { store.selectedEntryID = $0 }
-                        ),
-                        openSelectedFolder: {
-                            store.openSelectedFolder()
-                        }
-                    )
+                    VSplitView {
+                        ArchiveEntryList(
+                            entries: store.visibleEntries,
+                            selectedEntryID: Binding(
+                                get: { store.selectedEntryID },
+                                set: { store.selectedEntryID = $0 }
+                            ),
+                            openSelectedFolder: {
+                                store.openSelectedFolder()
+                            }
+                        )
+                        .frame(minHeight: 160)
+
+                        ArchiveEntryPreviewPanel(
+                            archiveURL: store.archiveURL,
+                            entry: store.selectedEntry
+                        )
+                        .frame(minHeight: 180, idealHeight: 240)
+                    }
                 }
             }
         }
@@ -214,6 +224,10 @@ private struct ArchiveEntryList: View {
             ForEach(entries) { entry in
                 ArchiveEntryRow(entry: entry)
                     .tag(entry.id)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        selectedEntryID = entry.id
+                    }
                     .onTapGesture(count: 2) {
                         if entry.isDirectory {
                             selectedEntryID = entry.id
@@ -255,6 +269,127 @@ private struct ArchiveEntryRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct ArchiveEntryPreviewPanel: View {
+    let archiveURL: URL?
+    let entry: ArchiveBrowserEntry?
+
+    @State private var previewURL: URL?
+    @State private var errorMessage: String?
+    @State private var isLoading = false
+
+    private var previewKey: String {
+        "\(archiveURL?.path ?? "")|\(entry?.id ?? "")"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            previewContent
+        }
+        .task(id: previewKey) {
+            await loadPreview()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Label("Preview", systemImage: "eye")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 8)
+
+            if let entry {
+                Text(entry.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                if !entry.isDirectory {
+                    Text(entry.sizeText)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+    }
+
+    @ViewBuilder
+    private var previewContent: some View {
+        if entry == nil {
+            ContentUnavailableView(
+                "No Preview",
+                systemImage: "eye",
+                description: Text("Select a file in the archive.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if entry?.isDirectory == true {
+            ContentUnavailableView(
+                "Folder Selected",
+                systemImage: "folder",
+                description: Text("Open the folder or select a file to preview.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if isLoading {
+            ProgressView("Preparing preview...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage {
+            ContentUnavailableView(
+                "Can’t Preview",
+                systemImage: "doc.questionmark",
+                description: Text(errorMessage)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let previewURL {
+            ArchiveQuickLookPreview(url: previewURL)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func loadPreview() async {
+        previewURL = nil
+        errorMessage = nil
+        isLoading = false
+
+        guard let archiveURL, let entry, !entry.isDirectory else { return }
+        isLoading = true
+        do {
+            let url = try await ArchiveTools.previewFile(for: entry, in: archiveURL)
+            guard !Task.isCancelled else { return }
+            previewURL = url
+        } catch {
+            guard !Task.isCancelled else { return }
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
+    }
+}
+
+private struct ArchiveQuickLookPreview: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal) ?? QLPreviewView()
+        view.autostarts = true
+        view.previewItem = url as NSURL
+        return view
+    }
+
+    func updateNSView(_ nsView: QLPreviewView, context: Context) {
+        if (nsView.previewItem as? NSURL) as URL? != url {
+            nsView.previewItem = url as NSURL
+        }
     }
 }

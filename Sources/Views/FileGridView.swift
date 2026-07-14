@@ -191,8 +191,7 @@ struct FileGridView: View {
 
     private func handleMouseDown(on item: FileItem, clickCount: Int) {
         if clickCount == 2 {
-            appState.activePaneIndex = paneIndex
-            model.open([item.id])
+            appState.openItems([item.id], in: paneIndex)
         } else if model.selection.contains(item.id), !NSEvent.modifierFlags.contains(.command) {
             appState.activePaneIndex = paneIndex
             focused = true

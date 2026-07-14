@@ -325,6 +325,8 @@ enum ContactCardTools {
 }
 
 enum ArchiveTools {
+    private static let previewSizeLimit: UInt64 = 250 * 1_024 * 1_024
+
     static func extract(at url: URL) async throws -> URL {
         if url.pathExtension.localizedCaseInsensitiveCompare("zip") == .orderedSame {
             return try await FileOperations.extractZip(url)
@@ -347,6 +349,37 @@ enum ArchiveTools {
                 return folder
             } catch {
                 try? FileManager.default.removeItem(at: folder)
+                throw error
+            }
+        }.value
+    }
+
+    static func previewFile(for entry: ArchiveBrowserEntry, in archiveURL: URL) async throws -> URL {
+        guard !entry.isDirectory else {
+            throw AdditionalFileToolError(message: "Select a file to preview.")
+        }
+        if let size = entry.uncompressedSize, size > previewSizeLimit {
+            let sizeText = ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)
+            throw AdditionalFileToolError(message: "This file is too large to preview (\(sizeText)).")
+        }
+        guard archiveURL.pathExtension.localizedCaseInsensitiveCompare("zip") == .orderedSame else {
+            throw AdditionalFileToolError(message: "Inline previews are currently available for ZIP archives.")
+        }
+
+        return try await Task.detached(priority: .userInitiated) {
+            let manager = FileManager.default
+            let cacheRoot = manager.temporaryDirectory
+                .appendingPathComponent("WorkbenchArchivePreviews", isDirectory: true)
+            let previewFolder = cacheRoot
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try manager.createDirectory(at: previewFolder, withIntermediateDirectories: true)
+
+            let destination = previewFolder.appendingPathComponent(previewFileName(for: entry))
+            do {
+                try writeZipEntryPreview(entry, from: archiveURL, to: destination)
+                return destination
+            } catch {
+                try? manager.removeItem(at: previewFolder)
                 throw error
             }
         }.value
@@ -385,6 +418,115 @@ enum ArchiveTools {
             || name.hasSuffix(".tgz")
             || name.hasSuffix(".tbz")
             || name.hasSuffix(".txz")
+    }
+
+    private static func previewFileName(for entry: ArchiveBrowserEntry) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/:\\")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let sanitized = entry.name
+            .components(separatedBy: invalidCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitized.isEmpty ? "Archive Preview" : sanitized
+    }
+
+    private static func writeZipEntryPreview(
+        _ entry: ArchiveBrowserEntry,
+        from archiveURL: URL,
+        to destination: URL
+    ) throws {
+        let manager = FileManager.default
+        let candidates = zipEntryCandidates(for: entry, in: archiveURL)
+        var firstError: Error?
+
+        for candidate in candidates {
+            do {
+                try? manager.removeItem(at: destination)
+                try SystemProcess.output(
+                    executable: "/usr/bin/unzip",
+                    arguments: ["-p", archiveURL.path, candidate],
+                    to: destination
+                )
+                return
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        if let extractedURL = try fullExtractedPreviewFile(for: entry, from: archiveURL, beside: destination) {
+            try? manager.removeItem(at: destination)
+            try manager.moveItem(at: extractedURL, to: destination)
+            return
+        }
+
+        if let firstError {
+            throw firstError
+        }
+        throw AdditionalFileToolError(message: "Couldn’t locate “\(entry.name)” in the archive.")
+    }
+
+    private static func zipEntryCandidates(
+        for entry: ArchiveBrowserEntry,
+        in archiveURL: URL
+    ) -> [String] {
+        var candidates = [entry.path]
+        guard let data = try? SystemProcess.output(
+            executable: "/usr/bin/unzip",
+            arguments: ["-Z", "-1", archiveURL.path]
+        ) else {
+            return candidates
+        }
+
+        let listing = String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .isoLatin1)
+            ?? ""
+        let unzipPaths = listing
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.hasSuffix("/") }
+
+        let matchingPaths = unzipPaths.filter { path in
+            path == entry.path || path.split(separator: "/").last.map(String.init) == entry.name
+        }
+        for path in matchingPaths where !candidates.contains(path) {
+            candidates.append(path)
+        }
+        return candidates
+    }
+
+    private static func fullExtractedPreviewFile(
+        for entry: ArchiveBrowserEntry,
+        from archiveURL: URL,
+        beside destination: URL
+    ) throws -> URL? {
+        let manager = FileManager.default
+        let extractionFolder = destination
+            .deletingLastPathComponent()
+            .appendingPathComponent("expanded", isDirectory: true)
+        try manager.createDirectory(at: extractionFolder, withIntermediateDirectories: true)
+        _ = try SystemProcess.output(
+            executable: "/usr/bin/unzip",
+            arguments: ["-qq", archiveURL.path, "-d", extractionFolder.path]
+        )
+
+        let exactURL = extractionFolder.appendingPathComponent(entry.path)
+        if manager.fileExists(atPath: exactURL.path) {
+            return exactURL
+        }
+
+        let enumerator = manager.enumerator(
+            at: extractionFolder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        while let url = enumerator?.nextObject() as? URL {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+            if values?.isRegularFile == true, url.lastPathComponent == entry.name {
+                return url
+            }
+        }
+        return nil
     }
 
     private static func extractionFolder(for url: URL) -> URL {

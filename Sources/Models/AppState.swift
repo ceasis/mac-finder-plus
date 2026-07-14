@@ -664,6 +664,27 @@ final class AppState {
         activePane.showAdvancedSearchResults(items, title: title)
     }
 
+    func openSelection() {
+        openItems(activePane.selection, in: activePaneIndex)
+    }
+
+    func openItems(_ ids: Set<FileItem.ID>, in paneIndex: Int? = nil) {
+        let targetPaneIndex = paneIndex ?? activePaneIndex
+        guard panes.indices.contains(targetPaneIndex) else { return }
+
+        activePaneIndex = targetPaneIndex
+        let pane = panes[targetPaneIndex]
+        let items = pane.resolvedItems(ids)
+        if items.count == 1, let item = items.first, item.isArchive {
+            pane.selection = [item.id]
+            ArchiveBrowserStore.shared.open(item)
+            presentTool(.archiveBrowser)
+            return
+        }
+
+        pane.open(ids)
+    }
+
     func browseArchive(_ ids: Set<FileItem.ID>? = nil) {
         guard let archive = resolvedDisplayItems(ids).first(where: \.isArchive) else {
             lastError = "Select an archive to browse."

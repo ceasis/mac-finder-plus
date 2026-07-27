@@ -94,7 +94,6 @@ private struct GeneralSettingsView: View {
     @AppStorage(WorkbenchAppIconMode.defaultsKey) private var appIconMode = WorkbenchAppIconMode.forge.rawValue
     @AppStorage(ActivityPopupSettings.autoHideDelayKey)
     private var activityAutoHideDelay = ActivityPopupSettings.defaultAutoHideDelay
-    @AppStorage(DeletionSafetySettings.confirmMoveToTrashKey) private var confirmMoveToTrash = true
 
     var body: some View {
         @Bindable var appState = appState
@@ -115,8 +114,7 @@ private struct GeneralSettingsView: View {
                 }
             }
             Section("Safety") {
-                Toggle("Confirm before moving files to Trash", isOn: $confirmMoveToTrash)
-                Text("Activity History keeps undo and reveal controls for file operations when macOS still allows them.")
+                Text("Files move directly to Trash. Activity History keeps Undo and Reveal available while macOS still allows them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -36,6 +36,33 @@ metadata:
   defaultLocale: en-US
   whatsNewStrategy: manual
   whatsNewGitLimit: 20
+  copyright: "\xA9 2026 QnSub"
+  appReview:
+    contactFirstName: Cholo
+    contactLastName: Asis
+    contactPhone: '+639175296875'
+    contactEmail: contact-us-orisonly@qnsub.com
+    signInRequired: false
+  appPrivacy: {}
+  appInformation:
+    appName: Workbench
+    primaryLocale: en-US
+  ageRating: {}
+  pricingAvailability:
+    enabled: true
+    customerPrice: '19.99'
+    baseTerritory: USA
+    makeAvailableInAllTerritories: true
+    availableInNewTerritories: true
+    inAppPurchases:
+    - id: 66D66AD2-8D36-4696-9B9B-FFA227559E32
+      referenceName: Workbench Pro Unlock
+      productId: com.qnsub.workbench.app.pro
+      type: NON_CONSUMABLE
+      customerPrice: '9.99'
+      baseTerritory: USA
+      enabled: true
+    subscriptions: []
 release:
   mode: prepare-only
   phasedRelease: false

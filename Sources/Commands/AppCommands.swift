@@ -22,7 +22,7 @@ struct AppCommands: Commands {
             Button("New Folder") { appState.showNewFolderPrompt = true }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
-            Button("Rename…") { appState.beginRenameSelection() }
+            Button("Rename") { appState.beginRenameSelection() }
                 .disabled(!appState.hasActiveSelection)
             Button("Batch Rename…") { appState.beginBatchRename() }
                 .disabled(!appState.hasActiveSelection)
@@ -198,6 +198,10 @@ struct AppCommands: Commands {
             Button("Drop Stack…") { appState.showDropStack() }
                 .keyboardShortcut("d", modifiers: [.command, .option])
             Button("Notes…") { appState.showNotes() }
+            Button("Calendar…") { appState.showCalendarTool() }
+            Button("Calculator…") { appState.showCalculatorTool() }
+                .keyboardShortcut("c", modifiers: [.command, .option])
+            Button("Terminal…") { appState.showTerminalTool() }
             Button("Clipboard History…") { appState.showClipboardHistory() }
             Button("Snippets…") { appState.showSnippets() }
             Button("Saved Workflows…") { appState.showSavedWorkflows() }
@@ -205,13 +209,23 @@ struct AppCommands: Commands {
                 .keyboardShortcut("f", modifiers: [.command, .option])
             Button("Archive Browser…") { appState.showArchiveBrowser() }
             Divider()
-            Button("Capture Screenshot or Recording…") { appState.beginScreenshot() }
-                .keyboardShortcut("5", modifiers: [.command, .option])
+            Menu("Pro Tools") {
+                if appState.proToolsEnabled {
+                    Button("Screenshot…") { appState.beginScreenshotCapture() }
+                        .keyboardShortcut("5", modifiers: [.command, .option])
+                    Button("Screen Recording…") { appState.beginScreenRecording() }
+                    Button("Voice Recorder…") { appState.showVoiceRecorderTool() }
+                        .keyboardShortcut("m", modifiers: [.command, .option])
+                } else {
+                    Button("Enable Pro Tools…") { appState.enableProTools() }
+                        .disabled(appState.isEnablingProTools)
+                }
+            }
             Button("Annotate Image…") { appState.beginAnnotateImage() }
                 .keyboardShortcut("a", modifiers: [.command, .option])
                 .disabled(!appState.canAnnotateSelection)
-            Button("Voice Recorder…") { appState.showVoiceRecorderTool() }
-                .keyboardShortcut("m", modifiers: [.command, .option])
+            Button("Pomodoro…") { appState.showPomodoroTool() }
+                .keyboardShortcut("t", modifiers: [.command, .option])
             Button("Organize Folder…") { appState.showOrganizeTool() }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             Button("Clean Up…") { appState.showCleanupTool() }
@@ -237,9 +251,18 @@ struct AppCommands: Commands {
             Button("Copy Files") { appState.copyFilesOfSelection() }
                 .keyboardShortcut("c", modifiers: .command)
                 .disabled(!appState.hasActiveSelection)
-            Button("Paste Files") { appState.pasteClipboardFilesToActiveFolder() }
+            Button("Cut Files") {
+                if !AppCommandResponder.cutFocusedTextEditor() {
+                    appState.cutFilesOfSelection()
+                }
+            }
+                .keyboardShortcut("x", modifiers: .command)
+            Button("Paste") {
+                if !AppCommandResponder.pasteIntoFocusedTextEditor() {
+                    appState.pasteClipboardFilesToActiveFolder()
+                }
+            }
                 .keyboardShortcut("v", modifiers: .command)
-                .disabled(!appState.canPasteFilesFromClipboard)
             Button("Copy Names As Text") { appState.copyNamesOfSelection() }
                 .disabled(!appState.hasActiveSelection)
             Button("Copy Paths As Text") { appState.copyPathOfSelection() }
@@ -248,6 +271,43 @@ struct AppCommands: Commands {
             Button("Clear Clipboard History") { ClipboardHistoryStore.shared.clear() }
                 .disabled(ClipboardHistoryStore.shared.entries.isEmpty)
         }
+    }
+}
+
+/// Lets standard text controls keep native paste behavior before Workbench
+/// falls back to pasting files into the active browser pane.
+@MainActor
+enum AppCommandResponder {
+    typealias ActionSender = (_ action: Selector, _ target: AnyObject) -> Bool
+
+    static func pasteIntoFocusedTextEditor(
+        firstResponder: NSResponder? = NSApp.keyWindow?.firstResponder,
+        sendAction: ActionSender = { action, target in
+            NSApp.sendAction(action, to: target, from: nil)
+        }
+    ) -> Bool {
+        guard let firstResponder, isEditingText(firstResponder) else { return false }
+        return sendAction(#selector(NSText.paste(_:)), firstResponder)
+    }
+
+    static func cutFocusedTextEditor(
+        firstResponder: NSResponder? = NSApp.keyWindow?.firstResponder,
+        sendAction: ActionSender = { action, target in
+            NSApp.sendAction(action, to: target, from: nil)
+        }
+    ) -> Bool {
+        guard let firstResponder, isEditingText(firstResponder) else { return false }
+        return sendAction(#selector(NSText.cut(_:)), firstResponder)
+    }
+
+    private static func isEditingText(_ responder: NSResponder) -> Bool {
+        if responder is NSTextView || responder is NSText {
+            return true
+        }
+        if let textField = responder as? NSTextField {
+            return textField.currentEditor() != nil
+        }
+        return false
     }
 }
 

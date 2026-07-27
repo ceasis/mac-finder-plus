@@ -78,6 +78,10 @@ struct AboutWorkbenchView: View {
                         Text(verbatim: info.bundleID)
                             .font(.caption.monospaced())
                             .foregroundStyle(.tertiary)
+                        Link(destination: WorkbenchLinks.companyWebsite) {
+                            Label("https://www.qnsub.com", systemImage: "globe")
+                        }
+                        .font(.caption)
                     }
                     Spacer()
                 }
@@ -470,6 +474,7 @@ private struct WorkbenchShortcutGroup: Identifiable {
                 WorkbenchShortcut(command: "Drop Stack", keys: ["Option", "Command", "D"]),
                 WorkbenchShortcut(command: "Advanced Search", keys: ["Option", "Command", "F"]),
                 WorkbenchShortcut(command: "Voice Recorder", keys: ["Option", "Command", "M"]),
+                WorkbenchShortcut(command: "Pomodoro", keys: ["Option", "Command", "T"]),
                 WorkbenchShortcut(command: "Organize", keys: ["Shift", "Command", "O"]),
                 WorkbenchShortcut(command: "Clean Up", keys: ["Shift", "Command", "K"]),
                 WorkbenchShortcut(command: "Shortcuts", keys: ["Command", "/"]),
@@ -510,7 +515,7 @@ private struct WorkbenchReleaseChecklistGroup: Identifiable {
             systemImage: "folder",
             items: [
                 "Copy, move, rename, duplicate, create folder, create text file, and move to Trash.",
-                "Confirm risky Trash actions ask first and Activity History offers Undo and Reveal.",
+                "Confirm Trash actions run immediately and Activity History offers Undo and Reveal.",
                 "Right-click images, videos, audio, PDFs, documents, folders, ZIPs, and mixed selections.",
                 "Drag files into Notes and Snippets, then drag them back out to a folder.",
             ]

@@ -319,6 +319,17 @@ final class FilePasteboardTests: EngineTestCase {
         FilePasteboard.write([file], to: pasteboard)
 
         XCTAssertEqual(FilePasteboard.fileURLs(from: pasteboard).map(\.path), [file.path])
+        XCTAssertEqual(FilePasteboard.operation(from: pasteboard), .copy)
+    }
+
+    func testPreservesCutOperationForWorkbenchPaste() throws {
+        let file = try writeFile("move-me.txt")
+        let pasteboard = NSPasteboard.withUniqueName()
+
+        FilePasteboard.write([file], operation: .cut, to: pasteboard)
+
+        XCTAssertEqual(FilePasteboard.fileURLs(from: pasteboard).map(\.path), [file.path])
+        XCTAssertEqual(FilePasteboard.operation(from: pasteboard), .cut)
     }
 
     func testReadsLegacyFilenamePasteboardType() throws {
@@ -340,6 +351,217 @@ final class FilePasteboardTests: EngineTestCase {
         pasteboard.setString(file.path, forType: .string)
 
         XCTAssertEqual(FilePasteboard.fileURLs(from: pasteboard).map(\.path), [file.path])
+    }
+}
+
+final class FileDropTests: XCTestCase {
+    func testInternalDragMovesUnlessOptionIsHeld() {
+        XCTAssertTrue(FileDropOperationPolicy.shouldMove(
+            isInternalDrag: true,
+            modifiers: []
+        ))
+        XCTAssertFalse(FileDropOperationPolicy.shouldMove(
+            isInternalDrag: true,
+            modifiers: [.option]
+        ))
+    }
+
+    func testExternalDropCopiesUnlessCommandRequestsMove() {
+        XCTAssertFalse(FileDropOperationPolicy.shouldMove(
+            isInternalDrag: false,
+            modifiers: []
+        ))
+        XCTAssertTrue(FileDropOperationPolicy.shouldMove(
+            isInternalDrag: false,
+            modifiers: [.command]
+        ))
+    }
+
+    func testFileDropPayloadReadsFileURLData() throws {
+        let url = URL(fileURLWithPath: "/tmp/drag-target.txt")
+        let data = try XCTUnwrap(url.dataRepresentation)
+
+        XCTAssertEqual(FileDropPayload.fileURL(from: data as NSData), url)
+        XCTAssertNil(FileDropPayload.fileURL(from: "https://example.com" as NSString))
+    }
+
+    func testNestedFolderTargetWinsOverContainingFolderTarget() {
+        let currentFolder = URL(fileURLWithPath: "/tmp/Documents", isDirectory: true)
+        let nestedFolder = currentFolder.appendingPathComponent("Archive", isDirectory: true)
+
+        XCTAssertEqual(
+            FileDropDestinationPolicy.preferredDestination(
+                fallback: currentFolder,
+                activeDestinations: [currentFolder, nestedFolder]
+            ),
+            nestedFolder
+        )
+    }
+
+    func testDropTargetIgnoresActiveFoldersOutsideFallbackHierarchy() {
+        let currentFolder = URL(fileURLWithPath: "/tmp/Documents", isDirectory: true)
+        let unrelatedFolder = URL(fileURLWithPath: "/tmp/Downloads", isDirectory: true)
+
+        XCTAssertEqual(
+            FileDropDestinationPolicy.preferredDestination(
+                fallback: currentFolder,
+                activeDestinations: [unrelatedFolder]
+            ),
+            currentFolder
+        )
+    }
+
+    func testNestedFolderTargetWorksWhenBrowsingFilesystemRoot() {
+        let root = URL(fileURLWithPath: "/", isDirectory: true)
+        let users = URL(fileURLWithPath: "/Users", isDirectory: true)
+
+        XCTAssertEqual(
+            FileDropDestinationPolicy.preferredDestination(
+                fallback: root,
+                activeDestinations: [root, users]
+            ),
+            users
+        )
+    }
+}
+
+@MainActor
+final class AppCommandResponderTests: XCTestCase {
+    func testPasteRoutesToFocusedTextEditor() {
+        let textView = NSTextView()
+        var routedAction: Selector?
+        weak var routedTarget: AnyObject?
+
+        let didRoute = AppCommandResponder.pasteIntoFocusedTextEditor(
+            firstResponder: textView
+        ) { action, target in
+            routedAction = action
+            routedTarget = target
+            return true
+        }
+
+        XCTAssertTrue(didRoute)
+        XCTAssertEqual(routedAction, #selector(NSText.paste(_:)))
+        XCTAssertTrue(routedTarget === textView)
+    }
+
+    func testPasteFallsBackWhenFileBrowserOwnsFocus() {
+        var didSendAction = false
+
+        let didRoute = AppCommandResponder.pasteIntoFocusedTextEditor(
+            firstResponder: NSResponder()
+        ) { _, _ in
+            didSendAction = true
+            return true
+        }
+
+        XCTAssertFalse(didRoute)
+        XCTAssertFalse(didSendAction)
+    }
+
+    func testCutRoutesToFocusedTextEditor() {
+        let textView = NSTextView()
+        var routedAction: Selector?
+        weak var routedTarget: AnyObject?
+
+        let didRoute = AppCommandResponder.cutFocusedTextEditor(
+            firstResponder: textView
+        ) { action, target in
+            routedAction = action
+            routedTarget = target
+            return true
+        }
+
+        XCTAssertTrue(didRoute)
+        XCTAssertEqual(routedAction, #selector(NSText.cut(_:)))
+        XCTAssertTrue(routedTarget === textView)
+    }
+}
+
+@MainActor
+final class PomodoroStoreTests: XCTestCase {
+    func testUsesSmartDefaultsAndElapsedWallClockTime() {
+        let (store, defaults, suiteName) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+
+        XCTAssertEqual(store.focusMinutes, 25)
+        XCTAssertEqual(store.shortBreakMinutes, 5)
+        XCTAssertEqual(store.longBreakMinutes, 15)
+        XCTAssertEqual(store.remainingSeconds, 1_500)
+
+        store.start(at: start)
+        store.tick(at: start.addingTimeInterval(61.2))
+        XCTAssertEqual(store.remainingSeconds, 1_439)
+
+        store.pause(at: start.addingTimeInterval(90.5))
+        XCTAssertFalse(store.isRunning)
+        XCTAssertEqual(store.remainingSeconds, 1_410)
+
+        store.tick(at: start.addingTimeInterval(600))
+        XCTAssertEqual(store.remainingSeconds, 1_410)
+    }
+
+    func testFourFocusSessionsEarnLongBreak() {
+        var soundCount = 0
+        let (store, defaults, suiteName) = makeStore {
+            soundCount += 1
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var date = Date(timeIntervalSinceReferenceDate: 2_000)
+
+        for completedSession in 1...4 {
+            if store.phase != .focus {
+                store.skip()
+            }
+            let duration = store.remainingSeconds
+            store.start(at: date)
+            date = date.addingTimeInterval(duration)
+            store.tick(at: date)
+
+            XCTAssertEqual(store.completedFocusSessions, completedSession)
+        }
+
+        XCTAssertEqual(store.phase, .longBreak)
+        XCTAssertEqual(store.focusSessionsInCycle, 4)
+        XCTAssertEqual(soundCount, 4)
+        XCTAssertFalse(store.isRunning)
+
+        store.skip()
+        XCTAssertEqual(store.phase, .focus)
+        XCTAssertEqual(store.focusSessionsInCycle, 0)
+    }
+
+    func testAutoStartBeginsNextSessionAfterCompletion() {
+        let (store, defaults, suiteName) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let start = Date(timeIntervalSinceReferenceDate: 3_000)
+        store.playCompletionSound = false
+        store.autoStartNextSession = true
+
+        store.start(at: start)
+        store.tick(at: start.addingTimeInterval(store.totalSeconds))
+
+        XCTAssertEqual(store.phase, .shortBreak)
+        XCTAssertTrue(store.isRunning)
+        XCTAssertEqual(store.remainingSeconds, 300)
+
+        store.tick(at: start.addingTimeInterval(1_500 + 60))
+        XCTAssertEqual(store.remainingSeconds, 240)
+    }
+
+    private func makeStore(
+        completionSound: @escaping @MainActor () -> Void = {}
+    ) -> (PomodoroStore, UserDefaults, String) {
+        let suiteName = "PomodoroStoreTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let store = PomodoroStore(
+            defaults: defaults,
+            schedulesTimer: false,
+            completionSound: completionSound
+        )
+        return (store, defaults, suiteName)
     }
 }
 
@@ -480,6 +702,56 @@ final class FileKeyboardSelectionTests: XCTestCase {
         XCTAssertEqual(result.selection, Set(["c"]))
         XCTAssertEqual(result.focusedID, "c")
         XCTAssertEqual(result.rangeAnchorID, "c")
+    }
+}
+
+// MARK: - FileGridKeyboardNavigation
+
+final class FileGridKeyboardNavigationTests: XCTestCase {
+    func testMeasuredColumnCountUsesActualGridPositions() {
+        let frames = [
+            "a": CGRect(x: 10, y: 10, width: 90, height: 120),
+            "b": CGRect(x: 125, y: 10, width: 90, height: 120),
+            "c": CGRect(x: 240, y: 10, width: 90, height: 120),
+            "d": CGRect(x: 10, y: 155, width: 90, height: 120),
+            "e": CGRect(x: 125.4, y: 155, width: 90, height: 120),
+        ]
+
+        XCTAssertEqual(FileGridKeyboardNavigation.columnCount(from: frames), 3)
+    }
+
+    func testDownMovesToTheSameColumnInTheNextRow() throws {
+        let ids = ["a", "b", "c", "d", "e", "f"]
+        let delta = FileGridKeyboardNavigation.verticalDelta(
+            ids: ids,
+            focusedID: "b",
+            selectedIDs: ["b"],
+            columnCount: 3,
+            direction: 1
+        )
+
+        XCTAssertEqual(delta, 3)
+        let result = FileKeyboardSelection.move(
+            ids: ids,
+            focusedID: "b",
+            rangeAnchorID: "b",
+            selectedIDs: ["b"],
+            delta: try XCTUnwrap(delta),
+            extending: false
+        )
+        XCTAssertEqual(result.focusedID, "e")
+    }
+
+    func testDownDoesNotJumpSidewaysWhenLastRowHasNoIconInThatColumn() {
+        let delta = FileGridKeyboardNavigation.verticalDelta(
+            ids: ["a", "b", "c", "d"],
+            focusedID: "c",
+            selectedIDs: ["c"],
+            columnCount: 3,
+            direction: 1
+        )
+
+        XCTAssertNil(delta)
     }
 }
 
@@ -804,6 +1076,384 @@ final class FileItemClassificationTests: EngineTestCase {
     }
 }
 
+final class InlineRenameSelectionTests: XCTestCase {
+    func testFileRenameSelectsTheNameWithoutItsExtension() {
+        XCTAssertEqual(
+            InlineRenameSelection.range(for: "Quarterly Report.final.pdf", isDirectory: false),
+            NSRange(location: 0, length: 22)
+        )
+    }
+
+    func testExtensionlessFileAndFolderSelectTheirEntireName() {
+        XCTAssertEqual(
+            InlineRenameSelection.range(for: "README", isDirectory: false),
+            NSRange(location: 0, length: 6)
+        )
+        XCTAssertEqual(
+            InlineRenameSelection.range(for: "Project Archive", isDirectory: true),
+            NSRange(location: 0, length: 15)
+        )
+    }
+}
+
+// MARK: - Calendar Tool
+
+final class CalendarToolDateMathTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.firstWeekday = 2
+        return calendar
+    }
+
+    private var anchorDate: Date {
+        calendar.date(from: DateComponents(year: 2026, month: 7, day: 15, hour: 12))!
+    }
+
+    func testMovesBySelectedPeriod() {
+        XCTAssertEqual(
+            components(of: CalendarToolDateMath.date(
+                byMoving: .week,
+                offset: 1,
+                from: anchorDate,
+                calendar: calendar
+            )),
+            DateComponents(year: 2026, month: 7, day: 22)
+        )
+        XCTAssertEqual(
+            components(of: CalendarToolDateMath.date(
+                byMoving: .month,
+                offset: 1,
+                from: anchorDate,
+                calendar: calendar
+            )),
+            DateComponents(year: 2026, month: 8, day: 15)
+        )
+        XCTAssertEqual(
+            components(of: CalendarToolDateMath.date(
+                byMoving: .year,
+                offset: 1,
+                from: anchorDate,
+                calendar: calendar
+            )),
+            DateComponents(year: 2027, month: 7, day: 15)
+        )
+    }
+
+    func testWeekContainsSevenLocaleOrderedDays() throws {
+        let dates = CalendarToolDateMath.weekDates(containing: anchorDate, calendar: calendar)
+
+        XCTAssertEqual(dates.count, 7)
+        XCTAssertEqual(components(of: try XCTUnwrap(dates.first)), DateComponents(year: 2026, month: 7, day: 13))
+        XCTAssertEqual(components(of: try XCTUnwrap(dates.last)), DateComponents(year: 2026, month: 7, day: 19))
+    }
+
+    func testWeekRangeSupportsUpToTenWeeks() throws {
+        let dates = CalendarToolDateMath.weekDates(
+            containing: anchorDate,
+            numberOfWeeks: 10,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(dates.count, 70)
+        XCTAssertEqual(components(of: try XCTUnwrap(dates.first)), DateComponents(year: 2026, month: 7, day: 13))
+        XCTAssertEqual(components(of: try XCTUnwrap(dates.last)), DateComponents(year: 2026, month: 9, day: 20))
+    }
+
+    func testWeekRowsMarkOnlyMonthTransitions() throws {
+        let weeks = CalendarToolDateMath.weekRows(
+            containing: anchorDate,
+            numberOfWeeks: 4,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(weeks.count, 4)
+        XCTAssertTrue(weeks.allSatisfy { $0.count == 7 })
+        XCTAssertFalse(CalendarToolDateMath.startsInDifferentMonth(
+            weeks[1],
+            than: weeks[0],
+            calendar: calendar
+        ))
+        XCTAssertFalse(CalendarToolDateMath.startsInDifferentMonth(
+            weeks[2],
+            than: weeks[1],
+            calendar: calendar
+        ))
+        XCTAssertTrue(CalendarToolDateMath.startsInDifferentMonth(
+            weeks[3],
+            than: weeks[2],
+            calendar: calendar
+        ))
+        XCTAssertEqual(
+            components(of: try XCTUnwrap(weeks[3].first)),
+            DateComponents(year: 2026, month: 8, day: 3)
+        )
+    }
+
+    func testMonthGridAlwaysContainsSixWeeks() throws {
+        let dates = CalendarToolDateMath.monthGrid(containing: anchorDate, calendar: calendar)
+
+        XCTAssertEqual(dates.count, 42)
+        XCTAssertEqual(components(of: try XCTUnwrap(dates.first)), DateComponents(year: 2026, month: 6, day: 29))
+        XCTAssertEqual(components(of: try XCTUnwrap(dates.last)), DateComponents(year: 2026, month: 8, day: 9))
+    }
+
+    func testYearContainsAllTwelveMonths() throws {
+        let months = CalendarToolDateMath.months(inYearContaining: anchorDate, calendar: calendar)
+
+        XCTAssertEqual(months.count, 12)
+        XCTAssertEqual(components(of: try XCTUnwrap(months.first)), DateComponents(year: 2026, month: 1, day: 1))
+        XCTAssertEqual(components(of: try XCTUnwrap(months.last)), DateComponents(year: 2026, month: 12, day: 1))
+    }
+
+    private func components(of date: Date) -> DateComponents {
+        calendar.dateComponents([.year, .month, .day], from: date)
+    }
+}
+
+final class CalendarToolDateRangeTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    func testRangeNormalizesDraggedBackwardSelection() {
+        let start = calendar.date(from: DateComponents(year: 2026, month: 8, day: 4, hour: 15))!
+        let end = calendar.date(from: DateComponents(year: 2026, month: 8, day: 2, hour: 9))!
+
+        let range = CalendarToolDateRange(startDate: start, endDate: end, calendar: calendar)
+
+        XCTAssertEqual(components(of: range.startDate), DateComponents(year: 2026, month: 8, day: 2))
+        XCTAssertEqual(components(of: range.endDate), DateComponents(year: 2026, month: 8, day: 4))
+        XCTAssertEqual(range.dayCount(calendar: calendar), 3)
+        XCTAssertTrue(range.contains(
+            calendar.date(from: DateComponents(year: 2026, month: 8, day: 3, hour: 22))!,
+            calendar: calendar
+        ))
+    }
+
+    func testRangeOverlapIsInclusive() {
+        let first = CalendarToolDateRange(
+            startDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+            endDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 4))!,
+            calendar: calendar
+        )
+        let second = CalendarToolDateRange(
+            startDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 4))!,
+            endDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 5))!,
+            calendar: calendar
+        )
+
+        XCTAssertTrue(first.overlaps(second))
+    }
+
+    private func components(of date: Date) -> DateComponents {
+        calendar.dateComponents([.year, .month, .day], from: date)
+    }
+}
+
+final class CalendarToolReminderLeadTimeTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    func testHoursAndDaysResolveNotificationTriggerDate() {
+        let range = CalendarToolDateRange(
+            startDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+            endDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 3))!,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(
+            components(of: CalendarToolReminderLeadTime(value: 4, unit: .hours).triggerDate(
+                for: range,
+                calendar: calendar
+            )!),
+            DateComponents(year: 2026, month: 8, day: 1, hour: 20, minute: 0)
+        )
+        XCTAssertEqual(
+            components(of: CalendarToolReminderLeadTime(value: 2, unit: .days).triggerDate(
+                for: range,
+                calendar: calendar
+            )!),
+            DateComponents(year: 2026, month: 7, day: 31, hour: 0, minute: 0)
+        )
+    }
+
+    func testLeadValueIsClampedToSupportedRange() {
+        XCTAssertEqual(CalendarToolReminderLeadTime(value: -8, unit: .hours).value, 1)
+        XCTAssertEqual(CalendarToolReminderLeadTime(value: 900, unit: .days).value, 365)
+    }
+
+    private func components(of date: Date) -> DateComponents {
+        calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    }
+}
+
+@MainActor
+final class CalendarToolReminderStoreTests: XCTestCase {
+    private final class FakeCalendarReminderNotificationScheduler: CalendarToolReminderNotificationScheduling {
+        private(set) var scheduledReminders: [CalendarToolReminder] = []
+        private(set) var cancelledReminders: [CalendarToolReminder] = []
+
+        func schedule(_ reminder: CalendarToolReminder, calendar: Calendar, now: Date) {
+            scheduledReminders.append(reminder)
+        }
+
+        func cancel(_ reminder: CalendarToolReminder) {
+            cancelledReminders.append(reminder)
+        }
+    }
+
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    func testAddsAndPersistsRangeReminder() {
+        withStore { store, defaults, scheduler in
+            let range = CalendarToolDateRange(
+                startDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+                endDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 4))!,
+                calendar: calendar
+            )
+            let leadTime = CalendarToolReminderLeadTime(value: 2, unit: .hours)
+
+            let reminder = store.add(
+                title: "   Project sprint   ",
+                range: range,
+                notificationLeadTime: leadTime,
+                calendar: calendar,
+                now: calendar.date(from: DateComponents(year: 2026, month: 7, day: 1))!
+            )
+
+            XCTAssertEqual(reminder.title, "Project sprint")
+            XCTAssertEqual(reminder.notificationLeadTime, leadTime)
+            XCTAssertEqual(scheduler.scheduledReminders.map(\.id), [reminder.id])
+            XCTAssertTrue(store.hasReminder(
+                on: calendar.date(from: DateComponents(year: 2026, month: 8, day: 3))!,
+                calendar: calendar
+            ))
+
+            let reloaded = CalendarToolReminderStore(
+                defaults: defaults,
+                notificationScheduler: scheduler
+            )
+            XCTAssertEqual(reloaded.reminders.count, 1)
+            XCTAssertEqual(reloaded.reminders[0].title, "Project sprint")
+            XCTAssertEqual(reloaded.reminders[0].notificationLeadTime, leadTime)
+            XCTAssertEqual(reloaded.reminders(overlapping: range).count, 1)
+        }
+    }
+
+    func testDeleteReminderPersistsRemoval() {
+        withStore { store, defaults, scheduler in
+            let range = CalendarToolDateRange(
+                startDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+                endDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+                calendar: calendar
+            )
+            let reminder = store.add(title: "", range: range)
+
+            XCTAssertEqual(reminder.title, "Reminder")
+            store.delete(reminder)
+
+            XCTAssertEqual(scheduler.cancelledReminders.map(\.id), [reminder.id])
+            XCTAssertTrue(CalendarToolReminderStore(
+                defaults: defaults,
+                notificationScheduler: scheduler
+            ).reminders.isEmpty)
+        }
+    }
+
+    func testLegacyReminderJSONLoadsWithDefaultNotificationLeadTime() throws {
+        struct LegacyReminder: Codable {
+            let id: UUID
+            var title: String
+            var range: CalendarToolDateRange
+            let createdAt: Date
+        }
+
+        let suiteName = "CalendarToolReminderStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let legacy = LegacyReminder(
+            id: UUID(),
+            title: "Old reminder",
+            range: CalendarToolDateRange(
+                startDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+                endDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+                calendar: calendar
+            ),
+            createdAt: calendar.date(from: DateComponents(year: 2026, month: 7, day: 1))!
+        )
+        defaults.set(try JSONEncoder().encode([legacy]), forKey: "calendarTool.reminders")
+
+        let store = CalendarToolReminderStore(
+            defaults: defaults,
+            notificationScheduler: FakeCalendarReminderNotificationScheduler()
+        )
+
+        XCTAssertEqual(store.reminders.first?.notificationLeadTime, .defaultValue)
+    }
+
+    private func withStore(
+        _ body: (
+            CalendarToolReminderStore,
+            UserDefaults,
+            FakeCalendarReminderNotificationScheduler
+        ) -> Void
+    ) {
+        let suiteName = "CalendarToolReminderStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let scheduler = FakeCalendarReminderNotificationScheduler()
+        body(CalendarToolReminderStore(
+            defaults: defaults,
+            notificationScheduler: scheduler
+        ), defaults, scheduler)
+    }
+}
+
+// MARK: - Pro Tools Access
+
+final class ProToolsAccessPolicyTests: XCTestCase {
+    func testRequiresScreenRecordingAndMicrophone() {
+        XCTAssertEqual(
+            ProToolsAccessPolicy.requiredPermissions,
+            [.screenRecording, .microphone]
+        )
+    }
+
+    func testMissingPermissionsTracksBothRequirements() {
+        XCTAssertEqual(
+            ProToolsAccessPolicy.missingPermissions(
+                screenRecording: .notDetermined,
+                microphone: .denied
+            ),
+            [.screenRecording, .microphone]
+        )
+        XCTAssertEqual(
+            ProToolsAccessPolicy.missingPermissions(
+                screenRecording: .granted,
+                microphone: .denied
+            ),
+            [.microphone]
+        )
+        XCTAssertTrue(ProToolsAccessPolicy.missingPermissions(
+            screenRecording: .granted,
+            microphone: .granted
+        ).isEmpty)
+    }
+}
+
 // MARK: - ModifiedDateFilter
 
 final class ModifiedDateFilterTests: XCTestCase {
@@ -983,6 +1633,64 @@ final class PaneModelNavigationTests: EngineTestCase {
 
         XCTAssertNil(model.loadError)
         XCTAssertTrue(model.isLoading)
+    }
+
+    func testClearQuickFiltersResetsDateSizeAndKind() {
+        let model = PaneModel(url: tempDir)
+        model.modifiedDateFilter = .today
+        model.fileSizeFilter = .oneToTenMegabytes
+        model.itemKindFilter = .files
+
+        XCTAssertTrue(model.hasQuickFilters)
+
+        model.clearQuickFilters()
+
+        XCTAssertEqual(model.modifiedDateFilter, .all)
+        XCTAssertEqual(model.fileSizeFilter, .all)
+        XCTAssertEqual(model.itemKindFilter, .all)
+        XCTAssertFalse(model.hasQuickFilters)
+    }
+
+    func testFilteringPrunesHiddenItemsFromSelection() throws {
+        let image = FileItem.make(url: try writeFile("photo.png"))
+        let hiddenText = FileItem.make(url: try writeFile("notes.txt"))
+        let model = PaneModel(url: tempDir)
+        model.items = [image, hiddenText]
+        model.selection = [image.id, hiddenText.id]
+
+        model.typePreset = .images
+
+        XCTAssertEqual(model.displayItems.map(\.id), [image.id])
+        XCTAssertEqual(model.selection, [image.id])
+        XCTAssertEqual(model.selectedItems.map(\.id), [image.id])
+    }
+
+    func testVisiblePaneRefreshesWhenExternalFileAppears() async throws {
+        let model = PaneModel(url: tempDir)
+        model.startMonitoring()
+        defer { model.stopMonitoring() }
+
+        let didLoadInitialListing = await waitUntil { !model.isLoading }
+        XCTAssertTrue(didLoadInitialListing)
+        XCTAssertTrue(model.items.isEmpty)
+
+        try writeFile("browser-download.zip")
+
+        let didObserveDownload = await waitUntil {
+            model.items.contains { $0.name == "browser-download.zip" }
+        }
+        XCTAssertTrue(didObserveDownload)
+    }
+
+    private func waitUntil(
+        attempts: Int = 100,
+        condition: () -> Bool
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return condition()
     }
 }
 
@@ -1657,9 +2365,202 @@ final class VideoTransformerTests: XCTestCase {
     }
 }
 
+final class VideoTrimmerTimeTextTests: XCTestCase {
+    func testPreciseTimeTextShowsHundredths() {
+        XCTAssertEqual(VideoTrimmer.preciseTimeText(0), "0:00.00")
+        XCTAssertEqual(VideoTrimmer.preciseTimeText(62.345), "1:02.35")
+        XCTAssertEqual(VideoTrimmer.preciseTimeText(3_723.456), "1:02:03.46")
+    }
+
+    func testPreciseTimeTextCarriesRoundedHundredthsIntoTheNextMinute() {
+        XCTAssertEqual(VideoTrimmer.preciseTimeText(59.999), "1:00.00")
+    }
+}
+
+final class VideoFilmstripTests: XCTestCase {
+    func testSampleTimesUseTheCenterOfEvenlySpacedSections() {
+        XCTAssertEqual(
+            VideoFilmstrip.sampleTimes(duration: 10, count: 4),
+            [1.25, 3.75, 6.25, 8.75]
+        )
+    }
+
+    func testSampleTimesRejectInvalidInputs() {
+        XCTAssertTrue(VideoFilmstrip.sampleTimes(duration: 0, count: 4).isEmpty)
+        XCTAssertTrue(VideoFilmstrip.sampleTimes(duration: 10, count: 0).isEmpty)
+        XCTAssertTrue(VideoFilmstrip.sampleTimes(duration: .infinity, count: 4).isEmpty)
+    }
+
+    func testTimelinePositionMapsAndClampsToVideoTime() {
+        XCTAssertEqual(VideoFilmstrip.time(at: 25, width: 100, duration: 20), 5)
+        XCTAssertEqual(VideoFilmstrip.time(at: -10, width: 100, duration: 20), 0)
+        XCTAssertEqual(VideoFilmstrip.time(at: 120, width: 100, duration: 20), 20)
+    }
+
+    func testTrimHandlesKeepAMinimumSelection() {
+        XCTAssertEqual(
+            VideoFilmstrip.clampedInTime(9.98, outTime: 10, duration: 10),
+            9.9,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            VideoFilmstrip.clampedOutTime(0.02, inTime: 0, duration: 10),
+            0.1,
+            accuracy: 0.0001
+        )
+    }
+}
+
+final class VideoIntervalFrameCaptureTests: XCTestCase {
+    func testCaptureTimesStartAtZeroAndDoNotIncludeTheVideoEndpoint() {
+        XCTAssertEqual(
+            VideoIntervalFrameCapture.captureTimes(duration: 10, interval: 3),
+            [0, 3, 6, 9]
+        )
+        XCTAssertEqual(
+            VideoIntervalFrameCapture.captureTimes(duration: 10, interval: 5),
+            [0, 5]
+        )
+    }
+
+    func testFrameCountRejectsIntervalsBelowOneTenthSecond() {
+        XCTAssertEqual(
+            VideoIntervalFrameCapture.frameCount(duration: 10, interval: 0.09),
+            0
+        )
+    }
+
+    func testCaptureTimesRejectMoreThanTheSafeFileLimit() {
+        XCTAssertGreaterThan(
+            VideoIntervalFrameCapture.frameCount(duration: 2_000, interval: 0.1),
+            VideoIntervalFrameCapture.maximumFrameCount
+        )
+        XCTAssertTrue(
+            VideoIntervalFrameCapture.captureTimes(duration: 2_000, interval: 0.1).isEmpty
+        )
+    }
+}
+
 // MARK: - VideoMerger
 
+final class VideoMergeOrderTests: XCTestCase {
+    func testFileViewOrderKeepsTheSelectedSequence() {
+        let items = [
+            item(named: "third.mov", modified: 3),
+            item(named: "first.mov", modified: 1),
+            item(named: "second.mov", modified: 2),
+        ]
+
+        XCTAssertEqual(
+            VideoMergeOrder.fileView.arrange(items).map(\.name),
+            ["third.mov", "first.mov", "second.mov"]
+        )
+    }
+
+    func testNameAndModifiedDatePresetsArrangeTheSelectedFiles() {
+        let items = [
+            item(named: "clip 10.mov", modified: 3),
+            item(named: "clip 2.mov", modified: 1),
+            item(named: "clip 1.mov", modified: 2),
+        ]
+
+        XCTAssertEqual(
+            VideoMergeOrder.nameAscending.arrange(items).map(\.name),
+            ["clip 1.mov", "clip 2.mov", "clip 10.mov"]
+        )
+        XCTAssertEqual(
+            VideoMergeOrder.modifiedNewest.arrange(items).map(\.name),
+            ["clip 10.mov", "clip 1.mov", "clip 2.mov"]
+        )
+    }
+
+    private func item(named name: String, modified: TimeInterval) -> FileItem {
+        FileItem(
+            url: URL(fileURLWithPath: "/tmp/\(name)"),
+            name: name,
+            isDirectory: false,
+            isHidden: false,
+            size: 1,
+            created: Date(timeIntervalSince1970: modified),
+            modified: Date(timeIntervalSince1970: modified),
+            kind: "Movie",
+            contentType: .movie,
+            rating: 0
+        )
+    }
+}
+
+final class PaneSortPresetTests: XCTestCase {
+    func testSortPresetsApplyExpectedPrimaryOrderAndNameTieBreak() {
+        let items = [
+            item(named: "Beta.txt", size: 20, modified: 2, kind: "Text", rating: 2),
+            item(named: "Alpha.png", size: 20, modified: 3, kind: "Image", rating: 5),
+            item(named: "Gamma.txt", size: 10, modified: 1, kind: "Text", rating: 5),
+        ]
+
+        XCTAssertEqual(
+            PaneSortPreset.nameAscending.arrange(items).map(\.name),
+            ["Alpha.png", "Beta.txt", "Gamma.txt"]
+        )
+        XCTAssertEqual(
+            PaneSortPreset.modifiedNewest.arrange(items).map(\.name),
+            ["Alpha.png", "Beta.txt", "Gamma.txt"]
+        )
+        XCTAssertEqual(
+            PaneSortPreset.sizeLargest.arrange(items).map(\.name),
+            ["Alpha.png", "Beta.txt", "Gamma.txt"]
+        )
+        XCTAssertEqual(
+            PaneSortPreset.kindAscending.arrange(items).map(\.name),
+            ["Alpha.png", "Beta.txt", "Gamma.txt"]
+        )
+        XCTAssertEqual(
+            PaneSortPreset.ratingHighest.arrange(items).map(\.name),
+            ["Alpha.png", "Gamma.txt", "Beta.txt"]
+        )
+    }
+
+    private func item(
+        named name: String,
+        size: Int64,
+        modified: TimeInterval,
+        kind: String,
+        rating: Int
+    ) -> FileItem {
+        FileItem(
+            url: URL(fileURLWithPath: "/tmp/\(name)"),
+            name: name,
+            isDirectory: false,
+            isHidden: false,
+            size: size,
+            created: Date(timeIntervalSince1970: modified),
+            modified: Date(timeIntervalSince1970: modified),
+            kind: kind,
+            contentType: nil,
+            rating: rating
+        )
+    }
+}
+
 final class VideoMergerTests: XCTestCase {
+    func testAudioInsertionUsesOnlyTheRangeOverlappingVideo() throws {
+        let segment = try XCTUnwrap(VideoMerger.audioInsertionSegment(
+            videoTimeRange: CMTimeRange(
+                start: CMTime(seconds: 1, preferredTimescale: 600),
+                duration: CMTime(seconds: 5, preferredTimescale: 600)
+            ),
+            audioTimeRange: CMTimeRange(
+                start: CMTime(seconds: 2, preferredTimescale: 600),
+                duration: CMTime(seconds: 2, preferredTimescale: 600)
+            ),
+            compositionStart: CMTime(seconds: 10, preferredTimescale: 600)
+        ))
+
+        XCTAssertEqual(CMTimeGetSeconds(segment.sourceTimeRange.start), 2, accuracy: 0.001)
+        XCTAssertEqual(CMTimeGetSeconds(segment.sourceTimeRange.duration), 2, accuracy: 0.001)
+        XCTAssertEqual(CMTimeGetSeconds(segment.destinationStart), 11, accuracy: 0.001)
+    }
+
     func testLandscapeClipIsCenteredInTallerMergeCanvas() {
         let layout = VideoMerger.mergeLayout(
             naturalSize: CGSize(width: 1920, height: 1080),
@@ -1714,6 +2615,107 @@ final class VideoMergerTests: XCTestCase {
 final class VideoMergerExportTests: EngineTestCase {
     private let videoWidth = 640
     private let videoHeight = 480
+
+    func testCapturesCurrentVideoFrameBesideSourceAsUniquePNG() async throws {
+        let source = try await makeVideo(
+            "capture-source.mp4",
+            color: CGColor(red: 0.2, green: 0.6, blue: 0.9, alpha: 1)
+        )
+
+        let first = try await VideoFrameCapture.capture(url: source, at: 0.2)
+        let second = try await VideoFrameCapture.capture(url: source, at: 0.2)
+
+        XCTAssertEqual(first.deletingLastPathComponent(), source.deletingLastPathComponent())
+        XCTAssertEqual(first.pathExtension, "png")
+        XCTAssertTrue(first.lastPathComponent.hasPrefix("capture-source-frame-"))
+        XCTAssertEqual(dimensions(of: first).0, videoWidth)
+        XCTAssertEqual(dimensions(of: first).1, videoHeight)
+        XCTAssertNotEqual(second, first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+    }
+
+    func testIntervalCaptureCreatesFolderWithOriginalVideoAndScreenshots() async throws {
+        let source = try await makeVideo(
+            "interval-source.mp4",
+            color: CGColor(red: 0.8, green: 0.3, blue: 0.2, alpha: 1)
+        )
+
+        let result = try await VideoIntervalFrameCapture.capture(
+            url: source,
+            every: 0.2
+        )
+
+        XCTAssertEqual(
+            result.folderURL.deletingLastPathComponent(),
+            source.deletingLastPathComponent()
+        )
+        XCTAssertEqual(result.copiedVideoURL.lastPathComponent, source.lastPathComponent)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.copiedVideoURL.path))
+        XCTAssertEqual(result.screenshotURLs.count, 3)
+        XCTAssertTrue(result.screenshotURLs.allSatisfy { $0.pathExtension == "png" })
+        XCTAssertTrue(
+            result.screenshotURLs.allSatisfy {
+                FileManager.default.fileExists(atPath: $0.path)
+            }
+        )
+    }
+
+    func testExportsSelectedRangeAsAudioOnlyM4A() async throws {
+        let source = try makeAudio("audio-source.caf", duration: 0.5)
+        let hasAudioTrack = await AudioRangeExporter.hasAudioTrack(in: source)
+
+        XCTAssertTrue(hasAudioTrack)
+
+        let output = try await AudioRangeExporter.export(
+            url: source,
+            inTime: 0.1,
+            outTime: 0.4,
+            outputSuffix: "audio"
+        )
+        let asset = AVURLAsset(url: output)
+        let audioTracks = try await asset.loadTracks(withMediaType: .audio)
+        let videoTracks = try await asset.loadTracks(withMediaType: .video)
+        let outputDuration = CMTimeGetSeconds(try await asset.load(.duration))
+
+        XCTAssertEqual(output.pathExtension, "m4a")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+        XCTAssertFalse(audioTracks.isEmpty)
+        XCTAssertTrue(videoTracks.isEmpty)
+        XCTAssertGreaterThan(outputDuration, 0.1)
+        XCTAssertLessThan(outputDuration, 0.5)
+    }
+
+    func testBuildsNormalizedAudioWaveformSamples() async throws {
+        let source = try makeAudio("waveform-source.caf", duration: 0.5)
+
+        let samples = try await AudioWaveform.samples(for: source, count: 64)
+
+        XCTAssertEqual(samples.count, 64)
+        XCTAssertTrue(samples.allSatisfy { $0.isFinite && $0 >= 0 && $0 <= 1 })
+        XCTAssertEqual(samples.max() ?? 0, 1, accuracy: 0.001)
+    }
+
+    func testAudioTrimUsesCollisionSafeTrimmedName() async throws {
+        let source = try makeAudio("trim-source.caf", duration: 0.5)
+
+        let first = try await AudioRangeExporter.export(
+            url: source,
+            inTime: 0.1,
+            outTime: 0.4,
+            outputSuffix: "trimmed"
+        )
+        let second = try await AudioRangeExporter.export(
+            url: source,
+            inTime: 0.1,
+            outTime: 0.4,
+            outputSuffix: "trimmed"
+        )
+
+        XCTAssertEqual(first.lastPathComponent, "trim-source-trimmed.m4a")
+        XCTAssertNotEqual(second, first)
+        XCTAssertTrue(second.lastPathComponent.hasPrefix("trim-source-trimmed"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.path))
+    }
 
     func testSourceVideoCanBeTransformed() async throws {
         let source = try await makeVideo(
@@ -1818,6 +2820,35 @@ final class VideoMergerExportTests: EngineTestCase {
         guard writer.status == .completed else {
             throw writer.error ?? ImageProcessing.ProcessingError(message: "Couldn’t create test video.")
         }
+        return url
+    }
+
+    private func makeAudio(_ name: String, duration: Double) throws -> URL {
+        let sampleRate = 44_100.0
+        guard let format = AVAudioFormat(
+            standardFormatWithSampleRate: sampleRate,
+            channels: 1
+        ) else {
+            throw ImageProcessing.ProcessingError(message: "Couldn’t create an audio format.")
+        }
+
+        let frameCount = AVAudioFrameCount((duration * sampleRate).rounded(.up))
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: frameCount
+        ), let channelData = buffer.floatChannelData else {
+            throw ImageProcessing.ProcessingError(message: "Couldn’t create an audio buffer.")
+        }
+        buffer.frameLength = frameCount
+
+        for frame in 0..<Int(frameCount) {
+            let phase = Double(frame) / sampleRate * 440 * 2 * Double.pi
+            channelData[0][frame] = Float(sin(phase) * 0.1)
+        }
+
+        let url = tempDir.appendingPathComponent(name)
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        try file.write(from: buffer)
         return url
     }
 
@@ -1935,5 +2966,464 @@ final class FolderOrganizerEngineTests: EngineTestCase {
         XCTAssertEqual(records.count, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Videos/clip.mov").path))
+    }
+}
+
+// MARK: - Calculator
+
+final class CalculatorExpressionEngineTests: XCTestCase {
+    func testArithmeticPrecedenceAndUnicodeOperators() throws {
+        XCTAssertEqual(try value("2 + 3 × 4"), 14, accuracy: 1e-12)
+        XCTAssertEqual(try value("(2 + 3) ÷ 5"), 1, accuracy: 1e-12)
+    }
+
+    func testPowerIsRightAssociativeAndBindsBeforeUnaryMinus() throws {
+        XCTAssertEqual(try value("2^3^2"), 512, accuracy: 1e-12)
+        XCTAssertEqual(try value("-2^2"), -4, accuracy: 1e-12)
+        XCTAssertEqual(try value("(-2)^2"), 4, accuracy: 1e-12)
+    }
+
+    func testImplicitMultiplicationAndConstants() throws {
+        XCTAssertEqual(try value("2π"), 2 * .pi, accuracy: 1e-12)
+        XCTAssertEqual(try value("2(3 + 4)"), 14, accuracy: 1e-12)
+    }
+
+    func testDegreeAndRadianTrigonometry() throws {
+        XCTAssertEqual(try value("sin(30)", angleUnit: .degrees), 0.5, accuracy: 1e-12)
+        XCTAssertEqual(try value("sin(π / 2)", angleUnit: .radians), 1, accuracy: 1e-12)
+        XCTAssertEqual(try value("asin(0.5)", angleUnit: .degrees), 30, accuracy: 1e-12)
+    }
+
+    func testScientificFunctionsFactorialAndPercent() throws {
+        XCTAssertEqual(try value("sqrt(81) + 5!"), 129, accuracy: 1e-12)
+        XCTAssertEqual(try value("log(1000)"), 3, accuracy: 1e-12)
+        XCTAssertEqual(try value("25%"), 0.25, accuracy: 1e-12)
+        XCTAssertEqual(try value("mod(17, 5)"), 2, accuracy: 1e-12)
+    }
+
+    func testCompiledExpressionUsesGraphVariableAndAnswer() throws {
+        let expression = try CalculatorExpressionEngine.compile("x^2 + ans")
+        let result = try expression.evaluate(in: CalculatorEvaluationContext(
+            x: 3,
+            answer: 4,
+            memory: nil,
+            angleUnit: .degrees
+        ))
+        XCTAssertEqual(result, 13, accuracy: 1e-12)
+    }
+
+    func testInvalidOperationsProvideErrors() {
+        XCTAssertThrowsError(try value("1 / 0"))
+        XCTAssertThrowsError(try value("sqrt(-1)"))
+        XCTAssertThrowsError(try value("unknown(2)"))
+        XCTAssertThrowsError(try value("2 +"))
+    }
+
+    func testFloatingPointFallbackAlsoAvoidsScientificNotation() {
+        let small = CalculatorExpressionEngine.formatted(1e-20, grouping: false)
+        let large = CalculatorExpressionEngine.formatted(1e20, grouping: false)
+
+        XCTAssertEqual(small, "0.00000000000000000001")
+        XCTAssertEqual(large, "100000000000000000000")
+        XCTAssertFalse(small.lowercased().contains("e"))
+        XCTAssertFalse(large.lowercased().contains("e"))
+    }
+
+    private func value(
+        _ expression: String,
+        angleUnit: CalculatorAngleUnit = .degrees
+    ) throws -> Double {
+        try CalculatorExpressionEngine.evaluate(
+            expression,
+            context: .standard(angleUnit: angleUnit)
+        )
+    }
+}
+
+final class CalculatorExactExpressionEngineTests: XCTestCase {
+    private let context = CalculatorExactContext(answer: .zero, memory: nil)
+
+    func testLongIntegerIsReturnedInFullWithoutScientificNotation() throws {
+        let input = "1212112312312124141414242"
+        let result = try CalculatorExactExpressionEngine.evaluate(input, context: context)
+
+        XCTAssertEqual(result.description, input)
+        XCTAssertFalse(result.description.lowercased().contains("e"))
+    }
+
+    func testDecimalArithmeticRemainsExact() throws {
+        XCTAssertEqual(try exact("0.1 + 0.2"), "0.3")
+        XCTAssertEqual(try exact("1 / 8"), "0.125")
+        XCTAssertEqual(try exact("99999999999999999999 + 1"), "100000000000000000000")
+    }
+
+    func testResultCanContainOneThousandDigits() throws {
+        let result = try exact("10^999")
+
+        XCTAssertEqual(result.count, 1_000)
+        XCTAssertEqual(result.first, "1")
+        XCTAssertTrue(result.dropFirst().allSatisfy { $0 == "0" })
+    }
+
+    func testResultOverOneThousandDigitsIsRejected() {
+        XCTAssertThrowsError(try exact("10^1000")) { error in
+            XCTAssertEqual(error as? CalculatorExactError, .digitLimitExceeded)
+        }
+    }
+
+    private func exact(_ expression: String) throws -> String {
+        try CalculatorExactExpressionEngine.evaluate(expression, context: context).description
+    }
+}
+
+@MainActor
+final class CalculatorStoreTests: XCTestCase {
+    func testEvaluationRecordsHistoryAndPersistsAnswer() {
+        withStore { store, defaults in
+            store.expression = "6 × 7"
+            store.evaluate()
+
+            XCTAssertEqual(store.resultText, "42")
+            XCTAssertEqual(store.lastAnswer, 42, accuracy: 1e-12)
+            XCTAssertEqual(store.history.first?.expression, "6 × 7")
+
+            let reloaded = CalculatorStore(defaults: defaults)
+            XCTAssertEqual(reloaded.lastAnswer, 42, accuracy: 1e-12)
+            XCTAssertEqual(reloaded.history.first?.result, "42")
+        }
+    }
+
+    func testMemoryOperationsPersist() {
+        withStore { store, defaults in
+            store.expression = "12.5"
+            store.addToMemory()
+            store.expression = "2.5"
+            store.subtractFromMemory()
+
+            XCTAssertEqual(store.memoryValue ?? .nan, 10, accuracy: 1e-12)
+            XCTAssertEqual(CalculatorStore(defaults: defaults).memoryValue ?? .nan, 10, accuracy: 1e-12)
+
+            store.clearMemory()
+            XCTAssertNil(store.memoryValue)
+        }
+    }
+
+    func testBinaryFunctionKeyBuildsAnEvaluatableExpression() {
+        withStore { store, _ in
+            store.insert("17")
+            store.applyBinaryFunction("mod")
+            store.insert("5")
+            store.insertParenthesis()
+            store.evaluate()
+
+            XCTAssertEqual(store.expression, "mod(17,5)")
+            XCTAssertEqual(store.resultText, "2")
+        }
+    }
+
+    func testLongResultStaysExactAcrossAnswerHistoryAndReload() {
+        withStore { store, defaults in
+            store.expression = "10^999"
+            store.evaluate()
+
+            XCTAssertEqual(store.resultText.count, 1_000)
+            XCTAssertFalse(store.resultText.lowercased().contains("e"))
+            XCTAssertEqual(store.history.first?.exactValue, store.resultText)
+
+            store.insert("+")
+            store.insert("1")
+            XCTAssertEqual(store.expression, "ans+1")
+            store.evaluate()
+            XCTAssertEqual(store.resultText.count, 1_000)
+            XCTAssertTrue(store.resultText.hasSuffix("001"))
+
+            let reloaded = CalculatorStore(defaults: defaults)
+            reloaded.expression = "ans+1"
+            reloaded.evaluate()
+            XCTAssertTrue(reloaded.resultText.hasSuffix("002"))
+        }
+    }
+
+    func testExpressionInputIsLimitedToOneHundredCharacters() {
+        withStore { store, _ in
+            store.expression = String(repeating: "1", count: 101)
+
+            XCTAssertEqual(store.expression.count, CalculatorStore.maximumExpressionLength)
+            XCTAssertEqual(store.errorMessage, "Expressions are limited to 100 characters.")
+        }
+    }
+
+    func testMemoryPreservesLongExactValue() {
+        withStore { store, defaults in
+            store.expression = "10^999"
+            store.addToMemory()
+
+            XCTAssertEqual(store.memoryText?.count, 1_000)
+            XCTAssertEqual(CalculatorStore(defaults: defaults).memoryText, store.memoryText)
+
+            store.clear()
+            store.recallMemory()
+            XCTAssertEqual(store.expression, "mem")
+            store.insert("+")
+            store.insert("1")
+            store.evaluate()
+            XCTAssertTrue(store.resultText.hasSuffix("001"))
+        }
+    }
+
+    func testGraphSamplingAndAutomaticDomain() {
+        withStore { store, _ in
+            store.graphEquations = [
+                CalculatorGraphEquation(
+                    id: UUID(),
+                    expression: "x^2",
+                    isEnabled: true,
+                    colorIndex: 0
+                ),
+            ]
+            store.graphXMinimum = -2
+            store.graphXMaximum = 2
+
+            let series = store.graphSeries(sampleCount: 201)
+            XCTAssertEqual(series.count, 1)
+            XCTAssertEqual(series[0].points.count, 201)
+            XCTAssertEqual(series[0].points[100].x, 0, accuracy: 1e-12)
+            XCTAssertEqual(series[0].points[100].y, 0, accuracy: 1e-12)
+
+            let yDomain = store.yDomain(for: series)
+            XCTAssertLessThan(yDomain.lowerBound, 0)
+            XCTAssertGreaterThan(yDomain.upperBound, 3.5)
+        }
+    }
+
+    func testGraphSamplerBreaksAtReciprocalDiscontinuity() {
+        withStore { store, _ in
+            store.graphEquations = [
+                CalculatorGraphEquation(
+                    id: UUID(),
+                    expression: "1/x",
+                    isEnabled: true,
+                    colorIndex: 0
+                ),
+            ]
+            store.graphXMinimum = -1
+            store.graphXMaximum = 1
+
+            let points = store.graphSeries(sampleCount: 201)[0].points
+            XCTAssertGreaterThan(Set(points.map(\.segment)).count, 1)
+            XCTAssertFalse(points.contains(where: { abs($0.x) < 1e-12 }))
+        }
+    }
+
+    private func withStore(
+        _ body: (CalculatorStore, UserDefaults) -> Void
+    ) {
+        let suiteName = "CalculatorStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        body(CalculatorStore(defaults: defaults), defaults)
+    }
+}
+
+// MARK: - Terminal
+
+final class TerminalTextSanitizerTests: XCTestCase {
+    func testRemovesANSISequencesAndAppliesBackspace() {
+        let text = "\u{1B}[31mred\u{1B}[0m ab\u{8}c"
+
+        XCTAssertEqual(TerminalTextSanitizer.clean(text), "red ac")
+    }
+}
+
+final class PrivilegedShellCommandTests: XCTestCase {
+    func testUsesTheSystemAuthorizationDialogWithoutEmbeddingTheCommandOrPasswordInAppleScript() {
+        XCTAssertEqual(PrivilegedShellCommand.executableURL.path, "/usr/bin/osascript")
+        let command = "printf 'reusable command'"
+        let arguments = PrivilegedShellCommand.arguments(for: command)
+        XCTAssertEqual(arguments.last, command)
+
+        let authorizationScript = arguments.dropLast().joined(separator: " ")
+        XCTAssertFalse(authorizationScript.contains(command))
+        XCTAssertTrue(authorizationScript.contains("with administrator privileges"))
+        XCTAssertFalse(authorizationScript.localizedCaseInsensitiveContains("password"))
+    }
+
+    func testRemovesSimpleSudoPrefixBecauseMacOSAlreadyRunsTheCommandAsAdministrator() {
+        XCTAssertEqual(
+            PrivilegedShellCommand.commandWithoutSimpleSudoPrefix("sudo id -u"),
+            "id -u"
+        )
+        XCTAssertEqual(
+            PrivilegedShellCommand.commandWithoutSimpleSudoPrefix("/usr/bin/sudo whoami"),
+            "whoami"
+        )
+        XCTAssertEqual(
+            PrivilegedShellCommand.commandWithoutSimpleSudoPrefix("sudo -u guest whoami"),
+            "sudo -u guest whoami"
+        )
+    }
+
+    func testRecognizesMacOSAuthorizationCancellation() {
+        XCTAssertTrue(PrivilegedShellCommand.wasCancelled(
+            "execution error: User canceled. (-128)"
+        ))
+        XCTAssertFalse(PrivilegedShellCommand.wasCancelled("Permission denied"))
+    }
+}
+
+@MainActor
+final class TerminalStoreTests: XCTestCase {
+    func testRunsCommandsAndTracksTheShellWorkingDirectory() async throws {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        XCTAssertTrue(store.isRunning)
+        store.commandText = "tty"
+        store.executeCommand()
+        let hasPseudoTerminal = await waitUntil {
+            !store.isExecuting && store.output.contains("/dev/tty")
+        }
+        XCTAssertTrue(hasPseudoTerminal)
+
+        store.commandText = "export WORKBENCH_TERMINAL_TEST='persistent-shell'; printf 'hello-from-shell'; cd /"
+        store.executeCommand()
+
+        let finished = await waitUntil {
+            !store.isExecuting && store.output.contains("hello-from-shell")
+        }
+        XCTAssertTrue(finished)
+        XCTAssertEqual(store.lastExitCode, 0)
+        XCTAssertEqual(store.currentDirectory.path, "/")
+
+        store.commandText = "printf \"$WORKBENCH_TERMINAL_TEST\""
+        store.executeCommand()
+        let retainedEnvironment = await waitUntil {
+            !store.isExecuting && store.output.contains("persistent-shell")
+        }
+        XCTAssertTrue(retainedEnvironment)
+    }
+
+    func testCommandHistoryMovesBackwardAndForward() async {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        store.commandText = "printf first"
+        store.executeCommand()
+        _ = await waitUntil { !store.isExecuting }
+
+        store.commandText = "printf second"
+        store.executeCommand()
+        _ = await waitUntil { !store.isExecuting }
+
+        store.previousCommand()
+        XCTAssertEqual(store.commandText, "printf second")
+        store.previousCommand()
+        XCTAssertEqual(store.commandText, "printf first")
+        store.nextCommand()
+        XCTAssertEqual(store.commandText, "printf second")
+        store.nextCommand()
+        XCTAssertEqual(store.commandText, "")
+    }
+
+    func testRecentCommandsAndPresetsPersist() async {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let command = "printf reusable-command"
+        store.commandText = command
+        store.executeCommand()
+        _ = await waitUntil { !store.isExecuting }
+
+        XCTAssertEqual(store.recentCommands.first, command)
+        store.addPreset(command)
+        XCTAssertTrue(store.isPreset(command))
+
+        let reloaded = TerminalStore(shellPath: "/bin/zsh", defaults: defaults)
+        XCTAssertEqual(reloaded.recentCommands.first, command)
+        XCTAssertEqual(reloaded.presetCommands.first, command)
+
+        reloaded.togglePreset(command)
+        XCTAssertFalse(reloaded.isPreset(command))
+    }
+
+    func testSendsInteractiveInputToTheRunningCommand() async {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        store.commandText = "read reply; printf 'reply=%s' \"$reply\""
+        store.executeCommand()
+        XCTAssertTrue(store.isExecuting)
+
+        store.commandText = "interactive-value"
+        store.executeCommand()
+
+        let finished = await waitUntil {
+            !store.isExecuting && store.output.contains("reply=interactive-value")
+        }
+        XCTAssertTrue(finished)
+        XCTAssertFalse(store.recentCommands.contains("interactive-value"))
+    }
+
+    func testPasswordPromptUsesSecureInputWithoutSavingOrEchoingIt() async {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        store.commandText = "printf 'Password:'; read secret; printf '\\nsecret-length=%s' \"${#secret}\""
+        store.executeCommand()
+
+        let requestedSecureInput = await waitUntil {
+            store.isAwaitingSecureInput
+        }
+        XCTAssertTrue(requestedSecureInput)
+
+        let secret = "do-not-save-me"
+        store.commandText = secret
+        store.executeCommand()
+
+        let finished = await waitUntil {
+            !store.isExecuting && store.output.contains("secret-length=14")
+        }
+        XCTAssertTrue(finished)
+        XCTAssertFalse(store.output.contains(secret))
+        XCTAssertFalse(store.recentCommands.contains(secret))
+    }
+
+    private func makeStore() -> (TerminalStore, UserDefaults, String) {
+        let suiteName = "TerminalStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return (TerminalStore(shellPath: "/bin/zsh", defaults: defaults), defaults, suiteName)
+    }
+
+    private func waitUntil(
+        attempts: Int = 100,
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return condition()
     }
 }

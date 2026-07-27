@@ -15,6 +15,10 @@ APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 cd "$ROOT_DIR"
 
+while IFS= read -r app_pid; do
+  [[ -n "$app_pid" ]] || continue
+  pkill -TERM -P "$app_pid" >/dev/null 2>&1 || true
+done < <(pgrep -x "$APP_NAME" || true)
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 xcodebuild \

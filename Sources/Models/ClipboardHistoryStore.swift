@@ -28,8 +28,19 @@ enum ClipboardHistoryKind: String, Codable, Sendable {
 }
 
 enum FilePasteboard {
+    enum Operation: String, Equatable, Sendable {
+        case copy
+        case cut
+    }
+
     private static let filenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
     private static let promisedFileURLType = NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url")
+    private static let operationType = NSPasteboard.PasteboardType("com.qnsub.workbench.file-operation")
+
+    static func operation(from pasteboard: NSPasteboard) -> Operation {
+        guard let value = pasteboard.string(forType: operationType) else { return .copy }
+        return Operation(rawValue: value) ?? .copy
+    }
 
     static func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
         var urls: [URL] = []
@@ -73,7 +84,11 @@ enum FilePasteboard {
         return uniqueExistingFileURLs(urls)
     }
 
-    static func write(_ urls: [URL], to pasteboard: NSPasteboard) {
+    static func write(
+        _ urls: [URL],
+        operation: Operation = .copy,
+        to pasteboard: NSPasteboard
+    ) {
         let existingURLs = uniqueExistingFileURLs(urls)
         guard !existingURLs.isEmpty else { return }
         let paths = existingURLs.map(\.path)
@@ -82,6 +97,7 @@ enum FilePasteboard {
         pasteboard.writeObjects(existingURLs as [NSURL])
         pasteboard.setPropertyList(paths, forType: filenamesType)
         pasteboard.setString(paths.joined(separator: "\n"), forType: .string)
+        pasteboard.setString(operation.rawValue, forType: operationType)
     }
 
     private static func fileURL(from object: Any) -> URL? {
@@ -240,9 +256,17 @@ final class ClipboardHistoryStore {
     }
 
     func copyFiles(_ urls: [URL]) {
+        writeFiles(urls, operation: .copy)
+    }
+
+    func cutFiles(_ urls: [URL]) {
+        writeFiles(urls, operation: .cut)
+    }
+
+    private func writeFiles(_ urls: [URL], operation: FilePasteboard.Operation) {
         let existingURLs = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !existingURLs.isEmpty else { return }
-        writeFilesToPasteboard(existingURLs)
+        writeFilesToPasteboard(existingURLs, operation: operation)
         let paths = existingURLs.map(\.path)
         let names = existingURLs.map(\.lastPathComponent)
         record(
@@ -390,10 +414,13 @@ final class ClipboardHistoryStore {
         lastSeenPasteboardChangeCount = NSPasteboard.general.changeCount
     }
 
-    private func writeFilesToPasteboard(_ urls: [URL]) {
+    private func writeFilesToPasteboard(
+        _ urls: [URL],
+        operation: FilePasteboard.Operation = .copy
+    ) {
         guard !urls.isEmpty else { return }
         let pasteboard = NSPasteboard.general
-        FilePasteboard.write(urls, to: pasteboard)
+        FilePasteboard.write(urls, operation: operation, to: pasteboard)
         lastSeenPasteboardChangeCount = pasteboard.changeCount
     }
 

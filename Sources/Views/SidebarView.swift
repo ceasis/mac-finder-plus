@@ -7,6 +7,7 @@ private enum SidebarSectionID: String, CaseIterable, Identifiable {
     case devices
     case favorites
     case tools
+    case proTools
 
     var id: String { rawValue }
 
@@ -16,12 +17,16 @@ private enum SidebarSectionID: String, CaseIterable, Identifiable {
         case .devices: "Devices"
         case .favorites: "Favorites"
         case .tools: "Tools"
+        case .proTools: "Pro Tools"
         }
     }
 }
 
 private enum SidebarToolID: String, CaseIterable, Identifiable {
     case notes
+    case calendar
+    case calculator
+    case terminal
     case snippets
     case dropStack
     case workflows
@@ -32,6 +37,7 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     case organize
     case clipboard
     case voiceRecorder
+    case pomodoro
     case screenshot
     case screenRecording
 
@@ -40,6 +46,9 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .notes: "Notes"
+        case .calendar: "Calendar"
+        case .calculator: "Calculator"
+        case .terminal: "Terminal"
         case .snippets: "Snippets"
         case .dropStack: "Drop Stack"
         case .workflows: "Workflows"
@@ -50,6 +59,7 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         case .organize: "Organize"
         case .clipboard: "Clipboard History"
         case .voiceRecorder: "Voice Recorder"
+        case .pomodoro: "Pomodoro"
         case .screenshot: "Screenshot"
         case .screenRecording: "Screen Recording"
         }
@@ -58,6 +68,9 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .notes: "note.text"
+        case .calendar: "calendar"
+        case .calculator: "function"
+        case .terminal: "terminal"
         case .snippets: "text.quote"
         case .dropStack: "tray.full"
         case .workflows: "slider.horizontal.3"
@@ -68,6 +81,7 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         case .organize: "folder.badge.gearshape"
         case .clipboard: "clipboard"
         case .voiceRecorder: "mic"
+        case .pomodoro: "timer"
         case .screenshot: "camera.viewfinder"
         case .screenRecording: "record.circle"
         }
@@ -76,6 +90,9 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     var panel: DockedToolPanel {
         switch self {
         case .notes: .notes
+        case .calendar: .calendar
+        case .calculator: .calculator
+        case .terminal: .terminal
         case .snippets: .snippets
         case .dropStack: .dropStack
         case .workflows: .workflows
@@ -86,6 +103,7 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         case .organize: .organize
         case .clipboard: .clipboard
         case .voiceRecorder: .voiceRecorder
+        case .pomodoro: .pomodoro
         case .screenshot: .screenshot
         case .screenRecording: .recording
         }
@@ -94,6 +112,9 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .notes: "Open notes"
+        case .calendar: "Browse weeks, months, and years"
+        case .calculator: "Calculate expressions and plot functions"
+        case .terminal: "Run shell commands in the active folder"
         case .snippets: "Save reusable text, images, and files"
         case .dropStack: "Collect files from several folders before moving, copying, or processing them"
         case .workflows: "Run saved multi-step file recipes"
@@ -104,8 +125,18 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         case .organize: "Sort files in a folder into subfolders"
         case .clipboard: "Open clipboard history"
         case .voiceRecorder: "Record audio into the active folder"
+        case .pomodoro: "Run focused work and break sessions"
         case .screenshot: "Capture a screenshot"
         case .screenRecording: "Record the screen"
+        }
+    }
+
+    var isProTool: Bool {
+        switch self {
+        case .voiceRecorder, .screenshot, .screenRecording:
+            true
+        default:
+            false
         }
     }
 }
@@ -145,6 +176,7 @@ enum SidebarLayoutPreferences {
     static let deviceOrderKey = "sidebar.deviceOrder"
     static let toolOrderKey = "sidebar.toolOrder"
     static let notesSnippetsOrderMigrationKey = "sidebar.toolOrder.notesSnippetsFirst"
+    static let terminalOrderMigrationKey = "sidebar.toolOrder.terminalAfterCalculator"
     static let defaultPlaceOrder = ["home", "desktop", "documents", "downloads"]
 
     static func reset() {
@@ -156,6 +188,7 @@ enum SidebarLayoutPreferences {
             toolOrderKey,
             SidebarToolViewMode.defaultsKey,
             notesSnippetsOrderMigrationKey,
+            terminalOrderMigrationKey,
         ].forEach(defaults.removeObject(forKey:))
         NotificationCenter.default.post(name: didResetNotification, object: nil)
     }
@@ -222,6 +255,7 @@ struct SidebarView: View {
             sections.append(.favorites)
         }
         sections.append(.tools)
+        sections.append(.proTools)
         return orderStore.orderedSections(sections)
     }
 
@@ -427,11 +461,60 @@ struct SidebarView: View {
             }
 
         case .tools:
-            let orderedTools = orderStore.orderedTools()
+            let orderedTools = orderStore.orderedTools().filter { !$0.isProTool }
             Section(header: sidebarSectionHeader(section)) {
                 toolsSectionContent(orderedTools)
             }
+
+        case .proTools:
+            Section(header: sidebarSectionHeader(section)) {
+                if appState.proToolsEnabled {
+                    let orderedTools = orderStore.orderedTools().filter { $0.isProTool }
+                    toolsSectionContent(orderedTools)
+                } else {
+                    enableProToolsRow
+                }
+            }
         }
+    }
+
+    private var enableProToolsRow: some View {
+        Button {
+            appState.enableProTools()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.tint)
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Enable Pro Tools")
+                        .font(.callout.weight(.medium))
+                    Text("Screen Recording + Microphone")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 6)
+
+                if appState.isEnablingProTools {
+                    ProgressView()
+                        .controlSize(.mini)
+                } else {
+                    Image(systemName: "chevron.forward")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 7)
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(appState.isEnablingProTools)
+        .help("Enable Voice Recorder, Screenshot, and Screen Recording")
+        .clickableCursor(!appState.isEnablingProTools)
     }
 
     @ViewBuilder
@@ -497,7 +580,9 @@ struct SidebarView: View {
             tool: tool,
             draggedTool: $draggedTool,
             dropTarget: $toolDropTarget,
-            move: moveTool(_:onto:)
+            move: { source, target in
+                moveTool(source, onto: target, in: orderedTools)
+            }
         ))
         .contextMenu {
             toolContextMenu(tool, in: orderedTools)
@@ -531,7 +616,9 @@ struct SidebarView: View {
             tool: tool,
             draggedTool: $draggedTool,
             dropTarget: $toolDropTarget,
-            move: moveTool(_:onto:)
+            move: { source, target in
+                moveTool(source, onto: target, in: orderedTools)
+            }
         ))
         .contextMenu {
             toolContextMenu(tool, in: orderedTools)
@@ -565,7 +652,9 @@ struct SidebarView: View {
             tool: tool,
             draggedTool: $draggedTool,
             dropTarget: $toolDropTarget,
-            move: moveTool(_:onto:)
+            move: { source, target in
+                moveTool(source, onto: target, in: orderedTools)
+            }
         ))
         .contextMenu {
             toolContextMenu(tool, in: orderedTools)
@@ -588,6 +677,11 @@ struct SidebarView: View {
     private func sidebarSectionHeader(_ section: SidebarSectionID) -> some View {
         HStack(spacing: 6) {
             Text(section.title)
+            if section == .proTools && !appState.proToolsEnabled {
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             if isReordering {
                 SidebarSectionDragHandle(
                     section: section,
@@ -689,18 +783,23 @@ struct SidebarView: View {
         guard let index = orderedTools.firstIndex(of: tool) else { return }
         orderStore.moveTools(
             fromOffsets: IndexSet(integer: index),
-            toOffset: destinationOffset(from: index, by: offset)
+            toOffset: destinationOffset(from: index, by: offset),
+            visible: orderedTools
         )
     }
 
-    private func moveTool(_ source: SidebarToolID, onto target: SidebarToolID) {
-        let orderedTools = orderStore.orderedTools()
+    private func moveTool(
+        _ source: SidebarToolID,
+        onto target: SidebarToolID,
+        in orderedTools: [SidebarToolID]
+    ) {
         guard source != target,
               let sourceIndex = orderedTools.firstIndex(of: source),
               let targetIndex = orderedTools.firstIndex(of: target) else { return }
         orderStore.moveTools(
             fromOffsets: IndexSet(integer: sourceIndex),
-            toOffset: sourceIndex < targetIndex ? targetIndex + 1 : targetIndex
+            toOffset: sourceIndex < targetIndex ? targetIndex + 1 : targetIndex,
+            visible: orderedTools
         )
     }
 
@@ -721,6 +820,12 @@ struct SidebarView: View {
             appState.showClipboardHistory()
         case .notes:
             appState.showNotes()
+        case .calendar:
+            appState.showCalendarTool()
+        case .calculator:
+            appState.showCalculatorTool()
+        case .terminal:
+            appState.showTerminalTool()
         case .snippets:
             appState.showSnippets()
         case .dropStack:
@@ -733,6 +838,8 @@ struct SidebarView: View {
             appState.showArchiveBrowser()
         case .voiceRecorder:
             appState.showVoiceRecorderTool()
+        case .pomodoro:
+            appState.showPomodoroTool()
         case .screenshot:
             appState.beginScreenshotCapture()
         case .screenRecording:
@@ -810,12 +917,16 @@ private final class SidebarOrderStore {
 
     private static let defaultToolOrder: [SidebarToolID] = [
         .notes,
+        .calendar,
+        .calculator,
+        .terminal,
         .snippets,
         .cleanup,
         .diskSpace,
         .organize,
         .clipboard,
         .voiceRecorder,
+        .pomodoro,
         .screenshot,
         .screenRecording,
     ]
@@ -840,6 +951,7 @@ private final class SidebarOrderStore {
             allCases: Self.defaultToolOrder
         )
         migrateNotesAndSnippetsToTopIfNeeded()
+        migrateTerminalNextToCalculatorIfNeeded()
     }
 
     func orderedSections(_ available: [SidebarSectionID]) -> [SidebarSectionID] {
@@ -880,6 +992,18 @@ private final class SidebarOrderStore {
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.notesSnippetsOrderMigrationKey)
     }
 
+    private func migrateTerminalNextToCalculatorIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: SidebarLayoutPreferences.terminalOrderMigrationKey) else { return }
+        toolOrder.removeAll { $0 == .terminal }
+        if let calculatorIndex = toolOrder.firstIndex(of: .calculator) {
+            toolOrder.insert(.terminal, at: calculatorIndex + 1)
+        } else {
+            toolOrder.append(.terminal)
+        }
+        persistEnumArray(toolOrder, key: SidebarLayoutPreferences.toolOrderKey)
+        UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.terminalOrderMigrationKey)
+    }
+
     func resetLayout() {
         sectionOrder = SidebarSectionID.allCases
         placeOrder = SidebarLayoutPreferences.defaultPlaceOrder
@@ -890,6 +1014,7 @@ private final class SidebarOrderStore {
         persistStringArray(deviceOrder, key: SidebarLayoutPreferences.deviceOrderKey)
         persistEnumArray(toolOrder, key: SidebarLayoutPreferences.toolOrderKey)
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.notesSnippetsOrderMigrationKey)
+        UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.terminalOrderMigrationKey)
     }
 
     func moveSections(
@@ -931,9 +1056,18 @@ private final class SidebarOrderStore {
         persistStringArray(deviceOrder, key: SidebarLayoutPreferences.deviceOrderKey)
     }
 
-    func moveTools(fromOffsets source: IndexSet, toOffset destination: Int) {
-        toolOrder = orderedTools()
-        toolOrder.moveItems(fromOffsets: source, toOffset: destination)
+    func moveTools(
+        fromOffsets source: IndexSet,
+        toOffset destination: Int,
+        visible: [SidebarToolID]
+    ) {
+        var visibleOrder = visible
+        visibleOrder.moveItems(fromOffsets: source, toOffset: destination)
+        let visibleSet = Set(visible)
+        var movedIterator = visibleOrder.makeIterator()
+        toolOrder = orderedTools().map { tool in
+            visibleSet.contains(tool) ? movedIterator.next() ?? tool : tool
+        }
         persistEnumArray(toolOrder, key: SidebarLayoutPreferences.toolOrderKey)
     }
 

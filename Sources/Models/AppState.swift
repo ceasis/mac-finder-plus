@@ -9,6 +9,9 @@ enum DockedToolPanel: String, Equatable {
     case diskSpace
     case clipboard
     case notes
+    case calendar
+    case calculator
+    case terminal
     case snippets
     case dropStack
     case workflows
@@ -19,6 +22,7 @@ enum DockedToolPanel: String, Equatable {
     case screenshot
     case recording
     case voiceRecorder
+    case pomodoro
 }
 
 enum CapturePermissionRequirement: String, CaseIterable, Identifiable {
@@ -82,6 +86,17 @@ private struct FileDragSession {
     let id: String
     let urls: [URL]
     let sourcePaneIndex: Int
+    let defaultsToMove: Bool
+}
+
+enum FileDropOperationPolicy {
+    static func shouldMove(
+        isInternalDrag: Bool,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        if modifiers.contains(.option) { return false }
+        return isInternalDrag || modifiers.contains(.command)
+    }
 }
 
 /// App-wide state: the two panes, which one is active, global toggles, and the
@@ -106,6 +121,9 @@ final class AppState {
             if !isDualPane { activePaneIndex = 0 }
             savePersistentState()
         }
+    }
+    var hasCurrentFileDragSession: Bool {
+        currentFileDragSession != nil
     }
     var showHidden = false {
         didSet {
@@ -136,6 +154,7 @@ final class AppState {
     var moveIntoNewFolderParentURL: URL?
     var showGoToPrompt = false
     var renameTarget: FileItem?
+    var renamePaneIndex: Int?
     /// The single docked tool panel visible in the main window, if any.
     var activeToolPanel: DockedToolPanel? {
         didSet {
@@ -168,6 +187,18 @@ final class AppState {
     var showReleaseChecklist = false
     var showCommandPalette = false
     var capturePermissionPrompt: CapturePermissionPrompt?
+    var proToolsEnabled = UserDefaults.standard.bool(
+        forKey: ProToolsAccessPolicy.enabledDefaultsKey
+    ) {
+        didSet {
+            UserDefaults.standard.set(
+                proToolsEnabled,
+                forKey: ProToolsAccessPolicy.enabledDefaultsKey
+            )
+        }
+    }
+    var isEnablingProTools = false
+    var proToolsPermissionPrompt: ProToolsPermissionPrompt?
     /// Non-nil while a video merge render is in flight (0…1).
     var mergeIntoVideoProgress: Double?
     private var mergeIntoVideoTask: Task<Void, Never>?
@@ -180,6 +211,7 @@ final class AppState {
     @ObservationIgnored private var lastFolderCompareLeftURL: URL?
     @ObservationIgnored private var lastFolderCompareRightURL: URL?
     @ObservationIgnored private var currentFileDragSession: FileDragSession?
+    @ObservationIgnored private var targetedFileDropDestinations: [UUID: URL] = [:]
     @ObservationIgnored private let permissionsManager = PermissionsManager()
     /// Incremented by the ⌘F command; the active pane's search field focuses on change.
     var searchFocusTick = 0
@@ -187,7 +219,11 @@ final class AppState {
     var activePane: PaneModel { panes[activePaneIndex] }
     var inactivePane: PaneModel { panes[activePaneIndex == 0 ? 1 : 0] }
     var canUndoFileOperation: Bool { !undoStack.isEmpty }
-    var canPasteFilesFromClipboard: Bool { !fileURLsFromPasteboard().isEmpty }
+    var clipboardFileCount: Int { fileURLsFromPasteboard().count }
+    var canPasteFilesFromClipboard: Bool { clipboardFileCount > 0 }
+    var clipboardFileOperation: FilePasteboard.Operation {
+        FilePasteboard.operation(from: NSPasteboard.general)
+    }
     var hasActiveSelection: Bool { !activePane.selection.isEmpty }
     var hasSelectedImage: Bool { activePane.selectedItems.contains(where: \.isImage) }
     var canTransferSelectionToOtherPane: Bool { isDualPane && hasActiveSelection }
@@ -412,6 +448,7 @@ final class AppState {
         editingTextFile = nil
         showPreviewSlideshow = false
         capturePermissionPrompt = nil
+        proToolsPermissionPrompt = nil
     }
 
     private func closeModalTools() {
@@ -429,6 +466,7 @@ final class AppState {
     private func presentTool(_ tool: DockedToolPanel) {
         closeModalTools()
         capturePermissionPrompt = nil
+        proToolsPermissionPrompt = nil
         activeToolPanel = activeToolPanel == tool ? nil : tool
         if activeToolPanel == .clipboard {
             ClipboardHistoryStore.shared.captureCurrentPasteboard(reportError: false)
@@ -437,6 +475,11 @@ final class AppState {
     }
 
     private func beginCaptureTool(_ kind: CaptureKind, togglesExistingPanel: Bool) {
+        guard proToolsEnabled else {
+            enableProTools()
+            return
+        }
+
         let panel = dockedPanel(for: kind)
         UserDefaults.standard.set(kind.rawValue, forKey: "capture.kind")
 
@@ -526,6 +569,53 @@ final class AppState {
         capturePermissionPrompt = nil
     }
 
+    func enableProTools() {
+        guard !proToolsEnabled, !isEnablingProTools else { return }
+
+        closeModalTools()
+        capturePermissionPrompt = nil
+        proToolsPermissionPrompt = nil
+        isEnablingProTools = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            permissionsManager.refresh()
+            var missing = ProToolsAccessPolicy.missingPermissions(
+                screenRecording: permissionsManager.screenRecording,
+                microphone: permissionsManager.microphone
+            )
+
+            if missing.contains(.screenRecording) {
+                permissionsManager.requestScreenRecording()
+            }
+            if missing.contains(.microphone) {
+                await permissionsManager.requestMicrophone()
+            }
+
+            permissionsManager.refresh()
+            missing = ProToolsAccessPolicy.missingPermissions(
+                screenRecording: permissionsManager.screenRecording,
+                microphone: permissionsManager.microphone
+            )
+            isEnablingProTools = false
+
+            if missing.isEmpty {
+                proToolsEnabled = true
+            } else {
+                proToolsPermissionPrompt = ProToolsPermissionPrompt(missing: missing)
+            }
+        }
+    }
+
+    func retryProToolsPermissions() {
+        enableProTools()
+    }
+
+    func dismissProToolsPermissionPrompt() {
+        proToolsPermissionPrompt = nil
+    }
+
     private func missingCapturePermissions(for kind: CaptureKind) -> [CapturePermissionRequirement] {
         missingCapturePermissions(from: requiredCapturePermissions(for: kind))
     }
@@ -582,6 +672,30 @@ final class AppState {
 
     func hideNotes() {
         if activeToolPanel == .notes { activeToolPanel = nil }
+    }
+
+    func showCalendarTool() {
+        presentTool(.calendar)
+    }
+
+    func hideCalendarTool() {
+        if activeToolPanel == .calendar { activeToolPanel = nil }
+    }
+
+    func showCalculatorTool() {
+        presentTool(.calculator)
+    }
+
+    func hideCalculatorTool() {
+        if activeToolPanel == .calculator { activeToolPanel = nil }
+    }
+
+    func showTerminalTool() {
+        presentTool(.terminal)
+    }
+
+    func hideTerminalTool() {
+        if activeToolPanel == .terminal { activeToolPanel = nil }
     }
 
     func showSnippets() {
@@ -744,11 +858,23 @@ final class AppState {
     }
 
     func showVoiceRecorderTool() {
+        guard proToolsEnabled else {
+            enableProTools()
+            return
+        }
         presentTool(.voiceRecorder)
     }
 
     func hideVoiceRecorderTool() {
         if activeToolPanel == .voiceRecorder { activeToolPanel = nil }
+    }
+
+    func showPomodoroTool() {
+        presentTool(.pomodoro)
+    }
+
+    func hidePomodoroTool() {
+        if activeToolPanel == .pomodoro { activeToolPanel = nil }
     }
 
     func applyOrganizePlan(
@@ -810,7 +936,6 @@ final class AppState {
     ) {
         let urls = suggestions.map(\.url)
         guard !urls.isEmpty else { return }
-        guard confirmMoveToTrashIfNeeded(urls) else { return }
         let activityID = addActivity(title: "Move to Trash", detail: operationDetail(for: urls))
         let task = Task {
             updateActivity(activityID) { activity in
@@ -914,7 +1039,31 @@ final class AppState {
     }
 
     func beginRenameSelection() {
-        renameTarget = activePane.selectedItems.first
+        guard let item = activePane.selectedItems.first else { return }
+        beginRename(item, in: activePaneIndex)
+    }
+
+    func beginRename(_ item: FileItem, in paneIndex: Int) {
+        guard panes.indices.contains(paneIndex) else { return }
+        activePaneIndex = paneIndex
+        panes[paneIndex].selection = [item.id]
+        renamePaneIndex = paneIndex
+        renameTarget = item
+    }
+
+    func isRenaming(_ item: FileItem, in paneIndex: Int) -> Bool {
+        renamePaneIndex == paneIndex && renameTarget?.id == item.id
+    }
+
+    func cancelRename() {
+        renameTarget = nil
+        renamePaneIndex = nil
+    }
+
+    func commitRename(_ item: FileItem, in paneIndex: Int, to newName: String) {
+        guard isRenaming(item, in: paneIndex) else { return }
+        cancelRename()
+        rename(item, to: newName, in: paneIndex)
     }
 
     func beginBatchRename(_ ids: Set<FileItem.ID>? = nil) {
@@ -937,12 +1086,20 @@ final class AppState {
         }
     }
 
-    func rename(_ item: FileItem, to newName: String) {
-        let trimmed = newName.trimmingCharacters(in: .whitespaces)
+    func rename(_ item: FileItem, to newName: String, in paneIndex: Int? = nil) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != item.name else { return }
-        runTracked(title: "Rename", detail: item.name) {
+        let targetPane = paneIndex.flatMap { panes.indices.contains($0) ? panes[$0] : nil }
+        runTrackedResult(title: "Rename", detail: item.name) {
             let record = try await FileOperations.rename(item.url, to: trimmed)
-            return .moveBack(title: "Rename", records: [record])
+            if targetPane?.currentURL.standardizedFileURL
+                == item.url.deletingLastPathComponent().standardizedFileURL {
+                targetPane?.selection = [record.destination.path]
+            }
+            return .undo(
+                .moveBack(title: "Rename", records: [record]),
+                reveal: [record.destination]
+            )
         }
     }
 
@@ -1142,7 +1299,6 @@ final class AppState {
     func trashSelection(_ ids: Set<FileItem.ID>? = nil) {
         let urls = resolvedURLs(ids)
         guard !urls.isEmpty else { return }
-        guard confirmMoveToTrashIfNeeded(urls) else { return }
         runTracked(title: "Move to Trash", detail: operationDetail(for: urls)) {
             let records = try await FileOperations.trash(urls)
             return records.isEmpty ? nil : .putBack(title: "Move to Trash", records: records)
@@ -1177,13 +1333,22 @@ final class AppState {
         let pane = panes[paneIndex]
         let dragURLs: [URL]
         if pane.selection.contains(item.id) {
-            dragURLs = pane.resolvedItems(pane.selection).map(\.url)
+            let visibleSelectedURLs = pane.displayItems
+                .filter { pane.selection.contains($0.id) }
+                .map(\.url)
+            dragURLs = visibleSelectedURLs.isEmpty ? [item.url] : visibleSelectedURLs
         } else {
             dragURLs = [item.url]
         }
 
+        targetedFileDropDestinations.removeAll()
         let sessionID = UUID().uuidString
-        currentFileDragSession = FileDragSession(id: sessionID, urls: dragURLs, sourcePaneIndex: paneIndex)
+        currentFileDragSession = FileDragSession(
+            id: sessionID,
+            urls: dragURLs,
+            sourcePaneIndex: paneIndex,
+            defaultsToMove: true
+        )
 
         let provider = NSItemProvider(contentsOf: item.url) ?? NSItemProvider(object: item.url as NSURL)
         provider.suggestedName = item.name
@@ -1194,6 +1359,10 @@ final class AppState {
             completion(Data(sessionID.utf8), nil)
             return nil
         }
+        DragDropLog.log(
+            "DRAG START name=\(item.name) ext=\(item.url.pathExtension) "
+                + "urls=\(dragURLs.count) types=\(provider.registeredTypeIdentifiers)"
+        )
         return provider
     }
 
@@ -1213,8 +1382,14 @@ final class AppState {
             return NSItemProvider(object: item.name as NSString)
         }
 
+        targetedFileDropDestinations.removeAll()
         let sessionID = UUID().uuidString
-        currentFileDragSession = FileDragSession(id: sessionID, urls: dragURLs, sourcePaneIndex: activePaneIndex)
+        currentFileDragSession = FileDragSession(
+            id: sessionID,
+            urls: dragURLs,
+            sourcePaneIndex: activePaneIndex,
+            defaultsToMove: false
+        )
 
         let provider = NSItemProvider(contentsOf: firstURL) ?? NSItemProvider(object: firstURL as NSURL)
         provider.suggestedName = dragURLs.count == 1 ? firstURL.lastPathComponent : "\(dragURLs.count) items"
@@ -1230,8 +1405,16 @@ final class AppState {
 
     func dropCurrentFileDrag(to destination: URL, paneIndex: Int) -> Bool {
         guard let session = currentFileDragSession else { return false }
-        currentFileDragSession = nil
-        return drop(session.urls, to: destination, paneIndex: paneIndex)
+        let accepted = performDrop(
+            session.urls,
+            to: destination,
+            paneIndex: paneIndex,
+            isInternalDrag: session.defaultsToMove
+        )
+        if accepted, currentFileDragSession?.id == session.id {
+            currentFileDragSession = nil
+        }
+        return accepted
     }
 
     func consumeCurrentFileDragURLs() -> [URL] {
@@ -1241,13 +1424,68 @@ final class AppState {
     }
 
     func drop(_ urls: [URL], to destination: URL, paneIndex: Int) -> Bool {
+        let expandedSession = expandedCurrentDragSession(matching: urls)
+        let accepted = performDrop(
+            expandedSession?.urls ?? urls,
+            to: destination,
+            paneIndex: paneIndex,
+            isInternalDrag: expandedSession?.defaultsToMove == true
+        )
+        if accepted,
+           let expandedSession,
+           currentFileDragSession?.id == expandedSession.id {
+            currentFileDragSession = nil
+        }
+        return accepted
+    }
+
+    private func performDrop(
+        _ sourceURLs: [URL],
+        to destination: URL,
+        paneIndex: Int,
+        isInternalDrag: Bool
+    ) -> Bool {
         activePaneIndex = paneIndex
-        let sourceURLs = expandedCurrentDragURLs(matching: urls) ?? urls
         let filtered = sourceURLs.filter { $0.standardizedFileURL != destination.standardizedFileURL }
-        guard !filtered.isEmpty else { return false }
-        let move = NSEvent.modifierFlags.contains(.command)
-        enqueueTransfer(filtered, to: destination, move: move)
+        guard !filtered.isEmpty else {
+            DragDropLog.log("PERFORM_DROP reject=allSourcesEqualDestination dest=\(destination.path)")
+            return false
+        }
+        let move = FileDropOperationPolicy.shouldMove(
+            isInternalDrag: isInternalDrag,
+            modifiers: NSEvent.modifierFlags
+        )
+        let transferable = filtered.filter { source in
+            !move || source.deletingLastPathComponent().standardizedFileURL
+                != destination.standardizedFileURL
+        }
+        guard !transferable.isEmpty else {
+            DragDropLog.log(
+                "PERFORM_DROP reject=alreadyInDestination move=\(move) dest=\(destination.path)"
+            )
+            return false
+        }
+        DragDropLog.log(
+            "PERFORM_DROP accept move=\(move) internal=\(isInternalDrag) "
+                + "count=\(transferable.count) dest=\(destination.path)"
+        )
+        enqueueTransfer(transferable, to: destination, move: move)
         return true
+    }
+
+    func updateFileDropTarget(id: UUID, destination: URL, isTargeted: Bool) {
+        if isTargeted {
+            targetedFileDropDestinations[id] = destination.standardizedFileURL
+        } else {
+            targetedFileDropDestinations[id] = nil
+        }
+    }
+
+    func preferredFileDropDestination(fallback: URL) -> URL {
+        FileDropDestinationPolicy.preferredDestination(
+            fallback: fallback,
+            activeDestinations: Array(targetedFileDropDestinations.values)
+        )
     }
 
     func beginResize(_ ids: Set<FileItem.ID>? = nil) {
@@ -2128,7 +2366,116 @@ final class AppState {
         activityTasks[activityID] = task
     }
 
-    func exportVideoTrim(_ item: FileItem, inTime: Double, outTime: Double) {
+    func captureVideoFrame(_ item: FileItem, at seconds: Double) {
+        guard item.isVideoMedia else {
+            lastError = "Select a video to capture a frame."
+            return
+        }
+
+        let activityID = addActivity(title: "Capture Video Frame", detail: item.name)
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+                activity.bytesTotal = 1
+                activity.progressDetail = "At \(VideoTrimmer.timeText(seconds))"
+            }
+            do {
+                let output = try await VideoFrameCapture.capture(url: item.url, at: seconds)
+                updateActivity(activityID) { activity in
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = activity.bytesTotal
+                    activity.detail = output.lastPathComponent
+                    activity.progressDetail = nil
+                }
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+            pausedActivityIDs.remove(activityID)
+            panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
+    }
+
+    func captureVideoFrames(_ item: FileItem, every interval: Double) {
+        guard item.isVideoMedia else {
+            lastError = "Select a video to capture screenshots."
+            return
+        }
+        guard interval.isFinite, interval >= VideoIntervalFrameCapture.minimumInterval else {
+            lastError = "The screenshot interval must be at least 100 milliseconds."
+            return
+        }
+
+        let activityID = addActivity(
+            title: "Capture Video Screenshots",
+            detail: item.name
+        )
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+                activity.progressDetail = "Preparing folder and copying the original video"
+            }
+            do {
+                let result = try await VideoIntervalFrameCapture.capture(
+                    url: item.url,
+                    every: interval
+                ) { [weak self] completed, total in
+                    guard let self else { return }
+                    await MainActor.run {
+                        self.updateActivity(activityID) { activity in
+                            activity.bytesTotal = Int64(total)
+                            activity.bytesCompleted = Int64(completed)
+                            activity.progressDetail = completed == 0
+                                ? "Copying the original video"
+                                : "\(completed) of \(total) screenshots"
+                        }
+                    }
+                }
+                updateActivity(activityID) { activity in
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = activity.bytesTotal
+                    activity.detail = result.folderURL.lastPathComponent
+                    activity.progressDetail =
+                        "\(result.screenshotURLs.count) screenshots · Original video copied"
+                    activity.revealURLs = [result.folderURL]
+                }
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+            pausedActivityIDs.remove(activityID)
+            panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
+    }
+
+    func exportVideoTrim(
+        _ item: FileItem,
+        inTime: Double,
+        outTime: Double,
+        muteAudio: Bool = false
+    ) {
         guard item.isVideoMedia else {
             lastError = "Select a video to trim."
             return
@@ -2145,12 +2492,14 @@ final class AppState {
                 activity.bytesTotal = 1_000
                 activity.progressDetail =
                     "\(VideoTrimmer.timeText(inTime)) to \(VideoTrimmer.timeText(outTime))"
+                    + (muteAudio ? " · Audio muted" : "")
             }
             do {
-                let output = try await VideoTrimmer.exportLossless(
+                let output = try await VideoTrimmer.export(
                     url: item.url,
                     inTime: inTime,
-                    outTime: outTime
+                    outTime: outTime,
+                    muteAudio: muteAudio
                 ) { [weak self] progress in
                     guard let self else { return }
                     await MainActor.run {
@@ -2164,6 +2513,125 @@ final class AppState {
                     activity.finishedAt = Date()
                     activity.bytesCompleted = activity.bytesTotal
                     activity.detail = output.lastPathComponent
+                }
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+            pausedActivityIDs.remove(activityID)
+            panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
+    }
+
+    func exportVideoAudio(_ item: FileItem, inTime: Double, outTime: Double) {
+        guard item.isVideoMedia else {
+            lastError = "Select a video to export its audio."
+            return
+        }
+        guard outTime - inTime >= 0.1 else {
+            lastError = "The audio out point must be after the in point."
+            return
+        }
+
+        let activityID = addActivity(title: "Export Audio", detail: item.name)
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+                activity.bytesTotal = 1_000
+                activity.progressDetail =
+                    "\(VideoTrimmer.timeText(inTime)) to \(VideoTrimmer.timeText(outTime)) · M4A"
+            }
+            do {
+                let output = try await AudioRangeExporter.export(
+                    url: item.url,
+                    inTime: inTime,
+                    outTime: outTime,
+                    outputSuffix: "audio"
+                ) { [weak self] progress in
+                    guard let self else { return }
+                    await MainActor.run {
+                        self.updateActivity(activityID) { activity in
+                            activity.bytesCompleted = Int64((progress * 1_000).rounded())
+                        }
+                    }
+                }
+                updateActivity(activityID) { activity in
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = activity.bytesTotal
+                    activity.detail = output.lastPathComponent
+                    activity.progressDetail = "Audio-only M4A"
+                    activity.revealURLs = [output]
+                }
+            } catch is CancellationError {
+                updateActivity(activityID) { activity in
+                    activity.status = .cancelled
+                    activity.finishedAt = Date()
+                }
+            } catch {
+                updateActivity(activityID) { activity in
+                    activity.status = .failed(error.localizedDescription)
+                    activity.finishedAt = Date()
+                }
+                lastError = error.localizedDescription
+            }
+            activityTasks[activityID] = nil
+            pausedActivityIDs.remove(activityID)
+            panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
+    }
+
+    func exportAudioTrim(_ item: FileItem, inTime: Double, outTime: Double) {
+        guard item.isAudioMedia else {
+            lastError = "Select an audio file to trim."
+            return
+        }
+        guard outTime - inTime >= 0.1 else {
+            lastError = "Trim out point must be after the in point."
+            return
+        }
+
+        let activityID = addActivity(title: "Trim Audio", detail: item.name)
+        let task = Task {
+            updateActivity(activityID) { activity in
+                activity.status = .running
+                activity.bytesTotal = 1_000
+                activity.progressDetail =
+                    "\(VideoTrimmer.preciseTimeText(inTime)) to "
+                    + "\(VideoTrimmer.preciseTimeText(outTime)) · M4A"
+            }
+            do {
+                let output = try await AudioRangeExporter.export(
+                    url: item.url,
+                    inTime: inTime,
+                    outTime: outTime,
+                    outputSuffix: "trimmed"
+                ) { [weak self] progress in
+                    guard let self else { return }
+                    await MainActor.run {
+                        self.updateActivity(activityID) { activity in
+                            activity.bytesCompleted = Int64((progress * 1_000).rounded())
+                        }
+                    }
+                }
+                updateActivity(activityID) { activity in
+                    activity.status = .completed
+                    activity.finishedAt = Date()
+                    activity.bytesCompleted = activity.bytesTotal
+                    activity.detail = output.lastPathComponent
+                    activity.progressDetail = "Trimmed audio · M4A"
+                    activity.revealURLs = [output]
                 }
             } catch is CancellationError {
                 updateActivity(activityID) { activity in
@@ -2452,8 +2920,13 @@ final class AppState {
         showMergeIntoVideoSheet = true
     }
 
-    func performMergeIntoVideo(options: VideoMergeOptions) {
-        let targets = mergeIntoVideoTargets
+    func performMergeIntoVideo(targets: [FileItem], options: VideoMergeOptions) {
+        guard targets.count >= 2,
+              targets.allSatisfy({ $0.isImage || $0.isVideoMedia }) else {
+            lastError = "Select at least two images or videos to merge."
+            return
+        }
+        mergeIntoVideoTargets = targets
         let sources = targets.map { item in
             item.isImage ? VideoMergeSource.image(item.url) : .video(item.url)
         }
@@ -2936,6 +3409,12 @@ final class AppState {
         ClipboardHistoryStore.shared.copyFiles(urls)
     }
 
+    func cutFilesOfSelection(_ ids: Set<FileItem.ID>? = nil) {
+        let urls = resolvedURLs(ids)
+        guard !urls.isEmpty else { return }
+        ClipboardHistoryStore.shared.cutFiles(urls)
+    }
+
     func shareSelectionViaAirDrop(_ ids: Set<FileItem.ID>? = nil) {
         let urls = resolvedURLs(ids)
         guard !urls.isEmpty else {
@@ -2954,16 +3433,18 @@ final class AppState {
         service.perform(withItems: items)
     }
 
-    func pasteClipboardFiles(to destination: URL, move: Bool) {
-        let urls = fileURLsFromPasteboard()
+    func pasteClipboardFiles(to destination: URL, move: Bool? = nil) {
+        let pasteboard = NSPasteboard.general
+        let urls = FilePasteboard.fileURLs(from: pasteboard)
         guard !urls.isEmpty else {
-            lastError = "Copy one or more files first."
+            lastError = "Copy or cut one or more files first."
             return
         }
-        enqueueTransfer(urls, to: destination, move: move)
+        let shouldMove = move ?? (FilePasteboard.operation(from: pasteboard) == .cut)
+        enqueueTransfer(urls, to: destination, move: shouldMove)
     }
 
-    func pasteClipboardFilesToActiveFolder(move: Bool = false) {
+    func pasteClipboardFilesToActiveFolder(move: Bool? = nil) {
         pasteClipboardFiles(to: activePane.currentURL, move: move)
     }
 
@@ -3275,23 +3756,6 @@ final class AppState {
 
     // MARK: - Helpers
 
-    private func confirmMoveToTrashIfNeeded(_ urls: [URL]) -> Bool {
-        guard DeletionSafetySettings.shouldConfirmMoveToTrash else { return true }
-
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        if urls.count == 1 {
-            alert.messageText = "Move “\(urls[0].lastPathComponent)” to Trash?"
-            alert.informativeText = "You can undo this from Activity History while the item is still in the Trash."
-        } else {
-            alert.messageText = "Move \(urls.count) items to Trash?"
-            alert.informativeText = "This may include folders and many files. You can undo this from Activity History while the items are still in the Trash."
-        }
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
-    }
-
     private func confirmImportWorkbenchData(from source: URL) -> Bool {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -3359,13 +3823,12 @@ final class AppState {
         resolvedItems(ids).map(\.url)
     }
 
-    private func expandedCurrentDragURLs(matching droppedURLs: [URL]) -> [URL]? {
+    private func expandedCurrentDragSession(matching droppedURLs: [URL]) -> FileDragSession? {
         guard let session = currentFileDragSession else { return nil }
         let droppedPaths = Set(droppedURLs.map { $0.standardizedFileURL.path })
         let sessionPaths = Set(session.urls.map { $0.standardizedFileURL.path })
         guard !droppedPaths.isDisjoint(with: sessionPaths) else { return nil }
-        currentFileDragSession = nil
-        return session.urls
+        return session
     }
 
     private func previewableChildren(in folder: URL) -> [FileItem] {

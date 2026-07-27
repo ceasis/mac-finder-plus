@@ -41,6 +41,7 @@ struct FileColumnView: View {
                                     item: item,
                                     isSelected: model.selection.contains(item.id),
                                     compareMarker: model.compareMarker(for: item),
+                                    paneIndex: paneIndex,
                                     width: columnWidth,
                                     height: rowHeight
                                 )
@@ -132,6 +133,14 @@ struct FileColumnView: View {
                     appState.quickLookSelection()
                     return .handled
                 }
+                .onKeyPress(.return) {
+                    guard appState.renameTarget == nil, !model.selection.isEmpty else {
+                        return .ignored
+                    }
+                    appState.activePaneIndex = paneIndex
+                    appState.beginRenameSelection()
+                    return .handled
+                }
                 .onKeyPress("0") { rateSelection(0); return .handled }
                 .onKeyPress("1") { rateSelection(1); return .handled }
                 .onKeyPress("2") { rateSelection(2); return .handled }
@@ -194,6 +203,7 @@ struct FileColumnView: View {
     }
 
     private func handleMouseDown(on item: FileItem, clickCount: Int) {
+        guard !appState.isRenaming(item, in: paneIndex) else { return }
         if clickCount == 2 {
             appState.openItems([item.id], in: paneIndex)
         } else if model.selection.contains(item.id), !NSEvent.modifierFlags.contains(.command) {
@@ -257,9 +267,12 @@ struct FileColumnView: View {
 }
 
 private struct FileNameColumnCell: View {
+    @Environment(AppState.self) private var appState
+
     let item: FileItem
     let isSelected: Bool
     let compareMarker: FolderCompareMarker?
+    let paneIndex: Int
     let width: CGFloat
     let height: CGFloat
 
@@ -269,12 +282,26 @@ private struct FileNameColumnCell: View {
                 .resizable()
                 .frame(width: 16, height: 16)
 
-            Text(item.name)
-                .font(.callout)
-                .fontWeight(item.isDirectory ? .medium : .regular)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .foregroundStyle(.primary)
+            if appState.isRenaming(item, in: paneIndex) {
+                InlineFileRenameField(
+                    item: item,
+                    compact: true,
+                    onCommit: {
+                        appState.commitRename(item, in: paneIndex, to: $0)
+                    },
+                    onCancel: {
+                        appState.cancelRename()
+                    }
+                )
+                .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+            } else {
+                Text(item.name)
+                    .font(.callout)
+                    .fontWeight(item.isDirectory ? .medium : .regular)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.primary)
+            }
 
             Spacer(minLength: 0)
         }

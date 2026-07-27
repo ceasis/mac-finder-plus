@@ -154,17 +154,20 @@ struct CommandPaletteView: View {
             entry("notes", "Notes", "Open notes", "note.text") {
                 appState.showNotes()
             },
+            entry("calendar", "Calendar", "Browse weeks, months, and years", "calendar") {
+                appState.showCalendarTool()
+            },
+            entry("calculator", "Calculator", "Calculate expressions and plot functions", "function") {
+                appState.showCalculatorTool()
+            },
+            entry("terminal", "Terminal", "Run shell commands in the active folder", "terminal") {
+                appState.showTerminalTool()
+            },
             entry("snippets", "Snippets", "Open reusable text, images, and files", "text.quote") {
                 appState.showSnippets()
             },
-            entry("voice-recorder", "Voice Recorder", "Record audio into the active folder", "mic") {
-                appState.showVoiceRecorderTool()
-            },
-            entry("screenshot", "Capture Screenshot", "Open screenshot capture", "camera.viewfinder") {
-                appState.beginScreenshotCapture()
-            },
-            entry("recording", "Record Screen", "Open screen recording", "record.circle") {
-                appState.beginScreenRecording()
+            entry("pomodoro", "Pomodoro", "Run focused work and break sessions", "timer") {
+                appState.showPomodoroTool()
             },
             entry(
                 "compare-folders",
@@ -191,6 +194,30 @@ struct CommandPaletteView: View {
                 appState.showKeyboardShortcuts = true
             },
         ]
+
+        if appState.proToolsEnabled {
+            result.append(contentsOf: [
+                entry("voice-recorder", "Voice Recorder", "Record audio into the active folder", "mic") {
+                    appState.showVoiceRecorderTool()
+                },
+                entry("screenshot", "Screenshot", "Open screenshot capture", "camera.viewfinder") {
+                    appState.beginScreenshotCapture()
+                },
+                entry("recording", "Screen Recording", "Open screen recording", "record.circle") {
+                    appState.beginScreenRecording()
+                },
+            ])
+        } else {
+            result.append(entry(
+                "enable-pro-tools",
+                "Enable Pro Tools",
+                "Enable Voice Recorder, Screenshot, and Screen Recording",
+                "wand.and.stars",
+                disabledReason: appState.isEnablingProTools ? "Requesting permissions…" : nil
+            ) {
+                appState.enableProTools()
+            })
+        }
 
         for workflow in workflowStore.workflows {
             result.append(entry(

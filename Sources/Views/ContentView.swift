@@ -8,7 +8,6 @@ struct ContentView: View {
     @State private var newFileName = "Untitled.txt"
     @State private var moveIntoFolderName = "untitled folder"
     @State private var goToPath = ""
-    @State private var renameText = ""
     @State private var liveRightPanelWidthFraction: Double?
     @State private var rightPanelWidthAtDragStart: CGFloat?
     @State private var hasObservedInitialSidebarWidth = false
@@ -81,19 +80,6 @@ struct ContentView: View {
             TextField("Path (e.g. ~/Downloads)", text: $goToPath)
             Button("Go") { appState.goTo(path: goToPath) }
             Button("Cancel", role: .cancel) {}
-        }
-        .alert("Rename", isPresented: renamePresented) {
-            TextField("Name", text: $renameText)
-            Button("Rename") {
-                if let target = appState.renameTarget {
-                    appState.rename(target, to: renameText)
-                }
-                appState.renameTarget = nil
-            }
-            Button("Cancel", role: .cancel) { appState.renameTarget = nil }
-        }
-        .onChange(of: appState.renameTarget) { _, target in
-            if let target { renameText = target.name }
         }
         .onChange(of: appState.showMoveIntoNewFolderPrompt) { _, isShowing in
             if isShowing {
@@ -188,8 +174,8 @@ struct ContentView: View {
 
     private func usesRightDockedPanel(_ panel: DockedToolPanel?) -> Bool {
         switch panel {
-        case .notes, .snippets, .dropStack, .workflows, .advancedSearch, .archiveBrowser,
-                .screenshot, .recording, .voiceRecorder, .diskSpace:
+        case .notes, .calendar, .calculator, .terminal, .snippets, .dropStack, .workflows, .advancedSearch, .archiveBrowser,
+                .screenshot, .recording, .voiceRecorder, .pomodoro, .diskSpace:
             true
         default:
             false
@@ -201,6 +187,12 @@ struct ContentView: View {
         switch panel {
         case .notes:
             NotesPanelView()
+        case .calendar:
+            CalendarPanelView()
+        case .calculator:
+            CalculatorPanelView()
+        case .terminal:
+            TerminalPanelView()
         case .snippets:
             SnippetPanelView()
         case .dropStack:
@@ -215,6 +207,8 @@ struct ContentView: View {
             CapturePanelView()
         case .voiceRecorder:
             VoiceRecorderPanelView()
+        case .pomodoro:
+            PomodoroPanelView()
         case .diskSpace:
             DiskSpaceAnalyzerPanelView()
         default:
@@ -351,6 +345,12 @@ struct ContentView: View {
                 appState.hideCommandPalette()
             } content: {
                 CommandPaletteView()
+            }
+        } else if let prompt = appState.proToolsPermissionPrompt {
+            DismissibleToolModal {
+                appState.dismissProToolsPermissionPrompt()
+            } content: {
+                ProToolsPermissionPromptView(prompt: prompt)
             }
         } else if let prompt = appState.capturePermissionPrompt {
             DismissibleToolModal {
@@ -547,6 +547,24 @@ struct ContentView: View {
                 }
 
                 Button {
+                    appState.showCalendarTool()
+                } label: {
+                    Label("Calendar", systemImage: "calendar")
+                }
+
+                Button {
+                    appState.showCalculatorTool()
+                } label: {
+                    Label("Calculator", systemImage: "function")
+                }
+
+                Button {
+                    appState.showTerminalTool()
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
+                }
+
+                Button {
                     appState.showClipboardHistory()
                 } label: {
                     Label("Clipboard History", systemImage: "clipboard")
@@ -583,13 +601,36 @@ struct ContentView: View {
                 }
             }
 
-            Section("Actions") {
-                Button {
-                    appState.beginScreenshot()
-                } label: {
-                    Label("Capture Screenshot or Recording", systemImage: "record.circle")
-                }
+            Section("Pro Tools") {
+                if appState.proToolsEnabled {
+                    Button {
+                        appState.beginScreenshotCapture()
+                    } label: {
+                        Label("Screenshot", systemImage: "camera.viewfinder")
+                    }
 
+                    Button {
+                        appState.beginScreenRecording()
+                    } label: {
+                        Label("Screen Recording", systemImage: "record.circle")
+                    }
+
+                    Button {
+                        appState.showVoiceRecorderTool()
+                    } label: {
+                        Label("Voice Recorder", systemImage: "mic")
+                    }
+                } else {
+                    Button {
+                        appState.enableProTools()
+                    } label: {
+                        Label("Enable Pro Tools", systemImage: "wand.and.stars")
+                    }
+                    .disabled(appState.isEnablingProTools)
+                }
+            }
+
+            Section("Actions") {
                 Button {
                     appState.beginAnnotateImage()
                 } label: {
@@ -616,11 +657,6 @@ struct ContentView: View {
                     Label("Disk Space", systemImage: "chart.pie")
                 }
 
-                Button {
-                    appState.showVoiceRecorderTool()
-                } label: {
-                    Label("Voice Recorder", systemImage: "mic")
-                }
             }
 
             Section("View") {
@@ -643,12 +679,6 @@ struct ContentView: View {
         )
     }
 
-    private var renamePresented: Binding<Bool> {
-        Binding(
-            get: { appState.renameTarget != nil },
-            set: { if !$0 { appState.renameTarget = nil } }
-        )
-    }
 }
 
 private struct CapturePermissionPromptView: View {

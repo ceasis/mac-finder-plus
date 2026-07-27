@@ -51,6 +51,7 @@ struct FileGridView: View {
                                 item: item,
                                 isSelected: model.selection.contains(item.id),
                                 compareMarker: model.compareMarker(for: item),
+                                paneIndex: paneIndex,
                                 thumbnailSize: thumbnailSide
                             )
                                 .background(
@@ -95,7 +96,12 @@ struct FileGridView: View {
                         onEnd: finishSelectionDrag
                     )
                 )
-                .fileDropTarget(to: model.currentURL, paneIndex: paneIndex, appState: appState)
+                .fileDropTarget(
+                    to: model.currentURL,
+                    paneIndex: paneIndex,
+                    appState: appState,
+                    destinationResolver: folderDestination(at:)
+                )
                 .contextMenu {
                     FileItemContextMenu(ids: [], model: model, paneIndex: paneIndex)
                 }
@@ -117,10 +123,16 @@ struct FileGridView: View {
                 }
                 .onPreferenceChange(GridCellFramePreferenceKey.self) { frames in
                     cellFrames = frames
+                    if let measuredColumnCount = FileGridKeyboardNavigation.columnCount(
+                        from: frames
+                    ) {
+                        columnCount = measuredColumnCount
+                    }
                 }
                 .onChange(of: geometry.size.width, initial: true) { _, width in
                     // Mirror LazyVGrid's adaptive layout: as many columns of at
-                    // least minCellWidth as fit. Needed for up/down arrow moves.
+                    // least minCellWidth as fit. The measured cell positions
+                    // replace this estimate as soon as layout completes.
                     let available = width - gridPadding * 2
                     columnCount = max(1, Int((available + cellSpacing) / (minCellWidth + cellSpacing)))
                 }
@@ -129,11 +141,25 @@ struct FileGridView: View {
                 .focused($focused)
                 .onKeyPress(.leftArrow) { moveSelection(by: -1, scroller); return .handled }
                 .onKeyPress(.rightArrow) { moveSelection(by: 1, scroller); return .handled }
-                .onKeyPress(.upArrow) { moveSelection(by: -columnCount, scroller); return .handled }
-                .onKeyPress(.downArrow) { moveSelection(by: columnCount, scroller); return .handled }
+                .onKeyPress(.upArrow) {
+                    moveSelectionVertically(direction: -1, scroller)
+                    return .handled
+                }
+                .onKeyPress(.downArrow) {
+                    moveSelectionVertically(direction: 1, scroller)
+                    return .handled
+                }
                 .onKeyPress(.space) {
                     appState.activePaneIndex = paneIndex
                     appState.quickLookSelection()
+                    return .handled
+                }
+                .onKeyPress(.return) {
+                    guard appState.renameTarget == nil, !model.selection.isEmpty else {
+                        return .ignored
+                    }
+                    appState.activePaneIndex = paneIndex
+                    appState.beginRenameSelection()
                     return .handled
                 }
                 .onKeyPress("0") { rateSelection(0); return .handled }
@@ -145,6 +171,21 @@ struct FileGridView: View {
                 .onAppear { focused = true }
             }
         }
+    }
+
+    private func moveSelectionVertically(
+        direction: Int,
+        _ scroller: ScrollViewProxy
+    ) {
+        let items = model.displayItems
+        guard let delta = FileGridKeyboardNavigation.verticalDelta(
+            ids: items.map(\.id),
+            focusedID: anchorID,
+            selectedIDs: model.selection,
+            columnCount: columnCount,
+            direction: direction
+        ) else { return }
+        moveSelection(by: delta, scroller)
     }
 
     private func rateSelection(_ rating: Int) {
@@ -190,6 +231,7 @@ struct FileGridView: View {
     }
 
     private func handleMouseDown(on item: FileItem, clickCount: Int) {
+        guard !appState.isRenaming(item, in: paneIndex) else { return }
         if clickCount == 2 {
             appState.openItems([item.id], in: paneIndex)
         } else if model.selection.contains(item.id), !NSEvent.modifierFlags.contains(.command) {
@@ -241,6 +283,13 @@ struct FileGridView: View {
         selectionRect = nil
     }
 
+    private func folderDestination(at point: CGPoint) -> URL? {
+        model.displayItems.first { item in
+            guard item.isDirectory, let frame = cellFrames[item.id] else { return false }
+            return frame.insetBy(dx: -4, dy: -4).contains(point)
+        }?.url
+    }
+
     private func selectionRectangle(from start: CGPoint, to end: CGPoint) -> CGRect {
         let origin = CGPoint(x: min(start.x, end.x), y: min(start.y, end.y))
         let size = CGSize(width: abs(start.x - end.x), height: abs(start.y - end.y))
@@ -251,6 +300,45 @@ struct FileGridView: View {
     /// right-clicking an unselected item acts on just that item.
     private func menuIDs(for item: FileItem) -> Set<FileItem.ID> {
         model.selection.contains(item.id) ? model.selection : [item.id]
+    }
+}
+
+enum FileGridKeyboardNavigation {
+    static func columnCount<ID: Hashable>(from frames: [ID: CGRect]) -> Int? {
+        guard !frames.isEmpty else { return nil }
+
+        let sortedColumnOrigins = frames.values.map(\.minX).sorted()
+        var distinctColumnOrigins: [CGFloat] = []
+        for origin in sortedColumnOrigins {
+            if let previous = distinctColumnOrigins.last, abs(origin - previous) <= 1 {
+                continue
+            }
+            distinctColumnOrigins.append(origin)
+        }
+        return max(distinctColumnOrigins.count, 1)
+    }
+
+    static func verticalDelta<ID: Hashable>(
+        ids: [ID],
+        focusedID: ID?,
+        selectedIDs: Set<ID>,
+        columnCount: Int,
+        direction: Int
+    ) -> Int? {
+        guard !ids.isEmpty, direction != 0 else { return nil }
+
+        let normalizedDirection = direction > 0 ? 1 : -1
+        let selectedIndexes = ids.indices.filter { selectedIDs.contains(ids[$0]) }
+        let currentIndex = focusedID.flatMap { ids.firstIndex(of: $0) }
+            ?? (normalizedDirection > 0 ? selectedIndexes.max() : selectedIndexes.min())
+
+        guard let currentIndex else {
+            return normalizedDirection
+        }
+
+        let delta = normalizedDirection * max(columnCount, 1)
+        guard ids.indices.contains(currentIndex + delta) else { return nil }
+        return delta
     }
 }
 
@@ -357,9 +445,12 @@ private struct GridCellFramePreferenceKey: PreferenceKey {
 }
 
 private struct GridCell: View {
+    @Environment(AppState.self) private var appState
+
     let item: FileItem
     let isSelected: Bool
     let compareMarker: FolderCompareMarker?
+    let paneIndex: Int
     let thumbnailSize: CGFloat
     @State private var thumbnail: NSImage?
 
@@ -382,11 +473,25 @@ private struct GridCell: View {
                 }
             }
             .frame(width: thumbnailSize, height: thumbnailSize)
-            Text(item.name)
-                .font(.caption)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .truncationMode(.middle)
+            if appState.isRenaming(item, in: paneIndex) {
+                InlineFileRenameField(
+                    item: item,
+                    compact: true,
+                    onCommit: {
+                        appState.commitRename(item, in: paneIndex, to: $0)
+                    },
+                    onCancel: {
+                        appState.cancelRename()
+                    }
+                )
+                .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
+            } else {
+                Text(item.name)
+                    .font(.caption)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .truncationMode(.middle)
+            }
             RatingStarsView(rating: item.rating, size: 8, showEmpty: item.rating > 0)
                 .frame(height: 10)
             if let compareMarker {

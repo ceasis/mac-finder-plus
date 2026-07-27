@@ -1,4 +1,5 @@
 import AppKit
+@preconcurrency import UserNotifications
 
 enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
     static let defaultsKey = "appIconMode"
@@ -104,13 +105,23 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
     }
 }
 
-final class WorkbenchAppDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+final class WorkbenchAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         WorkbenchDockIconAnimator.shared.startObservingPreferences()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        TerminalStore.shared.shutdown()
         WorkbenchDockIconAnimator.shared.stopObservingPreferences()
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .sound]
     }
 }
 

@@ -18,6 +18,95 @@ enum PaneViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum PaneSortPreset: String, CaseIterable, Identifiable {
+    case nameAscending
+    case nameDescending
+    case modifiedNewest
+    case modifiedOldest
+    case sizeLargest
+    case sizeSmallest
+    case kindAscending
+    case kindDescending
+    case ratingHighest
+    case ratingLowest
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .nameAscending: "Name (A–Z)"
+        case .nameDescending: "Name (Z–A)"
+        case .modifiedNewest: "Date Modified (Newest)"
+        case .modifiedOldest: "Date Modified (Oldest)"
+        case .sizeLargest: "Size (Largest)"
+        case .sizeSmallest: "Size (Smallest)"
+        case .kindAscending: "Kind (A–Z)"
+        case .kindDescending: "Kind (Z–A)"
+        case .ratingHighest: "Rating (Highest)"
+        case .ratingLowest: "Rating (Lowest)"
+        }
+    }
+
+    func arrange(_ items: [FileItem]) -> [FileItem] {
+        items.sorted(by: comesBefore)
+    }
+
+    private func comesBefore(_ left: FileItem, _ right: FileItem) -> Bool {
+        switch self {
+        case .nameAscending:
+            return compareNames(left, right) == .orderedAscending
+        case .nameDescending:
+            return compareNames(left, right) == .orderedDescending
+        case .modifiedNewest:
+            return left.modified == right.modified
+                ? tieBreak(left, right)
+                : left.modified > right.modified
+        case .modifiedOldest:
+            return left.modified == right.modified
+                ? tieBreak(left, right)
+                : left.modified < right.modified
+        case .sizeLargest:
+            return left.size == right.size
+                ? tieBreak(left, right)
+                : left.size > right.size
+        case .sizeSmallest:
+            return left.size == right.size
+                ? tieBreak(left, right)
+                : left.size < right.size
+        case .kindAscending:
+            let comparison = left.kind.localizedStandardCompare(right.kind)
+            return comparison == .orderedSame
+                ? tieBreak(left, right)
+                : comparison == .orderedAscending
+        case .kindDescending:
+            let comparison = left.kind.localizedStandardCompare(right.kind)
+            return comparison == .orderedSame
+                ? tieBreak(left, right)
+                : comparison == .orderedDescending
+        case .ratingHighest:
+            return left.rating == right.rating
+                ? tieBreak(left, right)
+                : left.rating > right.rating
+        case .ratingLowest:
+            return left.rating == right.rating
+                ? tieBreak(left, right)
+                : left.rating < right.rating
+        }
+    }
+
+    private func compareNames(_ left: FileItem, _ right: FileItem) -> ComparisonResult {
+        let comparison = left.name.localizedStandardCompare(right.name)
+        if comparison != .orderedSame {
+            return comparison
+        }
+        return left.url.path.localizedStandardCompare(right.url.path)
+    }
+
+    private func tieBreak(_ left: FileItem, _ right: FileItem) -> Bool {
+        compareNames(left, right) == .orderedAscending
+    }
+}
+
 enum ModifiedDateFilter: String, CaseIterable, Codable, Identifiable, Sendable {
     case all
     case withinHour
@@ -258,6 +347,14 @@ final class PaneModel {
     }
     @ObservationIgnored
     var sortOrder: [KeyPathComparator<FileItem>] = [] {
+        didSet {
+            if !isApplyingSortPreset {
+                sortPreset = nil
+            }
+            scheduleDisplayItemsRebuild()
+        }
+    }
+    private(set) var sortPreset: PaneSortPreset? = .nameAscending {
         didSet { scheduleDisplayItemsRebuild() }
     }
     var showHidden = false {
@@ -288,6 +385,11 @@ final class PaneModel {
     var fileSizeFilter: FileSizeFilter = .all { didSet { searchCriteriaChanged() } }
     var itemKindFilter: ItemKindFilter = .all { didSet { itemKindFilterChanged() } }
     var searchSubfolders = false { didSet { searchCriteriaChanged() } }
+    var hasQuickFilters: Bool {
+        modifiedDateFilter != .all
+            || fileSizeFilter != .all
+            || itemKindFilter != .all
+    }
     var searchResults: [FileItem] = [] { didSet { rebuildDisplayItems() } }
     var isSearching = false
     private var searchTask: Task<Void, Never>?
@@ -318,6 +420,9 @@ final class PaneModel {
     @ObservationIgnored private var sizeMatchingFolderIDs = Set<FileItem.ID>()
     @ObservationIgnored private var isUpdatingFolderSize = false
     @ObservationIgnored private var isApplyingTabState = false
+    @ObservationIgnored private var directoryWatcher: DirectoryWatcher?
+    @ObservationIgnored private var isMonitoringDirectory = false
+    @ObservationIgnored private var isApplyingSortPreset = false
 
     private var backStack: [URL] = []
     private var forwardStack: [URL] = []
@@ -329,6 +434,20 @@ final class PaneModel {
         self.activeTabID = tab.id
         self.currentURL = url
         self.viewMode = viewMode
+    }
+
+    func clearQuickFilters() {
+        guard hasQuickFilters else { return }
+        modifiedDateFilter = .all
+        fileSizeFilter = .all
+        itemKindFilter = .all
+    }
+
+    func applySortPreset(_ preset: PaneSortPreset) {
+        isApplyingSortPreset = true
+        sortOrder = []
+        isApplyingSortPreset = false
+        sortPreset = preset
     }
 
     init(tabs restoredTabs: [PaneTab], activeTabIndex: Int = 0) {
@@ -431,7 +550,9 @@ final class PaneModel {
                 return fileSizeFilter.matches(size: item.size)
             }
         }
-        if sortOrder.isEmpty {
+        if let sortPreset {
+            out = sortPreset.arrange(out)
+        } else if sortOrder.isEmpty {
             out.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         } else {
             out.sort(using: sortOrder)
@@ -441,7 +562,14 @@ final class PaneModel {
         }
         visibleItemsByID = Dictionary(uniqueKeysWithValues: out.map { ($0.id, $0) })
         displayItems = out
-        rebuildSelectedItems()
+        let visibleSelection = selection.intersection(visibleItemsByID.keys)
+        if visibleSelection != selection {
+            // A filtered-out item must not remain part of a later drag, copy,
+            // move, or delete operation just because it used to be selected.
+            selection = visibleSelection
+        } else {
+            rebuildSelectedItems()
+        }
     }
 
     private func scheduleDisplayItemsRebuild() {
@@ -485,6 +613,17 @@ final class PaneModel {
         guard !hasLoaded else { return }
         hasLoaded = true
         load()
+    }
+
+    func startMonitoring() {
+        isMonitoringDirectory = true
+        startWatchingCurrentDirectory()
+        loadIfNeeded()
+    }
+
+    func stopMonitoring() {
+        isMonitoringDirectory = false
+        directoryWatcher?.stop()
     }
 
     func navigate(to url: URL) {
@@ -701,6 +840,7 @@ final class PaneModel {
         resetDuplicateResults()
         resetCompare()
         let url = currentURL
+        startWatchingCurrentDirectory()
         cancelFolderSizeCalculation()
         isLoading = true
         loadError = nil
@@ -727,6 +867,16 @@ final class PaneModel {
                 }
             }
         }
+    }
+
+    private func startWatchingCurrentDirectory() {
+        guard isMonitoringDirectory else { return }
+        if directoryWatcher == nil {
+            directoryWatcher = DirectoryWatcher { [weak self] in
+                self?.load()
+            }
+        }
+        directoryWatcher?.watch(currentURL)
     }
 
     nonisolated private static func freeSpace(for url: URL) async -> String? {

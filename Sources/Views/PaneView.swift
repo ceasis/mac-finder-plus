@@ -8,6 +8,7 @@ struct PaneView: View {
 
     @State private var listAnchorID: FileItem.ID?
     @State private var listRangeAnchorID: FileItem.ID?
+    @State private var rowDropLocator = TableRowDropLocator()
 
     private var model: PaneModel { appState.panes[paneIndex] }
     private var isActive: Bool { appState.activePaneIndex == paneIndex }
@@ -46,7 +47,8 @@ struct PaneView: View {
         .simultaneousGesture(
             TapGesture().onEnded { appState.activePaneIndex = paneIndex }
         )
-        .onAppear { model.loadIfNeeded() }
+        .onAppear { model.startMonitoring() }
+        .onDisappear { model.stopMonitoring() }
     }
 
     private func fileTable(model: PaneModel) -> some View {
@@ -58,8 +60,22 @@ struct PaneView: View {
                     Image(nsImage: item.icon)
                         .resizable()
                         .frame(width: 16, height: 16)
-                    Text(item.name)
-                        .lineLimit(1)
+                    if appState.isRenaming(item, in: paneIndex) {
+                        InlineFileRenameField(
+                            item: item,
+                            compact: false,
+                            onCommit: {
+                                appState.commitRename(item, in: paneIndex, to: $0)
+                            },
+                            onCancel: {
+                                appState.cancelRename()
+                            }
+                        )
+                        .frame(minWidth: 90, maxWidth: .infinity, minHeight: 22, maxHeight: 22)
+                    } else {
+                        Text(item.name)
+                            .lineLimit(1)
+                    }
                     if let marker {
                         Spacer(minLength: 4)
                         CompareMarkerBadge(marker: marker)
@@ -67,6 +83,7 @@ struct PaneView: View {
                 }
                 .padding(.horizontal, 3)
                 .padding(.vertical, 2)
+                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
                 .background(
                     marker?.color.opacity(0.10) ?? Color.clear,
                     in: RoundedRectangle(cornerRadius: 5)
@@ -90,6 +107,13 @@ struct PaneView: View {
 
             TableColumn("Rating", value: \.rating) { item in
                 RatingStarsView(rating: item.rating, size: 8)
+                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .fileDropTarget(
+                        to: item.url,
+                        paneIndex: paneIndex,
+                        appState: appState,
+                        isEnabled: item.isDirectory
+                    )
             }
             .width(min: 56, ideal: 70)
 
@@ -97,6 +121,13 @@ struct PaneView: View {
                 Text(item.sizeText)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .fileDropTarget(
+                        to: item.url,
+                        paneIndex: paneIndex,
+                        appState: appState,
+                        isEnabled: item.isDirectory
+                    )
             }
             .width(min: 60, ideal: 80)
 
@@ -104,6 +135,13 @@ struct PaneView: View {
                 Text(item.kind)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .fileDropTarget(
+                        to: item.url,
+                        paneIndex: paneIndex,
+                        appState: appState,
+                        isEnabled: item.isDirectory
+                    )
             }
             .width(min: 80, ideal: 130)
 
@@ -114,6 +152,13 @@ struct PaneView: View {
                         : item.modified.formatted(date: .abbreviated, time: .shortened)
                 )
                 .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                .fileDropTarget(
+                    to: item.url,
+                    paneIndex: paneIndex,
+                    appState: appState,
+                    isEnabled: item.isDirectory
+                )
             }
             .width(min: 110, ideal: 150)
         }
@@ -135,6 +180,14 @@ struct PaneView: View {
             moveListSelection(by: 1, extending: NSEvent.modifierFlags.contains(.shift), in: model)
             return .handled
         }
+        .onKeyPress(.return) {
+            guard appState.renameTarget == nil, !model.selection.isEmpty else {
+                return .ignored
+            }
+            appState.activePaneIndex = paneIndex
+            appState.beginRenameSelection()
+            return .handled
+        }
         .onKeyPress("0") { rateSelection(0); return .handled }
         .onKeyPress("1") { rateSelection(1); return .handled }
         .onKeyPress("2") { rateSelection(2); return .handled }
@@ -149,7 +202,24 @@ struct PaneView: View {
         .onChange(of: model.selection) { _, selection in
             syncListAnchor(after: selection, in: model)
         }
-        .fileDropTarget(to: model.currentURL, paneIndex: paneIndex, appState: appState)
+        .background(TableRowDropLocatorAnchor(locator: rowDropLocator))
+        .fileDropTarget(
+            to: model.currentURL,
+            paneIndex: paneIndex,
+            appState: appState,
+            destinationResolver: { _ in folderDestinationUnderCursor(in: model) }
+        )
+    }
+
+    /// `Table` cells don't reliably receive their own `.onDrop`, so the pane-level
+    /// drop target resolves the folder row under the cursor itself. Without this a
+    /// drop onto a folder row lands on the folder already being browsed, and a move
+    /// into your own parent folder is a no-op — the file appears to go nowhere.
+    private func folderDestinationUnderCursor(in model: PaneModel) -> URL? {
+        guard let row = rowDropLocator.rowUnderCursor(),
+              model.displayItems.indices.contains(row) else { return nil }
+        let item = model.displayItems[row]
+        return item.isDirectory ? item.url : nil
     }
 
     private func rateSelection(_ rating: Int) {
@@ -204,6 +274,7 @@ struct PaneView: View {
         in model: PaneModel
     ) -> Bool {
         appState.activePaneIndex = paneIndex
+        guard !appState.isRenaming(item, in: paneIndex) else { return false }
         guard clickCount >= 2 else {
             selectListItem(item, in: model)
             return false
@@ -264,6 +335,174 @@ struct PaneView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+        }
+    }
+}
+
+/// A narrow AppKit bridge for Finder-style filename editing. AppKit owns the
+/// temporary editor and selection range; AppState remains the rename source of truth.
+struct InlineFileRenameField: NSViewRepresentable {
+    let item: FileItem
+    let compact: Bool
+    let onCommit: (String) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCommit: onCommit, onCancel: onCancel)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: item.name)
+        field.delegate = context.coordinator
+        field.isEditable = true
+        field.isSelectable = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.drawsBackground = true
+        field.focusRingType = .default
+        field.lineBreakMode = .byTruncatingMiddle
+        field.usesSingleLineMode = true
+        field.controlSize = compact ? .small : .regular
+        field.font = compact
+            ? .systemFont(ofSize: NSFont.smallSystemFontSize)
+            : .systemFont(ofSize: NSFont.systemFontSize)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        context.coordinator.field = field
+
+        DispatchQueue.main.async {
+            context.coordinator.beginEditing(item: item)
+        }
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.onCommit = onCommit
+        context.coordinator.onCancel = onCancel
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        weak var field: NSTextField?
+        var onCommit: (String) -> Void
+        var onCancel: () -> Void
+        private var hasFinished = false
+
+        init(onCommit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+            self.onCommit = onCommit
+            self.onCancel = onCancel
+        }
+
+        func beginEditing(item: FileItem) {
+            guard !hasFinished, let field, let window = field.window else { return }
+            window.makeFirstResponder(field)
+            field.selectText(nil)
+            if let editor = field.currentEditor() {
+                editor.selectedRange = InlineRenameSelection.range(
+                    for: item.name,
+                    isDirectory: item.isDirectory
+                )
+            }
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                finish(commit: true)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                finish(commit: false)
+                return true
+            default:
+                return false
+            }
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            finish(commit: true)
+        }
+
+        private func finish(commit: Bool) {
+            guard !hasFinished else { return }
+            hasFinished = true
+            if commit, let field {
+                onCommit(field.stringValue)
+            } else {
+                onCancel()
+            }
+        }
+    }
+}
+
+enum InlineRenameSelection {
+    static func range(for name: String, isDirectory: Bool) -> NSRange {
+        let fullName = name as NSString
+        guard !isDirectory else {
+            return NSRange(location: 0, length: fullName.length)
+        }
+        let stem = fullName.deletingPathExtension as NSString
+        return NSRange(location: 0, length: stem.length)
+    }
+}
+
+/// Hit-tests the `NSTableView` backing a SwiftUI `Table` so a drop can be mapped to
+/// the row under the pointer. Uses the live cursor position rather than the drop's
+/// SwiftUI coordinates, which avoids having to reconcile scroll offset and header
+/// inset against the table's own geometry.
+@MainActor
+final class TableRowDropLocator {
+    weak var anchorView: NSView?
+
+    func rowUnderCursor() -> Int? {
+        guard let tableView = backingTableView(), let window = tableView.window else {
+            return nil
+        }
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let point = tableView.convert(windowPoint, from: nil)
+        guard tableView.bounds.contains(point) else { return nil }
+        let row = tableView.row(at: point)
+        return row >= 0 ? row : nil
+    }
+
+    /// Walks up from the anchor so the nearest enclosing table wins — in a dual-pane
+    /// window the other pane's table must never be picked up.
+    private func backingTableView() -> NSTableView? {
+        var node = anchorView
+        while let current = node {
+            if let tableView = Self.firstTableView(in: current) { return tableView }
+            node = current.superview
+        }
+        return nil
+    }
+
+    private static func firstTableView(in view: NSView) -> NSTableView? {
+        if let tableView = view as? NSTableView { return tableView }
+        for subview in view.subviews {
+            if let tableView = firstTableView(in: subview) { return tableView }
+        }
+        return nil
+    }
+}
+
+private struct TableRowDropLocatorAnchor: NSViewRepresentable {
+    let locator: TableRowDropLocator
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PassthroughEventView()
+        locator.anchorView = view
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        locator.anchorView = view
+    }
+
+    private final class PassthroughEventView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
         }
     }
 }

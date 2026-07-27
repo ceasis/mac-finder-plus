@@ -52,6 +52,7 @@ struct WorkbenchBuildInfo: Sendable {
 }
 
 enum WorkbenchLinks {
+    static let companyWebsite = URL(string: "https://www.qnsub.com")!
     static let supportEmail = "support@qnsub.com"
 
     static func supportEmailURL(
@@ -66,17 +67,6 @@ enum WorkbenchLinks {
             URLQueryItem(name: "body", value: "\(body)\n\nIssue:\n"),
         ]
         return components.url
-    }
-}
-
-enum DeletionSafetySettings {
-    static let confirmMoveToTrashKey = "deletion.confirmMoveToTrash"
-
-    static var shouldConfirmMoveToTrash: Bool {
-        if UserDefaults.standard.object(forKey: confirmMoveToTrashKey) == nil {
-            return true
-        }
-        return UserDefaults.standard.bool(forKey: confirmMoveToTrashKey)
     }
 }
 

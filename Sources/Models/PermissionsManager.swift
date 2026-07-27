@@ -11,7 +11,7 @@ import Observation
 @Observable
 @MainActor
 final class PermissionsManager {
-    enum Status {
+    enum Status: Equatable, Sendable {
         case granted
         case denied
         case notDetermined

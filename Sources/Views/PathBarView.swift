@@ -19,6 +19,8 @@ struct PathBarView: View {
                 quickSizeFilterStrip
                 Divider().frame(height: 14)
                 quickItemKindFilterStrip
+                Divider().frame(height: 14)
+                clearQuickFiltersButton
                 Spacer(minLength: 8)
                 viewAndSearchControls
             }
@@ -30,7 +32,8 @@ struct PathBarView: View {
         }
         .buttonStyle(.borderless)
         .font(.callout)
-        .padding(.horizontal, 8)
+        .padding(.leading, 16)
+        .padding(.trailing, 8)
         .padding(.vertical, 6)
         .onChange(of: appState.searchFocusTick) { _, _ in
             if isActive { searchFocused = true }
@@ -45,35 +48,49 @@ struct PathBarView: View {
 
     private var navigationControls: some View {
         HStack(spacing: 6) {
-            Button {
-                model.goBack()
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .disabled(!model.canGoBack)
-            .help("Back (⌘[)")
-            .clickableCursor(model.canGoBack)
+            navigationButton(
+                systemImage: "chevron.left",
+                isEnabled: model.canGoBack,
+                help: "Back (⌘[)",
+                action: model.goBack
+            )
 
-            Button {
-                model.goForward()
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .disabled(!model.canGoForward)
-            .help("Forward (⌘])")
-            .clickableCursor(model.canGoForward)
+            navigationButton(
+                systemImage: "chevron.right",
+                isEnabled: model.canGoForward,
+                help: "Forward (⌘])",
+                action: model.goForward
+            )
 
-            Button {
-                model.goUp()
-            } label: {
-                Image(systemName: "arrow.up")
-            }
-            .disabled(!model.canGoUp)
-            .help("Enclosing Folder (⌘↑)")
-            .clickableCursor(model.canGoUp)
+            navigationButton(
+                systemImage: "arrow.up",
+                isEnabled: model.canGoUp,
+                help: "Enclosing Folder (⌘↑)",
+                action: model.goUp
+            )
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+    }
+
+    private func navigationButton(
+        systemImage: String,
+        isEnabled: Bool,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 30, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.secondary.opacity(0.10))
+        )
+        .disabled(!isEnabled)
+        .help(help)
+        .clickableCursor(isEnabled)
     }
 
     private var pathControls: some View {
@@ -334,7 +351,7 @@ struct PathBarView: View {
 
                 if count > 0 {
                     Text(countText)
-                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        .font(.system(size: 7.35, weight: .bold, design: .monospaced))
                         .foregroundStyle(isActive ? Color.white.opacity(0.9) : Color.accentColor)
                         .baselineOffset(5)
                 } else {
@@ -343,6 +360,7 @@ struct PathBarView: View {
                 }
             }
             .frame(width: quickDateFilterWidth(filter), height: 24)
+            .padding(.leading, quickDateFilterLeadingPadding(filter))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -363,6 +381,13 @@ struct PathBarView: View {
         case .today, .olderThanTwoYears: 52
         case .withinMonth: 56
         case .all: 0
+        }
+    }
+
+    private func quickDateFilterLeadingPadding(_ filter: ModifiedDateFilter) -> CGFloat {
+        switch filter {
+        case .withinHour, .today, .withinWeek: 3
+        default: 0
         }
     }
 
@@ -387,6 +412,30 @@ struct PathBarView: View {
             quickItemKindFilterButton(.folders)
         }
         .fixedSize()
+    }
+
+    private var clearQuickFiltersButton: some View {
+        Button(action: model.clearQuickFilters) {
+            HStack(spacing: 3) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                Text("CLEAR")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .frame(width: 50, height: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(model.hasQuickFilters ? Color.primary : Color.secondary)
+        .background(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(Color.secondary.opacity(0.10))
+        )
+        .fixedSize()
+        .layoutPriority(2)
+        .help("Clear date, size, and kind filters")
+        .accessibilityLabel("Clear filters")
+        .clickableCursor()
     }
 
     private func quickSizeFilterButton(_ filter: FileSizeFilter) -> some View {

@@ -45,10 +45,33 @@ struct FileItemContextMenu: View {
             }
             if appState.canPasteFilesFromClipboard {
                 Divider()
-                menuButton("Paste Item", systemImage: "clipboard") {
-                    activate()
-                    appState.pasteClipboardFiles(to: model.currentURL, move: false)
+                clipboardDestinationButton(to: model.currentURL, includesHere: false)
+            }
+            Divider()
+            Menu {
+                ForEach(PaneSortPreset.allCases) { preset in
+                    Button {
+                        activate()
+                        model.applySortPreset(preset)
+                    } label: {
+                        if model.sortPreset == preset {
+                            Label(preset.title, systemImage: "checkmark")
+                        } else {
+                            Text(preset.title)
+                        }
+                    }
                 }
+            } label: {
+                Label("Sort By", systemImage: "arrow.up.arrow.down")
+            }
+            Toggle(isOn: Binding(
+                get: { appState.foldersFirst },
+                set: {
+                    activate()
+                    appState.foldersFirst = $0
+                }
+            )) {
+                Label("Keep Folders on Top", systemImage: "folder")
             }
             Divider()
             menuButton("Open in Terminal", systemImage: "terminal") {
@@ -565,22 +588,22 @@ struct FileItemContextMenu: View {
                 }
             }
             if ids.count == 1, let item = items.first {
-                menuButton("Rename…", systemImage: "pencil") { appState.renameTarget = item }
+                menuButton("Rename", systemImage: "pencil") {
+                    activate()
+                    appState.beginRename(item, in: paneIndex)
+                }
                 if item.isDirectory, !item.isToolPackage {
                     if appState.canPasteFilesFromClipboard {
                         Divider()
-                        menuButton("Move Items Here", systemImage: "arrow.down.doc") {
-                            activate()
-                            appState.pasteClipboardFiles(to: item.url, move: true)
-                        }
-                        menuButton("Paste Items Here", systemImage: "clipboard") {
-                            activate()
-                            appState.pasteClipboardFiles(to: item.url, move: false)
-                        }
+                        clipboardDestinationButton(to: item.url, includesHere: true)
                     }
                 }
             }
             Divider()
+            menuButton("Cut Files", systemImage: "scissors") {
+                activate()
+                appState.cutFilesOfSelection(ids)
+            }
             menuButton("Copy Files", systemImage: "doc.on.doc") {
                 activate()
                 appState.copyFilesOfSelection(ids)
@@ -605,6 +628,41 @@ struct FileItemContextMenu: View {
             menuButton("Move to Trash", systemImage: "trash", role: .destructive) {
                 activate()
                 appState.trashSelection(ids)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func clipboardDestinationButton(to destination: URL, includesHere: Bool) -> some View {
+        let multipleItems = appState.clipboardFileCount != 1
+        let itemTitle = multipleItems ? "Items" : "Item"
+        let pasteTitle = includesHere ? "Paste \(itemTitle) Here" : "Paste \(itemTitle)"
+        let moveTitle = "Move \(itemTitle) Here"
+
+        if appState.clipboardFileOperation == .cut {
+            menuButton(pasteTitle, systemImage: "clipboard") {
+                activate()
+                appState.pasteClipboardFiles(to: destination)
+            }
+        } else if #available(macOS 15.0, *) {
+            menuButton(pasteTitle, systemImage: "clipboard") {
+                activate()
+                appState.pasteClipboardFiles(to: destination, move: false)
+            }
+            .modifierKeyAlternate(.option) {
+                menuButton(moveTitle, systemImage: "arrow.down.doc") {
+                    activate()
+                    appState.pasteClipboardFiles(to: destination, move: true)
+                }
+            }
+        } else {
+            menuButton(pasteTitle, systemImage: "clipboard") {
+                activate()
+                appState.pasteClipboardFiles(to: destination, move: false)
+            }
+            menuButton(moveTitle, systemImage: "arrow.down.doc") {
+                activate()
+                appState.pasteClipboardFiles(to: destination, move: true)
             }
         }
     }

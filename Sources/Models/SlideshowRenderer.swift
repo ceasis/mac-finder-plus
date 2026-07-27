@@ -7,6 +7,57 @@ struct VideoMergeOptions: Sendable {
     var size: CGSize
     /// false = aspect-fit with black bars, true = aspect-fill (cropped).
     var fill: Bool
+    /// Preserve audio tracks from source video clips.
+    var includeAudio = true
+}
+
+/// Presets for arranging the selected media before a video merge.
+/// The source order is the current file-view order captured when the sheet opens.
+enum VideoMergeOrder: String, CaseIterable, Identifiable, Sendable {
+    case fileView = "Current File Order"
+    case nameAscending = "Name: A–Z"
+    case nameDescending = "Name: Z–A"
+    case modifiedOldest = "Modified: Oldest First"
+    case modifiedNewest = "Modified: Newest First"
+
+    var id: String { rawValue }
+
+    func arrange(_ items: [FileItem]) -> [FileItem] {
+        switch self {
+        case .fileView:
+            return items
+        case .nameAscending:
+            return items.sorted { lhs, rhs in
+                Self.compareNames(lhs, rhs) == .orderedAscending
+            }
+        case .nameDescending:
+            return items.sorted { lhs, rhs in
+                Self.compareNames(lhs, rhs) == .orderedDescending
+            }
+        case .modifiedOldest:
+            return items.sorted { lhs, rhs in
+                if lhs.modified != rhs.modified {
+                    return lhs.modified < rhs.modified
+                }
+                return Self.compareNames(lhs, rhs) == .orderedAscending
+            }
+        case .modifiedNewest:
+            return items.sorted { lhs, rhs in
+                if lhs.modified != rhs.modified {
+                    return lhs.modified > rhs.modified
+                }
+                return Self.compareNames(lhs, rhs) == .orderedAscending
+            }
+        }
+    }
+
+    private static func compareNames(_ lhs: FileItem, _ rhs: FileItem) -> ComparisonResult {
+        let result = lhs.name.localizedStandardCompare(rhs.name)
+        if result != .orderedSame {
+            return result
+        }
+        return lhs.id.compare(rhs.id)
+    }
 }
 
 enum VideoMergeSource: Sendable {

@@ -13,6 +13,41 @@ enum DragDropLog {
     }
 }
 
+/// Builds one stable drag representation for every filesystem item. Creating an
+/// `NSItemProvider(contentsOf:)` makes its primary representation depend on the
+/// file's content type; SwiftUI can then omit the app's custom marker when it
+/// bridges image, archive, audio, and video providers through a drop.
+enum FileDragItemProvider {
+    static func make(
+        url: URL,
+        suggestedName: String,
+        sessionID: String,
+        internalTypeIdentifier: String
+    ) -> NSItemProvider {
+        let provider = NSItemProvider(object: url as NSURL)
+        provider.suggestedName = suggestedName
+        provider.registerDataRepresentation(
+            forTypeIdentifier: internalTypeIdentifier,
+            visibility: .ownProcess
+        ) { completion in
+            completion(Data(sessionID.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    static func containsInternalMarker(
+        _ providers: [NSItemProvider],
+        typeIdentifier: String
+    ) -> Bool {
+        providers.contains { provider in
+            // The marker is an exact, app-owned type. UTType conformance checks
+            // are unreliable here for several system content representations.
+            provider.registeredTypeIdentifiers.contains(typeIdentifier)
+        }
+    }
+}
+
 extension View {
     func fileDragSource(_ item: FileItem, paneIndex: Int, appState: AppState) -> some View {
         onDrag {
@@ -25,15 +60,52 @@ extension View {
         paneIndex: Int,
         appState: AppState,
         isEnabled: Bool = true,
-        destinationResolver: ((CGPoint) -> URL?)? = nil
+        showsIndicator: Bool = true,
+        destinationResolver: ((CGPoint) -> URL?)? = nil,
+        onTargetedDestinationChange: ((URL?) -> Void)? = nil
     ) -> some View {
         modifier(FileDropTargetModifier(
             destination: destination,
             paneIndex: paneIndex,
             appState: appState,
             isEnabled: isEnabled,
-            destinationResolver: destinationResolver
+            showsIndicator: showsIndicator,
+            destinationResolver: destinationResolver,
+            onTargetedDestinationChange: onTargetedDestinationChange
         ))
+    }
+
+    func fileDropHoverAppearance(isTargeted: Bool, cornerRadius: CGFloat = 7) -> some View {
+        modifier(FileDropHoverAppearanceModifier(
+            isTargeted: isTargeted,
+            cornerRadius: cornerRadius
+        ))
+    }
+}
+
+private struct FileDropHoverAppearanceModifier: ViewModifier {
+    let isTargeted: Bool
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(isTargeted ? Color.accentColor.opacity(0.16) : Color.clear)
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(
+                            isTargeted ? Color.accentColor.opacity(0.95) : Color.clear,
+                            lineWidth: 2.5
+                        )
+                }
+                .shadow(
+                    color: isTargeted ? Color.accentColor.opacity(0.28) : Color.clear,
+                    radius: 4
+                )
+                .padding(1)
+                .allowsHitTesting(false)
+                .animation(.easeOut(duration: 0.12), value: isTargeted)
+        }
     }
 }
 
@@ -42,7 +114,9 @@ private struct FileDropTargetModifier: ViewModifier {
     let paneIndex: Int
     let appState: AppState
     let isEnabled: Bool
+    let showsIndicator: Bool
     let destinationResolver: ((CGPoint) -> URL?)?
+    let onTargetedDestinationChange: ((URL?) -> Void)?
     @State private var isTargeted = false
     @State private var targetID = UUID()
 
@@ -50,14 +124,7 @@ private struct FileDropTargetModifier: ViewModifier {
     func body(content: Content) -> some View {
         if isEnabled {
             content
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(
-                            isTargeted ? Color.accentColor.opacity(0.65) : Color.clear,
-                            lineWidth: 2
-                        )
-                        .allowsHitTesting(false)
-                }
+                .fileDropHoverAppearance(isTargeted: showsIndicator && isTargeted)
                 .onDrop(
                     of: [AppState.internalFileDragType, .fileURL],
                     delegate: FileDropTargetDelegate(
@@ -66,7 +133,8 @@ private struct FileDropTargetModifier: ViewModifier {
                         appState: appState,
                         targetID: targetID,
                         isTargeted: $isTargeted,
-                        destinationResolver: destinationResolver
+                        destinationResolver: destinationResolver,
+                        onTargetedDestinationChange: onTargetedDestinationChange
                     )
                 )
                 .onChange(of: isTargeted) { _, isTargeted in
@@ -82,6 +150,7 @@ private struct FileDropTargetModifier: ViewModifier {
                         destination: destination,
                         isTargeted: false
                     )
+                    onTargetedDestinationChange?(nil)
                 }
         } else {
             content
@@ -96,6 +165,7 @@ private struct FileDropTargetDelegate: DropDelegate {
     let targetID: UUID
     @Binding var isTargeted: Bool
     let destinationResolver: ((CGPoint) -> URL?)?
+    let onTargetedDestinationChange: ((URL?) -> Void)?
 
     func validateDrop(info: DropInfo) -> Bool {
         !info.itemProviders(for: [AppState.internalFileDragType, .fileURL]).isEmpty
@@ -103,38 +173,51 @@ private struct FileDropTargetDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         isTargeted = true
+        onTargetedDestinationChange?(targetedDestination(at: info.location))
     }
 
     func dropExited(info: DropInfo) {
         isTargeted = false
+        onTargetedDestinationChange?(nil)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: FileDropOperationPolicy.shouldMove(
-            isInternalDrag: appState.hasCurrentFileDragSession,
+        onTargetedDestinationChange?(targetedDestination(at: info.location))
+        let providers = info.itemProviders(
+            for: [AppState.internalFileDragType, .fileURL]
+        )
+        let isInternal = appState.hasCurrentFileDragSession
+            && FileDragItemProvider.containsInternalMarker(
+                providers,
+                typeIdentifier: AppState.internalFileDragType.identifier
+            )
+        return DropProposal(operation: FileDropOperationPolicy.shouldMove(
+            isInternalDrag: isInternal,
             modifiers: NSEvent.modifierFlags
         ) ? .move : .copy)
     }
 
     func performDrop(info: DropInfo) -> Bool {
         isTargeted = false
+        onTargetedDestinationChange?(nil)
         let providers = info.itemProviders(for: [AppState.internalFileDragType, .fileURL])
         guard !providers.isEmpty else { return false }
         return handleDrop(providers, at: info.location)
     }
 
     private func handleDrop(_ providers: [NSItemProvider], at point: CGPoint) -> Bool {
-        let resolved = destinationResolver?(point)
-        let resolvedDestination = appState.preferredFileDropDestination(
-            fallback: resolved ?? destination
+        let resolvedDestination = resolvedDestination(at: point)
+        let hasInternalMarker = FileDragItemProvider.containsInternalMarker(
+            providers,
+            typeIdentifier: AppState.internalFileDragType.identifier
         )
-        let isInternal = providers.contains(where: {
-            $0.hasItemConformingToTypeIdentifier(AppState.internalFileDragType.identifier)
-        })
+        let isInternal = hasInternalMarker && appState.hasCurrentFileDragSession
+        let providerTypes = Set(providers.flatMap(\.registeredTypeIdentifiers)).sorted()
         DragDropLog.log(
             "HANDLE_DROP providers=\(providers.count) internal=\(isInternal) "
+                + "marker=\(hasInternalMarker) types=\(providerTypes) "
                 + "target=\(destination.lastPathComponent) "
-                + "resolver=\(resolved?.lastPathComponent ?? "nil") "
+                + "resolver=\(destinationResolver == nil ? "none" : resolvedDestination.lastPathComponent) "
                 + "final=\(resolvedDestination.lastPathComponent) "
                 + "hasSession=\(appState.hasCurrentFileDragSession)"
         )
@@ -179,6 +262,20 @@ private struct FileDropTargetDelegate: DropDelegate {
         }
         return true
     }
+
+    private func resolvedDestination(at point: CGPoint) -> URL {
+        if let destinationResolver {
+            // A resolver owns the whole drop surface and is authoritative for
+            // the pointer's final location. Mixing its answer with transient
+            // nested onDrop state can redirect a folder drop to its parent.
+            return destinationResolver(point) ?? destination
+        }
+        return appState.preferredFileDropDestination(fallback: destination)
+    }
+
+    private func targetedDestination(at point: CGPoint) -> URL {
+        destinationResolver?(point) ?? destination
+    }
 }
 
 enum FileDropDestinationPolicy {
@@ -200,6 +297,16 @@ enum FileDropDestinationPolicy {
 
     private static func pathDepth(_ url: URL) -> Int {
         url.pathComponents.count
+    }
+}
+
+enum FileDropHighlightPolicy {
+    static func visibleFolder(destination: URL?, folders: [URL]) -> URL? {
+        guard let destination else { return nil }
+        let standardizedDestination = destination.standardizedFileURL
+        return folders.first {
+            $0.standardizedFileURL == standardizedDestination
+        }
     }
 }
 

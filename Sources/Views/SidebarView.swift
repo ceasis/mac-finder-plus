@@ -1,9 +1,11 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
 private enum SidebarSectionID: String, CaseIterable, Identifiable {
     case places
+    case recentFolders
     case devices
     case favorites
     case tools
@@ -14,6 +16,7 @@ private enum SidebarSectionID: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .places: "Places"
+        case .recentFolders: "Recent Folders"
         case .devices: "Devices"
         case .favorites: "Favorites"
         case .tools: "Tools"
@@ -177,6 +180,7 @@ enum SidebarLayoutPreferences {
     static let toolOrderKey = "sidebar.toolOrder"
     static let notesSnippetsOrderMigrationKey = "sidebar.toolOrder.notesSnippetsFirst"
     static let terminalOrderMigrationKey = "sidebar.toolOrder.terminalAfterCalculator"
+    static let recentFoldersSectionMigrationKey = "sidebar.sectionOrder.recentFoldersAfterPlaces"
     static let defaultPlaceOrder = ["home", "desktop", "documents", "downloads"]
 
     static func reset() {
@@ -189,6 +193,7 @@ enum SidebarLayoutPreferences {
             SidebarToolViewMode.defaultsKey,
             notesSnippetsOrderMigrationKey,
             terminalOrderMigrationKey,
+            recentFoldersSectionMigrationKey,
         ].forEach(defaults.removeObject(forKey:))
         NotificationCenter.default.post(name: didResetNotification, object: nil)
     }
@@ -201,10 +206,26 @@ private enum SidebarDragHandleMetrics {
     static let labeledIconSize = CGSize(width: 22, height: 22)
 }
 
+private enum SidebarFileDropMetrics {
+    static let contentPadding: CGFloat = 3
+}
+
+enum SidebarFileDropPolicy {
+    static func acceptsDestination(
+        _ url: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        var isDirectory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+}
+
 struct SidebarView: View {
     @Environment(AppState.self) private var appState
     @AppStorage(SidebarToolViewMode.defaultsKey) private var toolViewModeRaw = SidebarToolViewMode.list.rawValue
     @State private var orderStore = SidebarOrderStore.shared
+    @State private var recentFolderStore = RecentFolderStore.shared
     @State private var selection: URL?
     @State private var devices: [Place] = []
     private let isReordering = true
@@ -246,8 +267,17 @@ struct SidebarView: View {
         BookmarkStore.shared.grantedURLs
     }
 
+    private var recentFolders: [RecentFolderEntry] {
+        recentFolderStore.visibleEntries(
+            excluding: appState.currentlyAccessedFolderPaths
+        )
+    }
+
     private var visibleSections: [SidebarSectionID] {
         var sections: [SidebarSectionID] = [.places]
+        if !recentFolders.isEmpty {
+            sections.append(.recentFolders)
+        }
         if !devices.isEmpty {
             sections.append(.devices)
         }
@@ -330,6 +360,12 @@ struct SidebarView: View {
             }
         }
         .onAppear(perform: refreshDevices)
+        .onAppear {
+            recentFolderStore.pruneExpired()
+        }
+        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
+            recentFolderStore.pruneExpired(at: date)
+        }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(
             for: NSWorkspace.didMountNotification
         )) { _ in
@@ -379,7 +415,43 @@ struct SidebarView: View {
                             movePlace(source, onto: target, in: orderedPlaces)
                         }
                     ))
+                    .padding(SidebarFileDropMetrics.contentPadding)
+                    .fileDropTarget(
+                        to: place.url,
+                        paneIndex: appState.activePaneIndex,
+                        appState: appState
+                    )
                     .tag(place.url)
+                }
+            }
+
+        case .recentFolders:
+            Section(header: sidebarSectionHeader(section)) {
+                ForEach(recentFolders) { entry in
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(recentFolderTitle(entry.url))
+                                .lineLimit(1)
+                            Text(entry.accessedAt, style: .relative)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .padding(SidebarFileDropMetrics.contentPadding)
+                    .fileDropTarget(
+                        to: entry.url,
+                        paneIndex: appState.activePaneIndex,
+                        appState: appState
+                    )
+                    .tag(entry.url)
+                    .help(entry.path)
                 }
             }
 
@@ -410,6 +482,12 @@ struct SidebarView: View {
                             moveDevice(source, onto: target, in: orderedDevices)
                         }
                     ))
+                    .padding(SidebarFileDropMetrics.contentPadding)
+                    .fileDropTarget(
+                        to: device.url,
+                        paneIndex: appState.activePaneIndex,
+                        appState: appState
+                    )
                     .tag(device.url)
                     .contextMenu {
                         Button("Unmount Device") {
@@ -446,6 +524,13 @@ struct SidebarView: View {
                             moveFavorite(source, onto: target, in: orderedFavorites)
                         }
                     ))
+                    .padding(SidebarFileDropMetrics.contentPadding)
+                    .fileDropTarget(
+                        to: url,
+                        paneIndex: appState.activePaneIndex,
+                        appState: appState,
+                        isEnabled: SidebarFileDropPolicy.acceptsDestination(url)
+                    )
                     .tag(url)
                     .contextMenu {
                         Button("Remove from Favorites") {
@@ -723,6 +808,10 @@ struct SidebarView: View {
         ))
     }
 
+    private func recentFolderTitle(_ url: URL) -> String {
+        url.path == "/" ? "Macintosh HD" : url.lastPathComponent
+    }
+
     private func canMove<ID: Equatable>(_ id: ID, in orderedIDs: [ID], by offset: Int) -> Bool {
         guard let index = orderedIDs.firstIndex(of: id) else { return false }
         return orderedIDs.indices.contains(index + offset)
@@ -952,6 +1041,7 @@ private final class SidebarOrderStore {
         )
         migrateNotesAndSnippetsToTopIfNeeded()
         migrateTerminalNextToCalculatorIfNeeded()
+        migrateRecentFoldersAfterPlacesIfNeeded()
     }
 
     func orderedSections(_ available: [SidebarSectionID]) -> [SidebarSectionID] {
@@ -1004,6 +1094,23 @@ private final class SidebarOrderStore {
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.terminalOrderMigrationKey)
     }
 
+    private func migrateRecentFoldersAfterPlacesIfNeeded() {
+        guard !UserDefaults.standard.bool(
+            forKey: SidebarLayoutPreferences.recentFoldersSectionMigrationKey
+        ) else { return }
+        sectionOrder.removeAll { $0 == .recentFolders }
+        if let placesIndex = sectionOrder.firstIndex(of: .places) {
+            sectionOrder.insert(.recentFolders, at: placesIndex + 1)
+        } else {
+            sectionOrder.insert(.recentFolders, at: 0)
+        }
+        persistEnumArray(sectionOrder, key: SidebarLayoutPreferences.sectionOrderKey)
+        UserDefaults.standard.set(
+            true,
+            forKey: SidebarLayoutPreferences.recentFoldersSectionMigrationKey
+        )
+    }
+
     func resetLayout() {
         sectionOrder = SidebarSectionID.allCases
         placeOrder = SidebarLayoutPreferences.defaultPlaceOrder
@@ -1015,6 +1122,7 @@ private final class SidebarOrderStore {
         persistEnumArray(toolOrder, key: SidebarLayoutPreferences.toolOrderKey)
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.notesSnippetsOrderMigrationKey)
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.terminalOrderMigrationKey)
+        UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.recentFoldersSectionMigrationKey)
     }
 
     func moveSections(

@@ -218,6 +218,10 @@ final class AppState {
 
     var activePane: PaneModel { panes[activePaneIndex] }
     var inactivePane: PaneModel { panes[activePaneIndex == 0 ? 1 : 0] }
+    var currentlyAccessedFolderPaths: Set<String> {
+        let visiblePanes = isDualPane ? panes : [panes[0]]
+        return Set(visiblePanes.map { $0.currentURL.standardizedFileURL.path })
+    }
     var canUndoFileOperation: Bool { !undoStack.isEmpty }
     var clipboardFileCount: Int { fileURLsFromPasteboard().count }
     var canPasteFilesFromClipboard: Bool { clipboardFileCount > 0 }
@@ -334,14 +338,28 @@ final class AppState {
             pane.persistentStateChanged = { [weak self] in
                 self?.savePersistentState()
             }
+            pane.folderAccessChanged = { [weak self] previousURL, _ in
+                guard let self,
+                      !self.currentlyAccessedFolderPaths.contains(previousURL.path) else {
+                    return
+                }
+                RecentFolderStore.shared.record(previousURL)
+            }
         }
         ClipboardHistoryStore.shared.startMonitoring()
         savePersistentState()
     }
 
     func toggleDualPane() {
+        let folderBeingClosed = isDualPane
+            ? panes[1].currentURL.standardizedFileURL
+            : nil
         isDualPane.toggle()
         if !isDualPane { activePaneIndex = 0 }
+        if let folderBeingClosed,
+           !currentlyAccessedFolderPaths.contains(folderBeingClosed.path) {
+            RecentFolderStore.shared.record(folderBeingClosed)
+        }
     }
 
     func newTabInActivePane() {
@@ -1350,15 +1368,12 @@ final class AppState {
             defaultsToMove: true
         )
 
-        let provider = NSItemProvider(contentsOf: item.url) ?? NSItemProvider(object: item.url as NSURL)
-        provider.suggestedName = item.name
-        provider.registerDataRepresentation(
-            forTypeIdentifier: Self.internalFileDragType.identifier,
-            visibility: .ownProcess
-        ) { completion in
-            completion(Data(sessionID.utf8), nil)
-            return nil
-        }
+        let provider = FileDragItemProvider.make(
+            url: item.url,
+            suggestedName: item.name,
+            sessionID: sessionID,
+            internalTypeIdentifier: Self.internalFileDragType.identifier
+        )
         DragDropLog.log(
             "DRAG START name=\(item.name) ext=\(item.url.pathExtension) "
                 + "urls=\(dragURLs.count) types=\(provider.registeredTypeIdentifiers)"
@@ -1391,16 +1406,14 @@ final class AppState {
             defaultsToMove: false
         )
 
-        let provider = NSItemProvider(contentsOf: firstURL) ?? NSItemProvider(object: firstURL as NSURL)
-        provider.suggestedName = dragURLs.count == 1 ? firstURL.lastPathComponent : "\(dragURLs.count) items"
-        provider.registerDataRepresentation(
-            forTypeIdentifier: Self.internalFileDragType.identifier,
-            visibility: .ownProcess
-        ) { completion in
-            completion(Data(sessionID.utf8), nil)
-            return nil
-        }
-        return provider
+        return FileDragItemProvider.make(
+            url: firstURL,
+            suggestedName: dragURLs.count == 1
+                ? firstURL.lastPathComponent
+                : "\(dragURLs.count) items",
+            sessionID: sessionID,
+            internalTypeIdentifier: Self.internalFileDragType.identifier
+        )
     }
 
     func dropCurrentFileDrag(to destination: URL, paneIndex: Int) -> Bool {

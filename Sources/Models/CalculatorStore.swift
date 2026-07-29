@@ -233,17 +233,22 @@ final class CalculatorStore {
     func evaluate() {
         do {
             let resolved = try currentResolvedValue()
+            let calculationText = resolved.exact?.description ?? resolved.text
             resultText = resolved.text
             errorMessage = nil
-            lastAnswerText = resolved.text
+            lastAnswerText = calculationText
             lastAnswer = resolved.doubleValue ?? 0
-            defaults.set(resolved.text, forKey: Key.lastAnswerExact)
+            defaults.set(calculationText, forKey: Key.lastAnswerExact)
             if let doubleValue = resolved.doubleValue, doubleValue.isFinite {
                 defaults.set(doubleValue, forKey: Key.lastAnswer)
             } else {
                 defaults.removeObject(forKey: Key.lastAnswer)
             }
-            recordHistory(value: resolved.doubleValue ?? 0, formatted: resolved.text)
+            recordHistory(
+                value: resolved.doubleValue ?? 0,
+                formatted: resolved.text,
+                exactValue: calculationText
+            )
             justEvaluated = true
         } catch {
             resultText = "Error"
@@ -452,7 +457,7 @@ final class CalculatorStore {
                 context: CalculatorExactContext(answer: exactAnswer, memory: exactMemory)
             )
             return CalculatorResolvedValue(
-                text: exact.description,
+                text: exact.displayDescription,
                 doubleValue: exact.doubleValue,
                 exact: exact
             )
@@ -511,7 +516,7 @@ final class CalculatorStore {
         }
     }
 
-    private func recordHistory(value: Double, formatted: String) {
+    private func recordHistory(value: Double, formatted: String, exactValue: String) {
         let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         history.removeAll { $0.expression == trimmed && $0.result == formatted }
@@ -521,7 +526,7 @@ final class CalculatorStore {
             result: formatted,
             value: value,
             createdAt: Date(),
-            exactValue: formatted
+            exactValue: exactValue
         ), at: 0)
         if history.count > 50 { history.removeLast(history.count - 50) }
         defaults.set(try? JSONEncoder().encode(history), forKey: Key.history)

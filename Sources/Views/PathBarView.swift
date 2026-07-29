@@ -26,6 +26,9 @@ struct PathBarView: View {
             }
 
             HStack(spacing: 6) {
+                pathFilterControls
+                Divider()
+                    .frame(height: 14)
                 pathControls
                 resultBadges
             }
@@ -126,7 +129,7 @@ struct PathBarView: View {
                             }
                         }
                     }
-                    .defaultScrollAnchor(.trailing)
+                    .defaultScrollAnchor(.leading)
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) {
                         beginPathEdit()
@@ -164,6 +167,82 @@ struct PathBarView: View {
             .clickableCursor()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var pathFilterControls: some View {
+        HStack(spacing: 6) {
+            Menu {
+                Picker("Media Filter", selection: $model.typePreset) {
+                    ForEach(FileTypePreset.allCases) { preset in
+                        Label(preset.rawValue, systemImage: preset.systemImage)
+                            .tag(preset)
+                    }
+                }
+                .pickerStyle(.inline)
+
+                Divider()
+
+                Toggle("Include Subfolders", isOn: $model.searchSubfolders)
+            } label: {
+                pathFilterLabel(
+                    title: "Media Filter",
+                    systemImage: "photo.on.rectangle.angled",
+                    isActive: mediaFilterActive
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Filter by media type and choose whether to include subfolders")
+            .clickableCursor()
+
+            Divider()
+                .frame(height: 14)
+
+            Menu {
+                Picker("Ratings", selection: $model.ratingFilter) {
+                    ForEach(StarRatingFilter.allCases) { filter in
+                        Text(filter.rawValue)
+                            .tag(filter)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                pathFilterLabel(
+                    title: "Ratings",
+                    systemImage: "star",
+                    isActive: ratingFilterActive
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Filter by rating")
+            .clickableCursor()
+        }
+    }
+
+    private func pathFilterLabel(
+        title: String,
+        systemImage: String,
+        isActive: Bool
+    ) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+            Text(title)
+                .lineLimit(1)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .semibold))
+        }
+        .font(.caption)
+        .foregroundStyle(isActive ? Color.accentColor : Color.primary)
+        .padding(.horizontal, 7)
+        .frame(height: 24)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isActive ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.10))
+        )
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -219,37 +298,6 @@ struct PathBarView: View {
             .clickableCursor()
 
             HStack(spacing: 4) {
-                Menu {
-                    Picker("Type", selection: $model.typePreset) {
-                        ForEach(FileTypePreset.allCases) { preset in
-                            Label(preset.rawValue, systemImage: preset.systemImage)
-                                .tag(preset)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                    Divider()
-                    Picker("Rating", selection: $model.ratingFilter) {
-                        ForEach(StarRatingFilter.allCases) { filter in
-                            Text(filter.rawValue).tag(filter)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                    Divider()
-                    Toggle("Include Subfolders", isOn: $model.searchSubfolders)
-                } label: {
-                    Image(systemName: filtersActive
-                        ? "line.3.horizontal.decrease.circle.fill"
-                        : "line.3.horizontal.decrease.circle")
-                        .foregroundStyle(filtersActive ? Color.accentColor : Color.secondary)
-                        .frame(width: 24, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("File type preset and search scope")
-                .clickableCursor()
-
                 TextField(model.searchSubfolders ? "Search" : "Filter", text: $model.filterText)
                     .textFieldStyle(.plain)
                     .focused($searchFocused)
@@ -312,10 +360,13 @@ struct PathBarView: View {
         return path
     }
 
-    private var filtersActive: Bool {
+    private var mediaFilterActive: Bool {
         model.typePreset != .all
-            || model.ratingFilter != .all
             || model.searchSubfolders
+    }
+
+    private var ratingFilterActive: Bool {
+        model.ratingFilter != .all
     }
 
     private var quickDateFilterStrip: some View {

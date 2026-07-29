@@ -77,6 +77,77 @@ class EngineTestCase: XCTestCase {
     }
 }
 
+@MainActor
+final class PlayerPreviewInteractionTests: XCTestCase {
+    func testPlayerPreviewDoesNotInterceptPointerEvents() {
+        let view = PassthroughAVPlayerView(
+            frame: NSRect(x: 0, y: 0, width: 640, height: 360)
+        )
+        let child = NSView(frame: view.bounds)
+        view.addSubview(child)
+
+        XCTAssertNil(view.hitTest(NSPoint(x: 320, y: 180)))
+    }
+}
+
+@MainActor
+final class PreviewToolbarNSButtonTests: XCTestCase {
+    func testEnabledButtonInvokesItsAction() {
+        var receivedState: Bool?
+        let button = PreviewToolbarNSButton(frame: .zero)
+        button.configure(
+            title: "Export",
+            systemImage: "square.and.arrow.down",
+            accessibilityLabel: "Export Video",
+            help: "Export",
+            isEnabled: true,
+            isToggle: false,
+            isOn: false
+        ) { receivedState = $0 }
+
+        button.performClick(nil)
+
+        XCTAssertEqual(receivedState, false)
+    }
+
+    func testDisabledButtonDoesNotInvokeItsAction() {
+        var invocationCount = 0
+        let button = PreviewToolbarNSButton(frame: .zero)
+        button.configure(
+            title: "Export Audio",
+            systemImage: "waveform",
+            accessibilityLabel: "Export Audio",
+            help: "No audio track",
+            isEnabled: false,
+            isToggle: false,
+            isOn: false
+        ) { _ in invocationCount += 1 }
+
+        button.performClick(nil)
+
+        XCTAssertEqual(invocationCount, 0)
+    }
+
+    func testToggleButtonReportsItsNewState() {
+        var receivedState: Bool?
+        let button = PreviewToolbarNSButton(frame: .zero)
+        button.configure(
+            title: "Remove Audio",
+            systemImage: "speaker.slash",
+            accessibilityLabel: "Remove Audio",
+            help: "Mute audio",
+            isEnabled: true,
+            isToggle: true,
+            isOn: false
+        ) { receivedState = $0 }
+
+        button.performClick(nil)
+
+        XCTAssertEqual(receivedState, true)
+        XCTAssertEqual(button.state, .on)
+    }
+}
+
 // MARK: - FileOperations
 
 final class FileOperationsTests: EngineTestCase {
@@ -185,6 +256,31 @@ final class FileOperationsTests: EngineTestCase {
         let records = try await FileOperations.transfer([src], to: destDir, move: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: src.path))
         XCTAssertEqual(records.count, 1)
+    }
+
+    func testTransferMoveSupportsRepresentativeNonTextFileTypes() async throws {
+        let sourceDir = tempDir.appendingPathComponent("source", isDirectory: true)
+        let destinationDir = tempDir.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: false)
+        let names = ["image.png", "video.mp4", "audio.m4a", "archive.zip", "document.pdf"]
+        let sources = try names.map { try writeFile($0, "payload", in: sourceDir) }
+
+        let records = try await FileOperations.transfer(
+            sources,
+            to: destinationDir,
+            move: true
+        )
+
+        XCTAssertEqual(records.map(\.destination.lastPathComponent), names)
+        for name in names {
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: sourceDir.appendingPathComponent(name).path
+            ))
+            XCTAssertTrue(FileManager.default.fileExists(
+                atPath: destinationDir.appendingPathComponent(name).path
+            ))
+        }
     }
 
     func testMoveIntoNewFolderCreatesFolderAndMovesSelection() async throws {
@@ -385,6 +481,35 @@ final class FileDropTests: XCTestCase {
         XCTAssertNil(FileDropPayload.fileURL(from: "https://example.com" as NSString))
     }
 
+    @MainActor
+    func testInternalDragProviderUsesStableFileURLAndMarkerForEveryFileType() {
+        let names = [
+            "note.txt", "image.png", "video.mp4",
+            "audio.m4a", "archive.zip", "document.pdf",
+        ]
+
+        for name in names {
+            let provider = FileDragItemProvider.make(
+                url: URL(fileURLWithPath: "/tmp/\(name)"),
+                suggestedName: name,
+                sessionID: "session",
+                internalTypeIdentifier: AppState.internalFileDragType.identifier
+            )
+
+            XCTAssertTrue(
+                provider.registeredTypeIdentifiers.contains(UTType.fileURL.identifier),
+                "\(name) is missing its file URL representation"
+            )
+            XCTAssertTrue(
+                FileDragItemProvider.containsInternalMarker(
+                    [provider],
+                    typeIdentifier: AppState.internalFileDragType.identifier
+                ),
+                "\(name) is missing its Workbench drag marker"
+            )
+        }
+    }
+
     func testNestedFolderTargetWinsOverContainingFolderTarget() {
         let currentFolder = URL(fileURLWithPath: "/tmp/Documents", isDirectory: true)
         let nestedFolder = currentFolder.appendingPathComponent("Archive", isDirectory: true)
@@ -421,6 +546,181 @@ final class FileDropTests: XCTestCase {
                 activeDestinations: [root, users]
             ),
             users
+        )
+    }
+
+    func testIconGridResolvesDropToFolderUnderFinalPointer() {
+        let currentFolder = URL(fileURLWithPath: "/tmp/Documents", isDirectory: true)
+        let archive = currentFolder.appendingPathComponent("Archive", isDirectory: true)
+        let videoID = "video"
+        let folderID = "folder"
+        let visibleFrames = [
+            videoID: CGRect(x: 10, y: 10, width: 110, height: 130),
+            folderID: CGRect(x: 145, y: 10, width: 110, height: 130),
+        ]
+
+        XCTAssertEqual(
+            FileGridDropDestinationPolicy.destination(
+                at: CGPoint(x: 190, y: 70),
+                folders: [(folderID, archive)],
+                frames: visibleFrames,
+                fallback: currentFolder
+            ),
+            archive
+        )
+    }
+
+    func testIconGridFallsBackToCurrentFolderOutsideVisibleFolder() {
+        let currentFolder = URL(fileURLWithPath: "/tmp/Documents", isDirectory: true)
+        let archive = currentFolder.appendingPathComponent("Archive", isDirectory: true)
+        let folderID = "folder"
+
+        XCTAssertEqual(
+            FileGridDropDestinationPolicy.destination(
+                at: CGPoint(x: 20, y: 250),
+                folders: [(folderID, archive)],
+                frames: [folderID: CGRect(x: 145, y: 10, width: 110, height: 130)],
+                fallback: currentFolder
+            ),
+            currentFolder
+        )
+    }
+
+    func testDropHighlightAppearsOnlyForMatchingVisibleFolder() {
+        let currentFolder = URL(fileURLWithPath: "/tmp/Documents", isDirectory: true)
+        let archive = currentFolder.appendingPathComponent("Archive", isDirectory: true)
+        let projects = currentFolder.appendingPathComponent("Projects", isDirectory: true)
+
+        XCTAssertEqual(
+            FileDropHighlightPolicy.visibleFolder(
+                destination: archive.appendingPathComponent(".").standardizedFileURL,
+                folders: [archive, projects]
+            ),
+            archive
+        )
+        XCTAssertNil(FileDropHighlightPolicy.visibleFolder(
+            destination: currentFolder,
+            folders: [archive, projects]
+        ))
+        XCTAssertNil(FileDropHighlightPolicy.visibleFolder(
+            destination: nil,
+            folders: [archive, projects]
+        ))
+    }
+
+    func testSidebarAcceptsFolderDestinationsButNotFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let folder = root.appendingPathComponent("Destination", isDirectory: true)
+        let file = root.appendingPathComponent("Not a Folder.txt")
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true
+        )
+        try Data("file".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertTrue(SidebarFileDropPolicy.acceptsDestination(folder))
+        XCTAssertFalse(SidebarFileDropPolicy.acceptsDestination(file))
+    }
+}
+
+@MainActor
+final class RecentFolderStoreTests: EngineTestCase {
+    func testShowsOnlyThreeFoldersAccessedWithinEightHoursNewestFirst() throws {
+        let suiteName = "RecentFolderStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let folders = try (1...5).map { index in
+            let folder = tempDir.appendingPathComponent("Folder \(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            return folder
+        }
+        let store = RecentFolderStore(defaults: defaults, now: { now })
+
+        store.record(folders[0], at: now.addingTimeInterval(-9 * 60 * 60))
+        store.record(folders[1], at: now.addingTimeInterval(-4 * 60 * 60))
+        store.record(folders[2], at: now.addingTimeInterval(-3 * 60 * 60))
+        store.record(folders[3], at: now.addingTimeInterval(-2 * 60 * 60))
+        store.record(folders[4], at: now.addingTimeInterval(-1 * 60 * 60))
+
+        XCTAssertEqual(
+            store.visibleEntries(excluding: []).map(\.path),
+            [folders[4], folders[3], folders[2]].map(\.path)
+        )
+    }
+
+    func testVisibleEntriesExcludeOpenFoldersAndStillFillThreeRows() throws {
+        let suiteName = "RecentFolderStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let now = Date(timeIntervalSince1970: 1_500_000)
+        let folders = try (1...4).map { index in
+            let folder = tempDir.appendingPathComponent("Folder \(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+            return folder
+        }
+        let store = RecentFolderStore(defaults: defaults, now: { now })
+        for (index, folder) in folders.enumerated() {
+            store.record(folder, at: now.addingTimeInterval(TimeInterval(index)))
+        }
+
+        let visible = store.visibleEntries(excluding: [folders[3].path])
+
+        XCTAssertEqual(
+            visible.map(\.path),
+            [folders[2], folders[1], folders[0]].map(\.path)
+        )
+    }
+
+    func testRevisitingFolderMovesItToTopAndPersists() throws {
+        let suiteName = "RecentFolderStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let first = tempDir.appendingPathComponent("First", isDirectory: true)
+        let second = tempDir.appendingPathComponent("Second", isDirectory: true)
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: false)
+
+        let store = RecentFolderStore(defaults: defaults, now: { now })
+        store.record(first, at: now.addingTimeInterval(-60))
+        store.record(second, at: now.addingTimeInterval(-30))
+        store.record(first, at: now)
+
+        XCTAssertEqual(store.entries.map(\.path), [first.path, second.path])
+        let restored = RecentFolderStore(defaults: defaults, now: { now })
+        XCTAssertEqual(restored.entries, store.entries)
+    }
+
+    func testPaneNavigationReportsTheFolderBeingLeft() throws {
+        let destination = tempDir.appendingPathComponent("Destination", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: false
+        )
+        let pane = PaneModel(url: tempDir)
+        var transitions: [(previous: URL, next: URL)] = []
+        pane.folderAccessChanged = { previous, next in
+            transitions.append((previous, next))
+        }
+
+        pane.navigate(to: destination)
+
+        XCTAssertEqual(
+            transitions.map { $0.previous.standardizedFileURL },
+            [tempDir.standardizedFileURL]
+        )
+        XCTAssertEqual(
+            transitions.map { $0.next.standardizedFileURL },
+            [destination.standardizedFileURL]
         )
     }
 }
@@ -1073,6 +1373,128 @@ final class FileItemClassificationTests: EngineTestCase {
         XCTAssertTrue(FileItem.make(url: try writeFile("book.epub")).isEPUB)
         XCTAssertTrue(FileItem.make(url: try writeFile("bundle.tar.gz")).isArchive)
         XCTAssertTrue(FileItem.make(url: try writeFile("person.vcf")).isContactCard)
+    }
+}
+
+final class TextFilePreviewLoaderTests: EngineTestCase {
+    func testLargeCSVPreviewShowsHeaderAndFirstTenDataRows() async throws {
+        let value = String(repeating: "x", count: 640)
+        let firstRows = (1...30).map { "\($0),\(value)" }.joined(separator: "\n")
+        let repeatedTail = String(repeating: "\n9999,\(value)", count: 21_000)
+        let url = try writeFile(
+            "large.csv",
+            "row,value\n\(firstRows)\(repeatedTail)"
+        )
+
+        let fileSize = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int
+        XCTAssertGreaterThan(fileSize ?? 0, 13_000_000)
+
+        let result = try await TextFilePreviewLoader.loadDelimited(
+            from: url,
+            separator: .comma
+        )
+
+        XCTAssertEqual(result.limit, .rows(10))
+        XCTAssertEqual(result.header, ["row", "value"])
+        XCTAssertEqual(result.rows.count, 10)
+        XCTAssertEqual(result.rows.first, ["1", value])
+        XCTAssertEqual(result.rows.last, ["10", value])
+    }
+
+    func testCSVPreviewTreatsQuotedNewlinesAsPartOfOneRow() async throws {
+        let url = try writeFile(
+            "quoted.csv",
+            """
+            name,notes
+            Alice,"Line one
+            Line two"
+            Bob,Visible only after the preview limit
+            """
+        )
+
+        let result = try await TextFilePreviewLoader.loadDelimited(
+            from: url,
+            separator: .comma,
+            dataRowLimit: 1
+        )
+
+        XCTAssertEqual(result.limit, .rows(1))
+        XCTAssertEqual(result.header, ["name", "notes"])
+        XCTAssertEqual(result.rows, [["Alice", "Line one\nLine two"]])
+    }
+
+    func testCSVPreviewCapsPathologicallyWideRowsBeforeRendering() async throws {
+        let wideValue = String(repeating: "x", count: TextFilePreviewLoader.delimitedByteCap * 2)
+        let url = try writeFile(
+            "wide.csv",
+            "name,value\nfirst,\(wideValue)\nsecond,not visible"
+        )
+
+        let result = try await TextFilePreviewLoader.loadDelimited(
+            from: url,
+            separator: .comma
+        )
+
+        XCTAssertEqual(result.limit, .bytes(TextFilePreviewLoader.delimitedByteCap))
+        XCTAssertEqual(result.header, ["name", "value"])
+        XCTAssertTrue(result.rows.isEmpty)
+    }
+
+    func testCSVPreviewParsesQuotedCommasAndEscapedQuotes() async throws {
+        let url = try writeFile(
+            "quoted-fields.csv",
+            "name,notes\nAlice,\"Hello, \"\"Workbench\"\"\""
+        )
+
+        let result = try await TextFilePreviewLoader.loadDelimited(
+            from: url,
+            separator: .comma
+        )
+
+        XCTAssertEqual(result.header, ["name", "notes"])
+        XCTAssertEqual(result.rows, [["Alice", "Hello, \"Workbench\""]])
+        XCTAssertNil(result.limit)
+    }
+
+    func testCSVPreviewTreatsCRLFAsRecordBoundary() async throws {
+        let url = try writeFile(
+            "windows-line-endings.csv",
+            ",Title,Ingredients,Instructions,Image_Name,Cleaned_Ingredients\r\n"
+                + "0,Miso-Butter Roast Chicken,\"['whole chicken', 'salt']\",Roast it,image.jpg,\"['whole chicken', 'salt']\"\r\n"
+                + "1,Second Recipe,\"['flour']\",Bake it,second.jpg,\"['flour']\""
+        )
+
+        let result = try await TextFilePreviewLoader.loadDelimited(
+            from: url,
+            separator: .comma,
+            dataRowLimit: 1
+        )
+
+        XCTAssertEqual(
+            result.header,
+            ["", "Title", "Ingredients", "Instructions", "Image_Name", "Cleaned_Ingredients"]
+        )
+        XCTAssertEqual(
+            result.rows,
+            [["0", "Miso-Butter Roast Chicken", "['whole chicken', 'salt']", "Roast it", "image.jpg", "['whole chicken', 'salt']"]]
+        )
+        XCTAssertEqual(result.limit, .rows(1))
+    }
+
+    func testTSVPreviewUsesFirstRecordAsHeader() async throws {
+        let url = try writeFile(
+            "table.tsv",
+            "name\tvalue\nAlpha\t1\nBeta\t2"
+        )
+
+        let result = try await TextFilePreviewLoader.loadDelimited(
+            from: url,
+            separator: .tab
+        )
+
+        XCTAssertEqual(result.header, ["name", "value"])
+        XCTAssertEqual(result.rows, [["Alpha", "1"], ["Beta", "2"]])
+        XCTAssertNil(result.limit)
     }
 }
 
@@ -3057,6 +3479,20 @@ final class CalculatorExactExpressionEngineTests: XCTestCase {
         XCTAssertEqual(try exact("99999999999999999999 + 1"), "100000000000000000000")
     }
 
+    func testRepeatingDecimalsUseCompactRecurrenceNotationForDisplay() throws {
+        XCTAssertEqual(try displayed("25000 / 6"), "4166.(6)")
+        XCTAssertEqual(try displayed("1 / 6"), "0.1(6)")
+        XCTAssertEqual(try displayed("1 / 7"), "0.(142857)")
+        XCTAssertEqual(try displayed("-1 / 6"), "−0.1(6)")
+    }
+
+    func testFiniteDecimalsAndLongIntegersAreNotCompacted() throws {
+        let integer = "1212112312312124141414242"
+
+        XCTAssertEqual(try displayed("1 / 8"), "0.125")
+        XCTAssertEqual(try displayed(integer), integer)
+    }
+
     func testResultCanContainOneThousandDigits() throws {
         let result = try exact("10^999")
 
@@ -3073,6 +3509,13 @@ final class CalculatorExactExpressionEngineTests: XCTestCase {
 
     private func exact(_ expression: String) throws -> String {
         try CalculatorExactExpressionEngine.evaluate(expression, context: context).description
+    }
+
+    private func displayed(_ expression: String) throws -> String {
+        try CalculatorExactExpressionEngine.evaluate(
+            expression,
+            context: context
+        ).displayDescription
     }
 }
 
@@ -3141,6 +3584,24 @@ final class CalculatorStoreTests: XCTestCase {
             reloaded.expression = "ans+1"
             reloaded.evaluate()
             XCTAssertTrue(reloaded.resultText.hasSuffix("002"))
+        }
+    }
+
+    func testRepeatingResultIsCompactWhileStoredAnswerKeepsFullPrecision() {
+        withStore { store, defaults in
+            store.expression = "25000 / 6"
+            store.evaluate()
+
+            XCTAssertEqual(store.resultText, "4166.(6)")
+            XCTAssertEqual(store.history.first?.result, "4166.(6)")
+            let fullPrecision = store.history.first?.exactValue
+            XCTAssertNotNil(fullPrecision)
+            XCTAssertTrue(fullPrecision?.hasPrefix("4166.666666") == true)
+            XCTAssertGreaterThan(fullPrecision?.count ?? 0, store.resultText.count)
+
+            let reloaded = CalculatorStore(defaults: defaults)
+            reloaded.expression = "ans"
+            XCTAssertEqual(reloaded.resultText, "4166.(6)")
         }
     }
 

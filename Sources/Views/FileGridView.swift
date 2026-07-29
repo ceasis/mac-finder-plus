@@ -19,6 +19,7 @@ struct FileGridView: View {
     @State private var selectionDragStart: CGPoint?
     @State private var selectionDragBase = Set<FileItem.ID>()
     @State private var selectionRect: CGRect?
+    @State private var dropTargetURL: URL?
 
     private let cellSpacing: CGFloat = 25
     private let gridPadding: CGFloat = 10
@@ -54,6 +55,12 @@ struct FileGridView: View {
                                 paneIndex: paneIndex,
                                 thumbnailSize: thumbnailSide
                             )
+                                .fileDropHoverAppearance(
+                                    isTargeted: item.isDirectory
+                                        && item.url.standardizedFileURL
+                                            == dropTargetURL?.standardizedFileURL,
+                                    cornerRadius: 8
+                                )
                                 .background(
                                     GeometryReader { proxy in
                                         Color.clear.preference(
@@ -67,12 +74,6 @@ struct FileGridView: View {
                                     }
                                 )
                                 .fileDragSource(item, paneIndex: paneIndex, appState: appState)
-                                .fileDropTarget(
-                                    to: item.url,
-                                    paneIndex: paneIndex,
-                                    appState: appState,
-                                    isEnabled: item.isDirectory
-                                )
                                 .contextMenu {
                                     FileItemContextMenu(
                                         ids: menuIDs(for: item), model: model, paneIndex: paneIndex
@@ -100,7 +101,9 @@ struct FileGridView: View {
                     to: model.currentURL,
                     paneIndex: paneIndex,
                     appState: appState,
-                    destinationResolver: folderDestination(at:)
+                    showsIndicator: false,
+                    destinationResolver: folderDestination(at:),
+                    onTargetedDestinationChange: updateDropTarget
                 )
                 .contextMenu {
                     FileItemContextMenu(ids: [], model: model, paneIndex: paneIndex)
@@ -284,10 +287,24 @@ struct FileGridView: View {
     }
 
     private func folderDestination(at point: CGPoint) -> URL? {
-        model.displayItems.first { item in
-            guard item.isDirectory, let frame = cellFrames[item.id] else { return false }
-            return frame.insetBy(dx: -4, dy: -4).contains(point)
-        }?.url
+        FileGridDropDestinationPolicy.destination(
+            at: point,
+            folders: model.displayItems.compactMap { item in
+                item.isDirectory ? (item.id, item.url) : nil
+            },
+            frames: cellFrames,
+            fallback: model.currentURL
+        )
+    }
+
+    private func updateDropTarget(_ destination: URL?) {
+        let next = FileDropHighlightPolicy.visibleFolder(
+            destination: destination,
+            folders: model.displayItems.filter(\.isDirectory).map(\.url)
+        )
+        if dropTargetURL?.standardizedFileURL != next?.standardizedFileURL {
+            dropTargetURL = next
+        }
     }
 
     private func selectionRectangle(from start: CGPoint, to end: CGPoint) -> CGRect {
@@ -300,6 +317,26 @@ struct FileGridView: View {
     /// right-clicking an unselected item acts on just that item.
     private func menuIDs(for item: FileItem) -> Set<FileItem.ID> {
         model.selection.contains(item.id) ? model.selection : [item.id]
+    }
+}
+
+/// Resolves an icon-grid drop from the final pointer position. The grid uses
+/// one pane-level DropDelegate rather than competing nested delegates on every
+/// folder cell, which keeps filtered and lazily rendered grids deterministic.
+enum FileGridDropDestinationPolicy {
+    static func destination<ID: Hashable>(
+        at point: CGPoint,
+        folders: [(id: ID, url: URL)],
+        frames: [ID: CGRect],
+        fallback: URL
+    ) -> URL {
+        for folder in folders {
+            guard let frame = frames[folder.id] else { continue }
+            if frame.insetBy(dx: -4, dy: -4).contains(point) {
+                return folder.url
+            }
+        }
+        return fallback
     }
 }
 

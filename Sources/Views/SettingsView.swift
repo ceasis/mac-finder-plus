@@ -92,26 +92,12 @@ private struct PermissionsSettingsView: View {
 private struct GeneralSettingsView: View {
     @Environment(AppState.self) private var appState
     @AppStorage(WorkbenchAppIconMode.defaultsKey) private var appIconMode = WorkbenchAppIconMode.forge.rawValue
-    @AppStorage(ActivityPopupSettings.autoHideDelayKey)
-    private var activityAutoHideDelay = ActivityPopupSettings.defaultAutoHideDelay
 
     var body: some View {
         @Bindable var appState = appState
         Form {
             Section("Appearance") {
                 AppIconPicker(selection: $appIconMode)
-            }
-            Section("Activity") {
-                Picker("Hide popup after", selection: $activityAutoHideDelay) {
-                    Text("Never").tag(ActivityPopupSettings.neverAutoHideDelay)
-                    Text("1 second").tag(1.0)
-                    Text("3 seconds").tag(3.0)
-                    Text("5 seconds").tag(5.0)
-                    Text("10 seconds").tag(10.0)
-                }
-                Button("Reset Activity Popup") {
-                    activityAutoHideDelay = ActivityPopupSettings.defaultAutoHideDelay
-                }
             }
             Section("Safety") {
                 Text("Files move directly to Trash. Activity History keeps Undo and Reveal available while macOS still allows them.")

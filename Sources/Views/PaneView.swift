@@ -9,6 +9,7 @@ struct PaneView: View {
     @State private var listAnchorID: FileItem.ID?
     @State private var listRangeAnchorID: FileItem.ID?
     @State private var rowDropLocator = TableRowDropLocator()
+    @State private var listDropTargetURL: URL?
 
     private var model: PaneModel { appState.panes[paneIndex] }
     private var isActive: Bool { appState.activePaneIndex == paneIndex }
@@ -88,6 +89,10 @@ struct PaneView: View {
                     marker?.color.opacity(0.10) ?? Color.clear,
                     in: RoundedRectangle(cornerRadius: 5)
                 )
+                .fileDropHoverAppearance(
+                    isTargeted: isListDropTarget(item),
+                    cornerRadius: 5
+                )
                 .contentShape(Rectangle())
                 .clickableCursor()
                 .fileDragSource(item, paneIndex: paneIndex, appState: appState)
@@ -95,7 +100,9 @@ struct PaneView: View {
                     to: item.url,
                     paneIndex: paneIndex,
                     appState: appState,
-                    isEnabled: item.isDirectory
+                    isEnabled: item.isDirectory,
+                    showsIndicator: false,
+                    onTargetedDestinationChange: updateListDropTarget
                 )
                 .overlay(
                     TableNameMouseDownReporter { clickCount in
@@ -108,11 +115,17 @@ struct PaneView: View {
             TableColumn("Rating", value: \.rating) { item in
                 RatingStarsView(rating: item.rating, size: 8)
                     .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .fileDropHoverAppearance(
+                        isTargeted: isListDropTarget(item),
+                        cornerRadius: 5
+                    )
                     .fileDropTarget(
                         to: item.url,
                         paneIndex: paneIndex,
                         appState: appState,
-                        isEnabled: item.isDirectory
+                        isEnabled: item.isDirectory,
+                        showsIndicator: false,
+                        onTargetedDestinationChange: updateListDropTarget
                     )
             }
             .width(min: 56, ideal: 70)
@@ -122,11 +135,17 @@ struct PaneView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .fileDropHoverAppearance(
+                        isTargeted: isListDropTarget(item),
+                        cornerRadius: 5
+                    )
                     .fileDropTarget(
                         to: item.url,
                         paneIndex: paneIndex,
                         appState: appState,
-                        isEnabled: item.isDirectory
+                        isEnabled: item.isDirectory,
+                        showsIndicator: false,
+                        onTargetedDestinationChange: updateListDropTarget
                     )
             }
             .width(min: 60, ideal: 80)
@@ -136,11 +155,17 @@ struct PaneView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                    .fileDropHoverAppearance(
+                        isTargeted: isListDropTarget(item),
+                        cornerRadius: 5
+                    )
                     .fileDropTarget(
                         to: item.url,
                         paneIndex: paneIndex,
                         appState: appState,
-                        isEnabled: item.isDirectory
+                        isEnabled: item.isDirectory,
+                        showsIndicator: false,
+                        onTargetedDestinationChange: updateListDropTarget
                     )
             }
             .width(min: 80, ideal: 130)
@@ -153,11 +178,17 @@ struct PaneView: View {
                 )
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+                .fileDropHoverAppearance(
+                    isTargeted: isListDropTarget(item),
+                    cornerRadius: 5
+                )
                 .fileDropTarget(
                     to: item.url,
                     paneIndex: paneIndex,
                     appState: appState,
-                    isEnabled: item.isDirectory
+                    isEnabled: item.isDirectory,
+                    showsIndicator: false,
+                    onTargetedDestinationChange: updateListDropTarget
                 )
             }
             .width(min: 110, ideal: 150)
@@ -207,7 +238,9 @@ struct PaneView: View {
             to: model.currentURL,
             paneIndex: paneIndex,
             appState: appState,
-            destinationResolver: { _ in folderDestinationUnderCursor(in: model) }
+            showsIndicator: false,
+            destinationResolver: { _ in folderDestinationUnderCursor(in: model) },
+            onTargetedDestinationChange: updateListDropTarget
         )
     }
 
@@ -220,6 +253,21 @@ struct PaneView: View {
               model.displayItems.indices.contains(row) else { return nil }
         let item = model.displayItems[row]
         return item.isDirectory ? item.url : nil
+    }
+
+    private func updateListDropTarget(_ destination: URL?) {
+        let next = FileDropHighlightPolicy.visibleFolder(
+            destination: destination,
+            folders: model.displayItems.filter(\.isDirectory).map(\.url)
+        )
+        if listDropTargetURL?.standardizedFileURL != next?.standardizedFileURL {
+            listDropTargetURL = next
+        }
+    }
+
+    private func isListDropTarget(_ item: FileItem) -> Bool {
+        item.isDirectory
+            && item.url.standardizedFileURL == listDropTargetURL?.standardizedFileURL
     }
 
     private func rateSelection(_ rating: Int) {

@@ -2,16 +2,24 @@ import SwiftUI
 
 struct FileActivityOverlay: View {
     @Environment(AppState.self) private var appState
-    @AppStorage(ActivityPopupSettings.autoHideDelayKey)
-    private var autoHideDelay = ActivityPopupSettings.defaultAutoHideDelay
     @State private var isVisible = false
     @State private var hideTask: Task<Void, Never>?
 
     var body: some View {
         Group {
             if isVisible && !appState.fileActivities.isEmpty {
-                FileActivityPanel {
-                    hidePanel()
+                Group {
+                    if displayedActivities.allSatisfy({ $0.status.isTerminal }),
+                       let latestActivity = displayedActivities.first {
+                        CompletedActivityToast(
+                            activity: latestActivity,
+                            onDismiss: hidePanel
+                        )
+                    } else {
+                        FileActivityPanel {
+                            hidePanel()
+                        }
+                    }
                 }
                 .padding(12)
                 .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
@@ -29,8 +37,12 @@ struct FileActivityOverlay: View {
         }
     }
 
-    private var presentationKey: String {
+    private var displayedActivities: ArraySlice<FileActivity> {
         appState.fileActivities.prefix(4)
+    }
+
+    private var presentationKey: String {
+        displayedActivities
             .map { activity in
                 "\(activity.id.uuidString):\(statusKey(activity.status)):\(activity.finishedAt?.timeIntervalSince1970 ?? 0)"
             }
@@ -48,10 +60,9 @@ struct FileActivityOverlay: View {
 
     private func scheduleAutoHideIfReady() {
         hideTask?.cancel()
-        guard autoHideDelay > ActivityPopupSettings.neverAutoHideDelay else { return }
-        guard appState.fileActivities.prefix(4).allSatisfy({ $0.status.isTerminal }) else { return }
+        guard displayedActivities.allSatisfy({ $0.status.isTerminal }) else { return }
 
-        let delay = UInt64(max(autoHideDelay, 0.1) * 1_000_000_000)
+        let delay = UInt64(ActivityPopupSettings.completedDisplayDuration * 1_000_000_000)
         hideTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else { return }
@@ -72,6 +83,95 @@ struct FileActivityOverlay: View {
         case .completed: "completed"
         case .cancelled: "cancelled"
         case .failed: "failed"
+        }
+    }
+}
+
+private struct CompletedActivityToast: View {
+    let activity: FileActivity
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: statusSymbol)
+                .foregroundStyle(statusTint)
+
+            Text(activity.title)
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+
+            Text(statusText)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(statusTint)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Hide Activity")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 34)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+        )
+        .shadow(radius: 8, y: 3)
+        .help(activity.detail)
+    }
+
+    private var statusText: String {
+        switch activity.status {
+        case .queued:
+            return "Queued"
+        case .running:
+            return "Running"
+        case .paused:
+            return "Paused"
+        case .completed:
+            return "Done"
+        case .cancelled:
+            return "Cancelled"
+        case .failed:
+            return "Failed"
+        }
+    }
+
+    private var statusSymbol: String {
+        switch activity.status {
+        case .queued:
+            return "clock"
+        case .running:
+            return "arrow.triangle.2.circlepath"
+        case .paused:
+            return "pause.circle"
+        case .completed:
+            return "checkmark.circle.fill"
+        case .cancelled:
+            return "xmark.circle"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var statusTint: Color {
+        switch activity.status {
+        case .queued:
+            return .secondary
+        case .running:
+            return .blue
+        case .paused:
+            return .orange
+        case .completed:
+            return .green
+        case .cancelled:
+            return .secondary
+        case .failed:
+            return .red
         }
     }
 }

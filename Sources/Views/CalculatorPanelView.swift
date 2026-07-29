@@ -141,10 +141,10 @@ struct CalculatorPanelView: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 39)
                     .onAppear {
-                        proxy.scrollTo("calculator-result", anchor: .trailing)
+                        proxy.scrollTo("calculator-result", anchor: .leading)
                     }
                     .onChange(of: store.resultText) {
-                        proxy.scrollTo("calculator-result", anchor: .trailing)
+                        proxy.scrollTo("calculator-result", anchor: .leading)
                     }
                 }
 

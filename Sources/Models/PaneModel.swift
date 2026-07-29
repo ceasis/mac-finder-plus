@@ -323,13 +323,124 @@ struct PaneTab: Identifiable, Hashable {
     }
 }
 
+struct RecentFolderEntry: Codable, Equatable, Identifiable, Sendable {
+    let path: String
+    var accessedAt: Date
+
+    var id: String { path }
+
+    var url: URL {
+        URL(fileURLWithPath: path, isDirectory: true)
+    }
+}
+
+@Observable
+@MainActor
+final class RecentFolderStore {
+    static let shared = RecentFolderStore()
+    static let maximumVisibleCount = 3
+    static let maximumStoredCount = 20
+    static let maximumAge: TimeInterval = 8 * 60 * 60
+    static let defaultsKey = "recentFolders.entries"
+
+    private(set) var entries: [RecentFolderEntry]
+
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let fileManager: FileManager
+    @ObservationIgnored private let nowProvider: () -> Date
+
+    init(
+        defaults: UserDefaults = .standard,
+        fileManager: FileManager = .default,
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.defaults = defaults
+        self.fileManager = fileManager
+        self.nowProvider = now
+        let restored = defaults.data(forKey: Self.defaultsKey)
+            .flatMap { try? JSONDecoder().decode([RecentFolderEntry].self, from: $0) }
+            ?? []
+        entries = Self.pruned(restored, at: now(), fileManager: fileManager)
+        if entries != restored {
+            persist()
+        }
+    }
+
+    func record(_ url: URL, at date: Date? = nil) {
+        let standardized = url.standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: standardized.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return }
+
+        entries.removeAll { $0.path == standardized.path }
+        entries.append(RecentFolderEntry(
+            path: standardized.path,
+            accessedAt: date ?? nowProvider()
+        ))
+        entries = Self.pruned(entries, at: nowProvider(), fileManager: fileManager)
+        persist()
+    }
+
+    func visibleEntries(excluding folderPaths: Set<String>) -> [RecentFolderEntry] {
+        Array(
+            entries
+                .filter { !folderPaths.contains($0.path) }
+                .prefix(Self.maximumVisibleCount)
+        )
+    }
+
+    @discardableResult
+    func pruneExpired(at date: Date? = nil) -> Bool {
+        let pruned = Self.pruned(
+            entries,
+            at: date ?? nowProvider(),
+            fileManager: fileManager
+        )
+        guard pruned != entries else { return false }
+        entries = pruned
+        persist()
+        return true
+    }
+
+    private static func pruned(
+        _ candidates: [RecentFolderEntry],
+        at date: Date,
+        fileManager: FileManager
+    ) -> [RecentFolderEntry] {
+        let cutoff = date.addingTimeInterval(-maximumAge)
+        var seenPaths = Set<String>()
+        return Array(candidates
+            .sorted { $0.accessedAt > $1.accessedAt }
+            .filter { entry in
+                guard entry.accessedAt >= cutoff,
+                      seenPaths.insert(entry.path).inserted else { return false }
+                var isDirectory: ObjCBool = false
+                return fileManager.fileExists(atPath: entry.path, isDirectory: &isDirectory)
+                    && isDirectory.boolValue
+            }
+            .prefix(maximumStoredCount))
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+}
+
 /// State for one browser pane: current folder, listing, history, sort, filter,
 /// selection, and recursive search.
 @Observable
 @MainActor
 final class PaneModel {
     var currentURL: URL {
-        didSet { activeBrowsingStateChanged() }
+        didSet {
+            activeBrowsingStateChanged()
+            let previousURL = oldValue.standardizedFileURL
+            let nextURL = currentURL.standardizedFileURL
+            if previousURL != nextURL {
+                folderAccessChanged?(previousURL, nextURL)
+            }
+        }
     }
     var viewMode: PaneViewMode = .list {
         didSet { activeBrowsingStateChanged() }
@@ -412,6 +523,7 @@ final class PaneModel {
 
     @ObservationIgnored private var visibleItemsByID: [FileItem.ID: FileItem] = [:]
     @ObservationIgnored var persistentStateChanged: (() -> Void)?
+    @ObservationIgnored var folderAccessChanged: ((URL, URL) -> Void)?
     @ObservationIgnored private var folderSizeTask: Task<Void, Never>?
     @ObservationIgnored private var displayItemsRebuildTask: Task<Void, Never>?
     @ObservationIgnored private var folderSizeRunID = UUID()

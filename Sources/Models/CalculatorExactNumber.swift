@@ -119,6 +119,36 @@ struct CalculatorExactNumber: Equatable, Comparable, Sendable, CustomStringConve
         return sign < 0 ? "−" + unsigned : unsigned
     }
 
+    /// A compact UI representation for decimal expansions that reached the
+    /// calculator's precision limit and end in a stable repeating cycle.
+    ///
+    /// Parentheses are used as recurrence notation, so `0.1(6)` means
+    /// `0.1666…`. Finite decimals and long integers are returned unchanged.
+    var displayDescription: String {
+        guard scale > 0,
+              max(coefficient.decimalDigitCount, scale) == Self.maximumDigits else {
+            return description
+        }
+
+        let fullText = description
+        guard let decimalIndex = fullText.firstIndex(of: ".") else {
+            return fullText
+        }
+        let fractionStart = fullText.index(after: decimalIndex)
+        let fractionalDigits = Array(fullText[fractionStart...])
+        guard let repetition = Self.repeatingSuffix(in: fractionalDigits) else {
+            return fullText
+        }
+
+        let nonRepeating = String(fractionalDigits[..<repetition.start])
+        let repeating = String(
+            fractionalDigits[
+                repetition.start..<(repetition.start + repetition.length)
+            ]
+        )
+        return "\(fullText[..<decimalIndex]).\(nonRepeating)(\(repeating))"
+    }
+
     var doubleValue: Double? {
         let normalized = description.replacingOccurrences(of: "−", with: "-")
         guard let value = Double(normalized), value.isFinite else { return nil }
@@ -371,6 +401,32 @@ struct CalculatorExactNumber: Equatable, Comparable, Sendable, CustomStringConve
         if aligned.left < aligned.right { return -1 }
         if aligned.left > aligned.right { return 1 }
         return 0
+    }
+
+    private static func repeatingSuffix(
+        in digits: [Character]
+    ) -> (start: Int, length: Int)? {
+        let minimumRepeats = 6
+        let maximumCycleLength = 100
+        let largestCandidate = min(maximumCycleLength, digits.count / minimumRepeats)
+        guard largestCandidate > 0 else { return nil }
+
+        for cycleLength in 1...largestCandidate {
+            let comparisonStart = digits.count - (cycleLength * minimumRepeats)
+            let isPeriodic = (comparisonStart..<(digits.count - cycleLength)).allSatisfy {
+                digits[$0] == digits[$0 + cycleLength]
+            }
+            guard isPeriodic else { continue }
+
+            var cycleStart = comparisonStart
+            while cycleStart > 0,
+                  digits[cycleStart - 1] == digits[cycleStart - 1 + cycleLength] {
+                cycleStart -= 1
+            }
+            return (cycleStart, cycleLength)
+        }
+
+        return nil
     }
 }
 

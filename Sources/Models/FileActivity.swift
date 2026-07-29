@@ -122,7 +122,5 @@ struct FileActivityResult: Equatable {
 }
 
 enum ActivityPopupSettings {
-    static let autoHideDelayKey = "activityPopupAutoHideDelay"
-    static let defaultAutoHideDelay = 3.0
-    static let neverAutoHideDelay = 0.0
+    static let completedDisplayDuration = 1.5
 }

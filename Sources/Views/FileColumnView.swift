@@ -91,7 +91,12 @@ struct FileColumnView: View {
                         onEnd: finishSelectionDrag
                     )
                 )
-                .fileDropTarget(to: model.currentURL, paneIndex: paneIndex, appState: appState)
+                .fileDropTarget(
+                    to: model.currentURL,
+                    paneIndex: paneIndex,
+                    appState: appState,
+                    showsIndicator: false
+                )
                 .contextMenu {
                     FileItemContextMenu(ids: [], model: model, paneIndex: paneIndex)
                 }

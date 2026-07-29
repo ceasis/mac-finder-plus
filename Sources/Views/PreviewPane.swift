@@ -25,6 +25,7 @@ struct PreviewPane: View {
     @State private var transformActivityID: UUID?
     @State private var pendingLongVideoTransform: PendingLongVideoTransform?
     @State private var isCheckingVideoDuration = false
+    @State private var showsVideoControls = true
 
     private var selectedItems: [FileItem] { appState.activePane.selectedItems }
     private var mediaItems: [FileItem] { selectedItems.filter(\.isPreviewable) }
@@ -35,6 +36,9 @@ struct PreviewPane: View {
     }
     private var hasPlayablePreview: Bool {
         previewItems.contains { $0.isPlayableMedia }
+    }
+    private var hasSingleVideoPreview: Bool {
+        selectedItems.count == 1 && selectedItems.first?.isVideoMedia == true
     }
     private var transformablePreviewItems: [FileItem] {
         selectedItems.filter { $0.isImage || $0.isVideoMedia }
@@ -168,10 +172,39 @@ struct PreviewPane: View {
                 mediaTransformButton(.flipVertical, image: Image(systemName: "flip.vertical"))
             }
             if hasPlayablePreview {
-                Toggle("Loop", isOn: $loopVideos)
-                    .toggleStyle(.checkbox)
-                    .font(previewControlCaptionFont)
-                    .help("Restart playback automatically when the video ends")
+                Toggle(isOn: $loopVideos) {
+                    Image(systemName: loopVideos ? "repeat.circle.fill" : "repeat")
+                        .foregroundStyle(loopVideos ? Color.accentColor : Color.secondary)
+                        .frame(width: previewButtonSide, height: previewButtonSide)
+                        .contentShape(Rectangle())
+                }
+                .toggleStyle(.button)
+                .accessibilityLabel("Loop playback")
+                .accessibilityValue(loopVideos ? "On" : "Off")
+                .help(loopVideos
+                    ? "Loop playback is on"
+                    : "Loop playback is off")
+            }
+            if hasSingleVideoPreview {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        showsVideoControls.toggle()
+                    }
+                } label: {
+                    Image(systemName: showsVideoControls ? "eye.slash" : "eye")
+                        .frame(width: previewButtonSide, height: previewButtonSide)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel(
+                    showsVideoControls
+                        ? "Hide video editing controls"
+                        : "Show video editing controls"
+                )
+                .help(
+                    showsVideoControls
+                        ? "Hide trim and export controls and enlarge the player"
+                        : "Show trim and export controls"
+                )
             }
             if !previewItems.isEmpty {
                 HStack(spacing: previewControlSpacing) {
@@ -328,7 +361,11 @@ struct PreviewPane: View {
         } else if item.isZipArchive {
             ZipArchivePreview(item: item)
         } else if item.isImage || item.isPlayableMedia {
-            SingleMediaPreview(item: item, sizeScale: previewMediaSizeScale)
+            SingleMediaPreview(
+                item: item,
+                sizeScale: previewMediaSizeScale,
+                showsVideoControls: showsVideoControls
+            )
         } else if item.isText {
             TextFilePreview(item: item)
         } else if item.isRichDocument {
@@ -388,10 +425,15 @@ struct PreviewPane: View {
 private struct SingleMediaPreview: View {
     let item: FileItem
     let sizeScale: Double
+    let showsVideoControls: Bool
 
     var body: some View {
         if item.isVideoMedia {
-            SingleVideoPreview(item: item, sizeScale: sizeScale)
+            SingleVideoPreview(
+                item: item,
+                sizeScale: sizeScale,
+                showsControls: showsVideoControls
+            )
         } else {
             GeometryReader { geometry in
                 ScrollView {
@@ -423,6 +465,7 @@ private struct SingleMediaPreview: View {
 private struct SingleVideoPreview: View {
     let item: FileItem
     let sizeScale: Double
+    let showsControls: Bool
 
     @State private var player: AVPlayer?
     @State private var endObserver: NSObjectProtocol?
@@ -435,19 +478,31 @@ private struct SingleVideoPreview: View {
         GeometryReader { geometry in
             VStack(spacing: 10) {
                 videoSurface
-                    .frame(height: videoPreviewHeight(for: geometry.size.height))
+                    .frame(
+                        height: videoPreviewHeight(
+                            for: geometry.size.height,
+                            showsControls: showsControls
+                        )
+                    )
+                    .clipped()
+                    .allowsHitTesting(false)
                     .background(
                         Color(nsColor: .controlBackgroundColor),
                         in: RoundedRectangle(cornerRadius: 8)
                     )
 
                 VideoPlaybackControls(player: player)
-                VideoTimelineTrimView(item: item, player: player)
+                    .zIndex(1)
 
-                ScrollView {
-                    MediaMetadataInspector(item: item)
+                if showsControls {
+                    VideoTimelineTrimView(item: item, player: player)
+                        .zIndex(1)
+
+                    ScrollView {
+                        MediaMetadataInspector(item: item)
+                    }
+                    .frame(maxHeight: .infinity)
                 }
-                .frame(maxHeight: .infinity)
             }
             .padding(10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -472,7 +527,14 @@ private struct SingleVideoPreview: View {
         max(min(max(availableHeight * 0.58, 220), 460) * CGFloat(sizeScale), 140)
     }
 
-    private func videoPreviewHeight(for availableHeight: CGFloat) -> CGFloat {
+    private func videoPreviewHeight(
+        for availableHeight: CGFloat,
+        showsControls: Bool
+    ) -> CGFloat {
+        guard showsControls else {
+            let reservedForPlaybackControls: CGFloat = 82
+            return max(availableHeight - reservedForPlaybackControls, 140)
+        }
         let reservedForControls: CGFloat = 300
         let visibleBudget = max(availableHeight - reservedForControls, 100)
         return min(previewHeight(for: availableHeight), visibleBudget)
@@ -934,83 +996,89 @@ private struct VideoTimelineTrimView: View {
 
             Spacer()
 
-            Button {
+            NativePreviewToolbarButton(
+                systemImage: "arrow.left.to.line",
+                accessibilityLabel: "Set In Point",
+                help: "Set trim start to the current playback position",
+                isEnabled: player != nil && duration > 0
+            ) {
                 markIn()
-            } label: {
-                Image(systemName: "arrow.left.to.line")
-                    .accessibilityLabel("Set In Point")
             }
-            .disabled(player == nil || duration <= 0)
-            .help("Set trim start to the current playback position")
+            .frame(width: 42, height: 22)
 
-            Button {
+            NativePreviewToolbarButton(
+                systemImage: "arrow.right.to.line",
+                accessibilityLabel: "Set Out Point",
+                help: "Set trim end to the current playback position",
+                isEnabled: player != nil && duration > 0
+            ) {
                 markOut()
-            } label: {
-                Image(systemName: "arrow.right.to.line")
-                    .accessibilityLabel("Set Out Point")
             }
-            .disabled(player == nil || duration <= 0)
-            .help("Set trim end to the current playback position")
+            .frame(width: 42, height: 22)
 
-            Button {
+            NativePreviewToolbarButton(
+                systemImage: "camera",
+                accessibilityLabel: "Capture Frame",
+                help: "Save the current video frame as a PNG beside the video",
+                isEnabled: player != nil
+            ) {
                 captureCurrentFrame()
-            } label: {
-                Image(systemName: "camera")
-                    .accessibilityLabel("Capture Frame")
             }
-            .disabled(player == nil)
-            .help("Save the current video frame as a PNG beside the video")
+            .frame(width: 44, height: 22)
 
-            Button {
+            NativePreviewToolbarButton(
+                systemImage: "camera.on.rectangle",
+                accessibilityLabel: "Capture Screenshots at an Interval",
+                help: "Capture screenshots from the full video at a chosen interval",
+                isEnabled: duration > 0
+            ) {
                 showsIntervalCapture.toggle()
-            } label: {
-                Image(systemName: "camera.on.rectangle")
-                    .accessibilityLabel("Capture Screenshots at an Interval")
             }
-            .disabled(duration <= 0)
-            .help("Capture screenshots from the full video at a chosen interval")
+            .frame(width: 45, height: 22)
             .popover(isPresented: $showsIntervalCapture, arrowEdge: .bottom) {
                 intervalCapturePopover
             }
 
-            Toggle(isOn: $removeAudio) {
-                Label(
-                    "Remove Audio",
-                    systemImage: removeAudio ? "speaker.slash.fill" : "speaker.slash"
-                )
+            NativePreviewToolbarButton(
+                title: "Remove Audio",
+                systemImage: removeAudio ? "speaker.slash.fill" : "speaker.slash",
+                accessibilityLabel: "Remove Audio",
+                help: "Keep the audio track and set its volume to zero",
+                isEnabled: hasAudioTrack,
+                isToggle: true,
+                isOn: removeAudio
+            ) { newValue in
+                removeAudio = newValue
             }
-            .toggleStyle(.button)
-            .disabled(!hasAudioTrack)
-            .help("Keep the audio track and set its volume to zero")
 
-            Button {
-                appState.exportVideoAudio(item, inTime: inTime, outTime: outTime)
-            } label: {
-                Label("Export Audio", systemImage: "waveform")
-            }
-            .disabled(!isValid || !hasAudioTrack)
-            .help(
-                hasAudioTrack
+            NativePreviewToolbarButton(
+                title: "Export Audio",
+                systemImage: "waveform",
+                accessibilityLabel: "Export Audio",
+                help: hasAudioTrack
                     ? "Export the selected range as an audio-only M4A file"
-                    : "This video has no audio track"
-            )
+                    : "This video has no audio track",
+                isEnabled: isValid && hasAudioTrack
+            ) {
+                appState.exportVideoAudio(item, inTime: inTime, outTime: outTime)
+            }
 
-            Button {
+            NativePreviewToolbarButton(
+                title: "Export",
+                systemImage: "square.and.arrow.down",
+                accessibilityLabel: "Export Video",
+                help: removeAudio
+                    ? "Export the selected range with a silent audio track"
+                    : "Export the selected range without re-encoding",
+                isEnabled: isValid
+            ) {
                 appState.exportVideoTrim(
                     item,
                     inTime: inTime,
                     outTime: outTime,
                     muteAudio: removeAudio
                 )
-            } label: {
-                Label("Export", systemImage: "square.and.arrow.down")
             }
-            .disabled(!isValid)
-            .help(
-                removeAudio
-                    ? "Export the selected range with a silent audio track"
-                    : "Export the selected range without re-encoding"
-            )
         }
         .font(.caption)
         .onChange(of: removeAudio) { _, shouldMute in
@@ -2301,17 +2369,16 @@ private struct GenericItemPreview: View {
     }
 }
 
-/// Monospaced, selectable preview for text and source files. Reads at most
-/// `byteCap` off the main thread and decodes UTF-8 (falling back to Latin-1)
-/// so it never blocks on a large log or hangs on binary content.
+/// Selectable preview for text and source files. CSV/TSV files are parsed into
+/// a native table with one header and up to 10 data rows. All file loading and
+/// delimited parsing stays off the main thread.
 private struct TextFilePreview: View {
     let item: FileItem
 
     @State private var text: String?
-    @State private var truncated = false
+    @State private var delimitedPreview: DelimitedFilePreviewResult?
+    @State private var previewLimit: TextFilePreviewLimit?
     @State private var errorMessage: String?
-
-    private let byteCap = 1_000_000
 
     private var previewKey: String {
         "\(item.id)|\(item.modified.timeIntervalSince1970)"
@@ -2325,6 +2392,8 @@ private struct TextFilePreview: View {
                     systemImage: "doc.questionmark",
                     description: Text(errorMessage)
                 )
+            } else if let delimitedPreview {
+                DelimitedFilePreviewView(preview: delimitedPreview)
             } else if let text {
                 VStack(spacing: 0) {
                     ScrollView([.vertical, .horizontal]) {
@@ -2335,9 +2404,9 @@ private struct TextFilePreview: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(10)
                     }
-                    if truncated {
+                    if let previewLimit {
                         Divider()
-                        Text("Preview limited to the first \(ByteCountFormatter.string(fromByteCount: Int64(byteCap), countStyle: .file)).")
+                        Text(limitMessage(for: previewLimit))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2354,27 +2423,42 @@ private struct TextFilePreview: View {
 
     private func load() async {
         let url = item.url
-        let cap = byteCap
-        let outcome: (text: String?, truncated: Bool, error: String?) =
-            await Task.detached(priority: .userInitiated) {
-                do {
-                    let handle = try FileHandle(forReadingFrom: url)
-                    defer { try? handle.close() }
-                    let data = try handle.read(upToCount: cap + 1) ?? Data()
-                    let isTruncated = data.count > cap
-                    let slice = Data(data.prefix(cap))
-                    let decoded = String(data: slice, encoding: .utf8)
-                        ?? String(data: slice, encoding: .isoLatin1)
-                        ?? ""
-                    return (decoded, isTruncated, nil)
-                } catch {
-                    return (nil, false, error.localizedDescription)
-                }
-            }.value
-        guard !Task.isCancelled, item.url == url else { return }
-        errorMessage = outcome.error
-        text = outcome.text
-        truncated = outcome.truncated
+        text = nil
+        delimitedPreview = nil
+        previewLimit = nil
+        errorMessage = nil
+        do {
+            let isDelimited = item.isDelimitedSpreadsheet
+            if isDelimited {
+                let separator: DelimitedFileSeparator =
+                    item.url.pathExtension.lowercased() == "tsv" ? .tab : .comma
+                let result = try await TextFilePreviewLoader.loadDelimited(
+                    from: url,
+                    separator: separator
+                )
+                guard !Task.isCancelled, item.url == url else { return }
+                delimitedPreview = result
+            } else {
+                let result = try await TextFilePreviewLoader.load(from: url)
+                guard !Task.isCancelled, item.url == url else { return }
+                text = result.text
+                previewLimit = result.limit
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled, item.url == url else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func limitMessage(for limit: TextFilePreviewLimit) -> String {
+        switch limit {
+        case let .rows(count):
+            "Preview limited to the first \(count) rows."
+        case let .bytes(count):
+            "Preview limited to the first \(ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file))."
+        }
     }
 }
 
@@ -2397,25 +2481,161 @@ private struct QuickLookPreview: NSViewRepresentable {
     }
 }
 
+final class PassthroughAVPlayerView: AVPlayerView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+@MainActor
+final class PreviewToolbarNSButton: NSButton {
+    var onPress: (Bool) -> Void = { _ in }
+    private var reportsToggleState = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        target = self
+        action = #selector(performToolbarAction)
+        bezelStyle = .rounded
+        controlSize = .small
+        imageScaling = .scaleProportionallyDown
+        font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        target = self
+        action = #selector(performToolbarAction)
+    }
+
+    func configure(
+        title: String,
+        systemImage: String,
+        accessibilityLabel: String,
+        help: String,
+        isEnabled: Bool,
+        isToggle: Bool,
+        isOn: Bool,
+        onPress: @escaping (Bool) -> Void
+    ) {
+        self.title = title
+        image = NSImage(
+            systemSymbolName: systemImage,
+            accessibilityDescription: accessibilityLabel
+        )
+        imagePosition = title.isEmpty ? .imageOnly : .imageLeading
+        toolTip = help
+        setAccessibilityLabel(accessibilityLabel)
+        self.isEnabled = isEnabled
+        reportsToggleState = isToggle
+        setButtonType(isToggle ? .toggle : .momentaryPushIn)
+        state = isToggle && isOn ? .on : .off
+        self.onPress = onPress
+    }
+
+    @objc
+    private func performToolbarAction() {
+        onPress(reportsToggleState && state == .on)
+    }
+}
+
+private struct NativePreviewToolbarButton: NSViewRepresentable {
+    let title: String
+    let systemImage: String
+    let accessibilityLabel: String
+    let help: String
+    let isEnabled: Bool
+    let isToggle: Bool
+    let isOn: Bool
+    let action: (Bool) -> Void
+
+    init(
+        title: String = "",
+        systemImage: String,
+        accessibilityLabel: String,
+        help: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.accessibilityLabel = accessibilityLabel
+        self.help = help
+        self.isEnabled = isEnabled
+        self.isToggle = false
+        self.isOn = false
+        self.action = { _ in action() }
+    }
+
+    init(
+        title: String,
+        systemImage: String,
+        accessibilityLabel: String,
+        help: String,
+        isEnabled: Bool,
+        isToggle: Bool,
+        isOn: Bool,
+        action: @escaping (Bool) -> Void
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.accessibilityLabel = accessibilityLabel
+        self.help = help
+        self.isEnabled = isEnabled
+        self.isToggle = isToggle
+        self.isOn = isOn
+        self.action = action
+    }
+
+    func makeNSView(context: Context) -> PreviewToolbarNSButton {
+        PreviewToolbarNSButton(frame: .zero)
+    }
+
+    func updateNSView(_ button: PreviewToolbarNSButton, context: Context) {
+        button.configure(
+            title: title,
+            systemImage: systemImage,
+            accessibilityLabel: accessibilityLabel,
+            help: help,
+            isEnabled: isEnabled,
+            isToggle: isToggle,
+            isOn: isOn,
+            onPress: action
+        )
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        nsView: PreviewToolbarNSButton,
+        context: Context
+    ) -> CGSize? {
+        let intrinsic = nsView.intrinsicContentSize
+        return CGSize(
+            width: proposal.width ?? intrinsic.width,
+            height: proposal.height ?? intrinsic.height
+        )
+    }
+}
+
 private struct PlayerPreviewView: NSViewRepresentable {
     let player: AVPlayer
 
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
+    func makeNSView(context: Context) -> PassthroughAVPlayerView {
+        let view = PassthroughAVPlayerView()
         view.controlsStyle = .none
         view.videoGravity = .resizeAspect
         view.player = player
         return view
     }
 
-    func updateNSView(_ view: AVPlayerView, context: Context) {
+    func updateNSView(_ view: PassthroughAVPlayerView, context: Context) {
         if view.player !== player {
             view.player = player
         }
         view.controlsStyle = .none
     }
 
-    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+    static func dismantleNSView(_ view: PassthroughAVPlayerView, coordinator: ()) {
         view.player?.pause()
         view.player = nil
     }

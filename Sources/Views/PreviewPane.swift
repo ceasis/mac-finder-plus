@@ -37,9 +37,6 @@ struct PreviewPane: View {
     private var hasPlayablePreview: Bool {
         previewItems.contains { $0.isPlayableMedia }
     }
-    private var hasSingleVideoPreview: Bool {
-        selectedItems.count == 1 && selectedItems.first?.isVideoMedia == true
-    }
     private var transformablePreviewItems: [FileItem] {
         selectedItems.filter { $0.isImage || $0.isVideoMedia }
     }
@@ -184,27 +181,6 @@ struct PreviewPane: View {
                 .help(loopVideos
                     ? "Loop playback is on"
                     : "Loop playback is off")
-            }
-            if hasSingleVideoPreview {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        showsVideoControls.toggle()
-                    }
-                } label: {
-                    Image(systemName: showsVideoControls ? "eye.slash" : "eye")
-                        .frame(width: previewButtonSide, height: previewButtonSide)
-                        .contentShape(Rectangle())
-                }
-                .accessibilityLabel(
-                    showsVideoControls
-                        ? "Hide video editing controls"
-                        : "Show video editing controls"
-                )
-                .help(
-                    showsVideoControls
-                        ? "Hide trim and export controls and enlarge the player"
-                        : "Show trim and export controls"
-                )
             }
             if !previewItems.isEmpty {
                 HStack(spacing: previewControlSpacing) {
@@ -364,7 +340,7 @@ struct PreviewPane: View {
             SingleMediaPreview(
                 item: item,
                 sizeScale: previewMediaSizeScale,
-                showsVideoControls: showsVideoControls
+                showsVideoControls: $showsVideoControls
             )
         } else if item.isText {
             TextFilePreview(item: item)
@@ -425,14 +401,14 @@ struct PreviewPane: View {
 private struct SingleMediaPreview: View {
     let item: FileItem
     let sizeScale: Double
-    let showsVideoControls: Bool
+    @Binding var showsVideoControls: Bool
 
     var body: some View {
         if item.isVideoMedia {
             SingleVideoPreview(
                 item: item,
                 sizeScale: sizeScale,
-                showsControls: showsVideoControls
+                showsControls: $showsVideoControls
             )
         } else {
             GeometryReader { geometry in
@@ -465,7 +441,7 @@ private struct SingleMediaPreview: View {
 private struct SingleVideoPreview: View {
     let item: FileItem
     let sizeScale: Double
-    let showsControls: Bool
+    @Binding var showsControls: Bool
 
     @State private var player: AVPlayer?
     @State private var endObserver: NSObjectProtocol?
@@ -477,19 +453,25 @@ private struct SingleVideoPreview: View {
     var body: some View {
         GeometryReader { geometry in
             VStack(spacing: 10) {
-                videoSurface
-                    .frame(
-                        height: videoPreviewHeight(
-                            for: geometry.size.height,
-                            showsControls: showsControls
-                        )
+                ZStack(alignment: .topTrailing) {
+                    videoSurface
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .allowsHitTesting(false)
+
+                    videoControlsVisibilityButton
+                        .padding(10)
+                }
+                .frame(
+                    height: videoPreviewHeight(
+                        for: geometry.size.height,
+                        showsControls: showsControls
                     )
-                    .clipped()
-                    .allowsHitTesting(false)
-                    .background(
-                        Color(nsColor: .controlBackgroundColor),
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
+                )
+                .clipped()
+                .background(
+                    Color(nsColor: .controlBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 8)
+                )
 
                 VideoPlaybackControls(player: player)
                     .zIndex(1)
@@ -521,6 +503,41 @@ private struct SingleVideoPreview: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var videoControlsVisibilityButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.18)) {
+                showsControls.toggle()
+            }
+        } label: {
+            Image(
+                systemName: showsControls
+                    ? "arrow.up.left.and.arrow.down.right"
+                    : "arrow.down.right.and.arrow.up.left"
+            )
+            .font(.system(size: 12, weight: .semibold))
+            .frame(width: 28, height: 28)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 7))
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(.white.opacity(0.22), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .shadow(color: .black.opacity(0.22), radius: 2, y: 1)
+        .accessibilityLabel(
+            showsControls
+                ? "Expand video and hide editing controls"
+                : "Restore video editing controls"
+        )
+        .help(
+            showsControls
+                ? "Expand video and hide editing controls"
+                : "Restore video editing controls"
+        )
     }
 
     private func previewHeight(for availableHeight: CGFloat) -> CGFloat {

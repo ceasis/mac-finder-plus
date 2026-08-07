@@ -154,6 +154,14 @@ struct CommandPaletteView: View {
             entry("notes", "Notes", "Open notes", "note.text") {
                 appState.showNotes()
             },
+            entry(
+                "text-editor",
+                "Text Editor",
+                "Create a document or edit the selected text file",
+                "square.and.pencil"
+            ) {
+                appState.beginEditText()
+            },
             entry("calendar", "Calendar", "Browse weeks, months, and years", "calendar") {
                 appState.showCalendarTool()
             },

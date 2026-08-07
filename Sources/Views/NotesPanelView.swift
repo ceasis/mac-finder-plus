@@ -30,13 +30,14 @@ struct NotesPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.bar)
         .onAppear { store.ensureSelection() }
+        .onDisappear { store.saveNow() }
         .alert("Notes Error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.lastError ?? "")
         }
         .background(
-            Button("", action: { appState.hideNotes() })
+            Button("", action: dismissOrClearFilters)
                 .keyboardShortcut(.cancelAction)
                 .opacity(0)
                 .accessibilityHidden(true)
@@ -49,11 +50,23 @@ struct NotesPanelView: View {
             set: { if !$0 { store.lastError = nil } }
         )
     }
+
+    private func dismissOrClearFilters() {
+        if !store.searchText.isEmpty {
+            store.searchText = ""
+        } else if store.selectedDay != nil {
+            store.selectedDay = nil
+        } else {
+            appState.hideNotes()
+        }
+    }
 }
 
 private struct NotesSidebar: View {
     let store: NotesStore
     let onClose: () -> Void
+    @AppStorage("notes.showsCalendar") private var showsCalendar = true
+    @FocusState private var searchIsFocused: Bool
 
     var body: some View {
         @Bindable var store = store
@@ -63,6 +76,13 @@ private struct NotesSidebar: View {
                     .font(.headline)
 
                 Spacer()
+
+                PanelIconButton(
+                    systemName: showsCalendar ? "calendar.circle.fill" : "calendar.circle",
+                    help: showsCalendar ? "Hide Calendar" : "Show Calendar"
+                ) {
+                    showsCalendar.toggle()
+                }
 
                 PanelIconButton(systemName: "square.and.pencil", help: store.selectedDay == nil ? "New note" : "New note on selected day") {
                     store.createNote(on: store.selectedDay)
@@ -77,7 +97,9 @@ private struct NotesSidebar: View {
 
             Divider()
 
-            NotesCalendarView(store: store, selectedDay: $store.selectedDay)
+            if showsCalendar {
+                NotesCalendarView(store: store, selectedDay: $store.selectedDay)
+            }
 
             if let day = store.selectedDay {
                 HStack(spacing: 6) {
@@ -95,7 +117,9 @@ private struct NotesSidebar: View {
 
             Divider()
 
-            NotesSearchField(text: $store.searchText)
+            NotesSearchField(text: $store.searchText, isFocused: $searchIsFocused) {
+                store.selectedNoteID = store.filteredNotes.first?.id
+            }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
 
@@ -143,6 +167,29 @@ private struct NotesSidebar: View {
                 Text("\(store.filteredNotes.count) note\(store.filteredNotes.count == 1 ? "" : "s")")
                     .foregroundStyle(.secondary)
                 Spacer()
+
+                Menu {
+                    Picker("Sort Notes", selection: $store.sortOrder) {
+                        ForEach(NoteSortOrder.allCases) { order in
+                            Text(order.label).tag(order)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Sort Notes")
+
+                Button {
+                    store.toggleSelectedNotePinned()
+                } label: {
+                    Image(systemName: selectedNoteIsPinned ? "pin.fill" : "pin")
+                }
+                .buttonStyle(.plain)
+                .disabled(store.selectedNoteID == nil)
+                .help(selectedNoteIsPinned ? "Unpin selected note" : "Pin selected note")
+
                 Button(role: .destructive) {
                     store.deleteSelectedNote()
                 } label: {
@@ -157,21 +204,37 @@ private struct NotesSidebar: View {
             .padding(.vertical, 8)
         }
         .background(.bar)
+        .onChange(of: store.searchFocusTick) { _, _ in
+            searchIsFocused = true
+        }
     }
 
     private func noteRow(_ note: NoteItem) -> some View {
         NoteListRow(note: note)
             .tag(note.id)
             .contextMenu {
+                Button(note.isPinned == true ? "Unpin Note" : "Pin Note") {
+                    store.togglePinned(note.id)
+                }
+                Button("Duplicate Note") {
+                    store.duplicateNote(note.id)
+                }
+                Divider()
                 Button("Delete Note", role: .destructive) {
                     store.deleteNote(note.id)
                 }
             }
     }
+
+    private var selectedNoteIsPinned: Bool {
+        store.note(for: store.selectedNoteID)?.isPinned == true
+    }
 }
 
 private struct NotesSearchField: View {
     @Binding var text: String
+    let isFocused: FocusState<Bool>.Binding
+    let onSubmit: () -> Void
 
     var body: some View {
         HStack(spacing: 7) {
@@ -179,6 +242,13 @@ private struct NotesSearchField: View {
                 .foregroundStyle(.secondary)
             TextField("Search Notes", text: $text)
                 .textFieldStyle(.plain)
+                .focused(isFocused)
+                .onSubmit(onSubmit)
+                .onKeyPress(.escape) {
+                    guard !text.isEmpty else { return .ignored }
+                    text = ""
+                    return .handled
+                }
             if !text.isEmpty {
                 Button {
                     text = ""
@@ -226,6 +296,13 @@ private struct NoteListRow: View {
                     .font(.callout.weight(.semibold))
                     .lineSpacing(1)
                     .lineLimit(1)
+
+                if note.isPinned == true {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.tint)
+                        .accessibilityLabel("Pinned")
+                }
 
                 Spacer(minLength: 6)
 
@@ -281,6 +358,9 @@ private struct NoteEditorView: View {
     @State private var isVideoRecorderPresented = false
     @State private var annotatingImage: NoteAttachment?
     @State private var editorBridge = NoteEditorBridge()
+    @AppStorage("notes.showsFormattingToolbar") private var showsFormattingToolbar = true
+    @AppStorage("notes.showsAttachmentPanel") private var showsAttachmentPanel = true
+    @FocusState private var titleIsFocused: Bool
 
     private var note: NoteItem? {
         store.note(for: noteID)
@@ -337,15 +417,17 @@ private struct NoteEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             editorHeader
-            Divider()
-            formatToolbar
-            Divider()
+            if showsFormattingToolbar {
+                Divider()
+                formatToolbar
+                Divider()
+            }
 
             VStack(spacing: 0) {
                 editorBody
                     .frame(minHeight: 180)
 
-                if hasNonImageAttachments {
+                if hasNonImageAttachments && showsAttachmentPanel {
                     Divider()
                     attachmentsPanel
                         .frame(minHeight: 120, maxHeight: 240)
@@ -365,6 +447,11 @@ private struct NoteEditorView: View {
         }
         .task(id: noteID) {
             store.ensureInlineImageMarkers(in: noteID)
+            await Task.yield()
+            if note?.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true,
+               bodyIsEmpty {
+                titleIsFocused = true
+            }
         }
         .sheet(item: $annotatingImage) { attachment in
             ImageAnnotationEditorView(
@@ -386,79 +473,110 @@ private struct NoteEditorView: View {
 
     private var formatToolbar: some View {
         VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                Button {
-                    editorBridge.toggleBold()
-                } label: {
-                    toolbarIcon("bold")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Button {
+                        editorBridge.toggleBold()
+                    } label: {
+                        toolbarIcon("bold")
+                    }
+                    .help("Bold (Command-B)")
+
+                    Button {
+                        editorBridge.toggleItalic()
+                    } label: {
+                        toolbarIcon("italic")
+                    }
+                    .help("Italic (Command-I)")
+
+                    Button {
+                        editorBridge.toggleUnderline()
+                    } label: {
+                        toolbarIcon("underline")
+                    }
+                    .help("Underline (Command-U)")
+
+                    Button {
+                        editorBridge.toggleStrikethrough()
+                    } label: {
+                        toolbarIcon("strikethrough")
+                    }
+                    .help("Strikethrough")
+
+                    toolbarSeparator
+
+                    Button {
+                        editorBridge.applyTextStyle(.header)
+                    } label: {
+                        toolbarIcon("textformat.size.larger")
+                    }
+                    .help("Header Text")
+                    .accessibilityLabel("Header Text")
+
+                    Button {
+                        editorBridge.applyTextStyle(.body)
+                    } label: {
+                        toolbarIcon("textformat.size.smaller")
+                    }
+                    .help("Body Text")
+                    .accessibilityLabel("Body Text")
+
+                    toolbarSeparator
+
+                    Button {
+                        editorBridge.applyListStyle(.bullet)
+                    } label: {
+                        toolbarIcon("list.bullet")
+                    }
+                    .help("Bullet List")
+                    .accessibilityLabel("Bullet List")
+
+                    Button {
+                        editorBridge.applyListStyle(.numbered)
+                    } label: {
+                        toolbarIcon("list.number")
+                    }
+                    .help("Numbered List")
+                    .accessibilityLabel("Numbered List")
+
+                    Button {
+                        editorBridge.applyListStyle(.checklist)
+                    } label: {
+                        toolbarIcon("checklist")
+                    }
+                    .help("Checklist")
+                    .accessibilityLabel("Checklist")
+
+                    toolbarSeparator
+
+                    Button {
+                        editorBridge.setAlignment(.left)
+                    } label: {
+                        toolbarIcon("text.alignleft")
+                    }
+                    .help("Align left")
+
+                    Button {
+                        editorBridge.setAlignment(.center)
+                    } label: {
+                        toolbarIcon("text.aligncenter")
+                    }
+                    .help("Align center")
+
+                    Button {
+                        editorBridge.setAlignment(.right)
+                    } label: {
+                        toolbarIcon("text.alignright")
+                    }
+                    .help("Align right")
+
+                    Button {
+                        editorBridge.setAlignment(.justified)
+                    } label: {
+                        toolbarIcon("text.justify")
+                    }
+                    .help("Justify")
                 }
-                .help("Bold")
-
-                Button {
-                    editorBridge.applyTextStyle(.header)
-                } label: {
-                    toolbarIcon("textformat.size.larger")
-                }
-                .help("Header Text")
-                .accessibilityLabel("Header Text")
-
-                Button {
-                    editorBridge.applyTextStyle(.body)
-                } label: {
-                    toolbarIcon("textformat.size.smaller")
-                }
-                .help("Body Text")
-                .accessibilityLabel("Body Text")
-
-                toolbarSeparator
-
-                Button {
-                    editorBridge.applyListStyle(.bullet)
-                } label: {
-                    toolbarIcon("list.bullet")
-                }
-                .help("Bullet List")
-                .accessibilityLabel("Bullet List")
-
-                Button {
-                    editorBridge.applyListStyle(.numbered)
-                } label: {
-                    toolbarIcon("list.number")
-                }
-                .help("Numbered List")
-                .accessibilityLabel("Numbered List")
-
-                toolbarSeparator
-
-                Button {
-                    editorBridge.setAlignment(.left)
-                } label: {
-                    toolbarIcon("text.alignleft")
-                }
-                .help("Align left")
-
-                Button {
-                    editorBridge.setAlignment(.center)
-                } label: {
-                    toolbarIcon("text.aligncenter")
-                }
-                .help("Align center")
-
-                Button {
-                    editorBridge.setAlignment(.right)
-                } label: {
-                    toolbarIcon("text.alignright")
-                }
-                .help("Align right")
-
-                Button {
-                    editorBridge.setAlignment(.justified)
-                } label: {
-                    toolbarIcon("text.justify")
-                }
-                .help("Justify")
-
-                Spacer(minLength: 8)
             }
 
             if let selectedImageAttachment {
@@ -567,6 +685,10 @@ private struct NoteEditorView: View {
                     .font(.title3.weight(.semibold))
                     .textFieldStyle(.plain)
                     .lineLimit(1)
+                    .focused($titleIsFocused)
+                    .onSubmit {
+                        editorBridge.focusEditor()
+                    }
 
                 HStack(spacing: 7) {
                     if let note {
@@ -588,11 +710,35 @@ private struct NoteEditorView: View {
 
             HStack(spacing: 6) {
                 Button {
+                    showsFormattingToolbar.toggle()
+                } label: {
+                    Image(systemName: showsFormattingToolbar ? "textformat.circle.fill" : "textformat.circle")
+                }
+                .help(showsFormattingToolbar ? "Hide Formatting" : "Show Formatting")
+
+                if hasNonImageAttachments {
+                    Button {
+                        showsAttachmentPanel.toggle()
+                    } label: {
+                        Image(systemName: showsAttachmentPanel ? "paperclip.circle.fill" : "paperclip.circle")
+                    }
+                    .help(showsAttachmentPanel ? "Hide Attachments" : "Show Attachments")
+                }
+
+                Button {
                     store.saveNow()
                 } label: {
                     Image(systemName: "square.and.arrow.down")
                 }
                 .help("Save note")
+                .disabled(!store.hasUnsavedChanges)
+
+                Button {
+                    store.togglePinned(noteID)
+                } label: {
+                    Image(systemName: note?.isPinned == true ? "pin.fill" : "pin")
+                }
+                .help(note?.isPinned == true ? "Unpin Note" : "Pin Note")
 
                 Button {
                     store.chooseAndAttachFiles(to: noteID)
@@ -802,6 +948,9 @@ private struct NoteEditorView: View {
         HStack(spacing: 10) {
             if isRecordingThisNote {
                 RecordingTimerView(startedAt: store.recordingStartedAt)
+            } else if store.hasUnsavedChanges {
+                Label("Saving…", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.secondary)
             } else if let saved = store.lastSavedAt {
                 Label("Saved \(saved.formatted(date: .omitted, time: .shortened))", systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
@@ -1559,11 +1708,13 @@ private enum NoteTextStyle {
 private enum NoteListStyle {
     case bullet
     case numbered
+    case checklist
 
     var emptyPrefix: String {
         switch self {
         case .bullet: "• "
         case .numbered: "1. "
+        case .checklist: "☐ "
         }
     }
 }
@@ -1592,6 +1743,24 @@ private final class NoteEditorBridge {
         }
         storage.endEditing()
         textView.didChangeText()
+    }
+
+    func toggleItalic() {
+        toggleFontTrait(.italicFontMask)
+    }
+
+    func toggleUnderline() {
+        toggleAttribute(.underlineStyle, enabledValue: NSUnderlineStyle.single.rawValue)
+    }
+
+    func toggleStrikethrough() {
+        toggleAttribute(.strikethroughStyle, enabledValue: NSUnderlineStyle.single.rawValue)
+    }
+
+    func focusEditor() {
+        guard let textView else { return }
+        textView.window?.makeFirstResponder(textView)
+        textView.scrollRangeToVisible(textView.selectedRange())
     }
 
     func applyTextStyle(_ style: NoteTextStyle) {
@@ -1638,6 +1807,8 @@ private final class NoteEditorBridge {
             case .numbered:
                 prefix = "\(numberedIndex). "
                 numberedIndex += 1
+            case .checklist:
+                prefix = "☐ "
             }
 
             let attributes = attributesForListMarker(
@@ -1753,6 +1924,13 @@ private final class NoteEditorBridge {
             return (.bullet, NSRange(location: paragraphStart, length: 2))
         }
 
+        if paragraphEnd - paragraphStart >= 2 {
+            let prefix = string.substring(with: NSRange(location: paragraphStart, length: 2))
+            if prefix == "☐ " || prefix == "☑ " {
+                return (.checklist, NSRange(location: paragraphStart, length: 2))
+            }
+        }
+
         var cursor = paragraphStart
         while cursor < paragraphEnd,
               let scalar = UnicodeScalar(string.character(at: cursor)),
@@ -1830,6 +2008,52 @@ private final class NoteEditorBridge {
             return manager.convert(font, toNotHaveTrait: .boldFontMask)
         }
         return manager.convert(font, toHaveTrait: .boldFontMask)
+    }
+
+    private func toggleFontTrait(_ trait: NSFontTraitMask) {
+        guard let textView else { return }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            let font = (textView.typingAttributes[.font] as? NSFont)
+                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            let manager = NSFontManager.shared
+            let isEnabled = manager.traits(of: font).contains(trait)
+            textView.typingAttributes[.font] = isEnabled
+                ? manager.convert(font, toNotHaveTrait: trait)
+                : manager.convert(font, toHaveTrait: trait)
+            return
+        }
+
+        guard let storage = textView.textStorage else { return }
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: range) { value, subrange, _ in
+            let font = (value as? NSFont) ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            let manager = NSFontManager.shared
+            let isEnabled = manager.traits(of: font).contains(trait)
+            let updated = isEnabled
+                ? manager.convert(font, toNotHaveTrait: trait)
+                : manager.convert(font, toHaveTrait: trait)
+            storage.addAttribute(.font, value: updated, range: subrange)
+        }
+        storage.endEditing()
+        textView.didChangeText()
+    }
+
+    private func toggleAttribute(_ key: NSAttributedString.Key, enabledValue: Int) {
+        guard let textView else { return }
+        let range = textView.selectedRange()
+        if range.length == 0 {
+            let isEnabled = (textView.typingAttributes[key] as? NSNumber)?.intValue != 0
+            textView.typingAttributes[key] = isEnabled ? 0 : enabledValue
+            return
+        }
+
+        guard let storage = textView.textStorage else { return }
+        var effectiveRange = NSRange(location: 0, length: 0)
+        let firstValue = storage.attribute(key, at: range.location, effectiveRange: &effectiveRange)
+        let isEnabled = (firstValue as? NSNumber)?.intValue != 0
+        storage.addAttribute(key, value: isEnabled ? 0 : enabledValue, range: range)
+        textView.didChangeText()
     }
 
     private func mutableParagraphStyle(from style: NSParagraphStyle?) -> NSMutableParagraphStyle {
@@ -2487,6 +2711,9 @@ private final class PasteAwareNSTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if toggleChecklistIfClicked(with: event) {
+            return
+        }
         if let hit = inlineImageHit(at: event.locationInWindow) {
             window?.makeFirstResponder(self)
             setSelectedRange(NSRange(location: hit.location, length: 1))
@@ -2500,6 +2727,36 @@ private final class PasteAwareNSTextView: NSTextView {
         }
         pendingInlineImageDrag = nil
         super.mouseDown(with: event)
+    }
+
+    override func insertNewline(_ sender: Any?) {
+        let selection = selectedRange()
+        guard selection.length == 0 else {
+            super.insertNewline(sender)
+            return
+        }
+
+        let nsString = string as NSString
+        let location = min(selection.location, nsString.length)
+        let paragraphRange = nsString.paragraphRange(for: NSRange(location: location, length: 0))
+        let paragraph = nsString.substring(with: paragraphRange)
+            .trimmingCharacters(in: .newlines)
+        guard let continuation = NoteListContinuation.parse(paragraph) else {
+            super.insertNewline(sender)
+            return
+        }
+
+        if !continuation.hasContent {
+            let prefixRange = NSRange(
+                location: paragraphRange.location,
+                length: continuation.prefixLength
+            )
+            insertText("", replacementRange: prefixRange)
+            return
+        }
+
+        super.insertNewline(sender)
+        insertText(continuation.nextPrefix, replacementRange: selectedRange())
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -2674,6 +2931,47 @@ private final class PasteAwareNSTextView: NSTextView {
 
     private func hasDraggedAttachmentContent(in pasteboard: NSPasteboard) -> Bool {
         !NotesStore.fileURLs(from: pasteboard).isEmpty || !NotesStore.images(from: pasteboard).isEmpty
+    }
+
+    private func toggleChecklistIfClicked(with event: NSEvent) -> Bool {
+        guard let layoutManager, let textContainer, let textStorage, textStorage.length > 0 else {
+            return false
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        let containerPoint = NSPoint(
+            x: point.x - textContainerOrigin.x,
+            y: point.y - textContainerOrigin.y
+        )
+        let glyphIndex = layoutManager.glyphIndex(
+            for: containerPoint,
+            in: textContainer,
+            fractionOfDistanceThroughGlyph: nil
+        )
+        guard glyphIndex < layoutManager.numberOfGlyphs else { return false }
+        let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        let nsString = string as NSString
+        let paragraphRange = nsString.paragraphRange(
+            for: NSRange(location: min(characterIndex, nsString.length), length: 0)
+        )
+        guard paragraphRange.length >= 2 else { return false }
+        let markerRange = NSRange(location: paragraphRange.location, length: 1)
+        let marker = nsString.substring(with: markerRange)
+        guard marker == "☐" || marker == "☑" else { return false }
+
+        let markerGlyphRange = layoutManager.glyphRange(
+            forCharacterRange: markerRange,
+            actualCharacterRange: nil
+        )
+        let markerRect = layoutManager.boundingRect(
+            forGlyphRange: markerGlyphRange,
+            in: textContainer
+        ).offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+        guard markerRect.insetBy(dx: -5, dy: -4).contains(point) else { return false }
+
+        window?.makeFirstResponder(self)
+        insertText(marker == "☐" ? "☑" : "☐", replacementRange: markerRange)
+        setSelectedRange(NSRange(location: NSMaxRange(markerRange) + 1, length: 0))
+        return true
     }
 
     private func pasteImages(_ images: [NSImage]) -> Bool {

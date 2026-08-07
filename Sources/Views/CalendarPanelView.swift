@@ -3,16 +3,17 @@ import SwiftUI
 struct CalendarPanelView: View {
     @Environment(AppState.self) private var appState
 
-    @State private var period = CalendarToolPeriod.month
-    @State private var anchorDate = Date()
-    @State private var selectedRange: CalendarToolDateRange? = CalendarToolDateRange(single: Date())
+    @State private var calendarState = CalendarToolState.shared
     @State private var reminderStore = CalendarToolReminderStore.shared
     @State private var reminderTitle = ""
     @State private var reminderLeadValue = CalendarToolReminderLeadTime.defaultValue.value
     @State private var reminderLeadUnit = CalendarToolReminderLeadUnit.defaultValueUnit
+    @State private var editingReminderID: CalendarToolReminder.ID?
     @State private var dayFrames: [Date: CGRect] = [:]
     @State private var dragAnchorDate: Date?
-    @AppStorage("calendarTool.weeksShown") private var visibleWeekCount = 1
+    @FocusState private var calendarHasFocus: Bool
+    @FocusState private var reminderTitleHasFocus: Bool
+    @FocusState private var reminderSearchHasFocus: Bool
 
     private let calendar = Calendar.current
     private let dayColumns = Array(
@@ -28,9 +29,17 @@ struct CalendarPanelView: View {
             Divider()
 
             ScrollView {
-                periodContent
-                    .padding(14)
+                VStack(spacing: 12) {
+                    periodContent
+
+                    if calendarState.showsAgenda {
+                        agendaSection
+                    }
+                }
+                .padding(14)
             }
+            .focusable()
+            .focused($calendarHasFocus)
             .coordinateSpace(name: CalendarToolLayout.coordinateSpace)
             .simultaneousGesture(dayRangeDragGesture)
             .onPreferenceChange(CalendarDayFramePreferenceKey.self) { frames in
@@ -39,6 +48,36 @@ struct CalendarPanelView: View {
         }
         .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         .background(.bar)
+        .onAppear {
+            applyPendingFocus()
+        }
+        .onChange(of: calendarState.reminderComposerFocusTick) { _, _ in
+            applyPendingFocus()
+        }
+        .onChange(of: calendarState.reminderSearchFocusTick) { _, _ in
+            applyPendingFocus()
+        }
+        .onKeyPress(.leftArrow, phases: .down) { press in
+            moveSelection(byDays: -1, keyPress: press)
+        }
+        .onKeyPress(.rightArrow, phases: .down) { press in
+            moveSelection(byDays: 1, keyPress: press)
+        }
+        .onKeyPress(.upArrow, phases: .down) { press in
+            moveSelection(byDays: -7, keyPress: press)
+        }
+        .onKeyPress(.downArrow, phases: .down) { press in
+            moveSelection(byDays: 7, keyPress: press)
+        }
+        .onExitCommand {
+            if !calendarState.reminderSearchQuery.isEmpty {
+                calendarState.reminderSearchQuery = ""
+            } else if editingReminderID != nil {
+                cancelEditingReminder()
+            } else {
+                appState.hideCalendarTool()
+            }
+        }
     }
 
     private var header: some View {
@@ -47,6 +86,22 @@ struct CalendarPanelView: View {
                 .font(.headline)
 
             Spacer()
+
+            Button {
+                calendarState.focusReminderSearch()
+            } label: {
+                Image(systemName: "magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Search reminders (Command-F)")
+
+            Button {
+                calendarState.showsAgenda.toggle()
+            } label: {
+                Image(systemName: calendarState.showsAgenda ? "list.bullet.rectangle.fill" : "list.bullet.rectangle")
+            }
+            .buttonStyle(.borderless)
+            .help(calendarState.showsAgenda ? "Hide Agenda" : "Show Agenda")
 
             PanelIconButton(systemName: "xmark", help: "Hide Calendar") {
                 appState.hideCalendarTool()
@@ -58,7 +113,7 @@ struct CalendarPanelView: View {
 
     private var navigationBar: some View {
         VStack(spacing: 10) {
-            Picker("Period", selection: $period) {
+            Picker("Period", selection: $calendarState.period) {
                 ForEach(CalendarToolPeriod.allCases) { option in
                     Text(option.title).tag(option)
                 }
@@ -67,8 +122,8 @@ struct CalendarPanelView: View {
             .labelsHidden()
             .frame(maxWidth: 240)
 
-            if period == .week {
-                Picker("Weeks shown", selection: $visibleWeekCount) {
+            if calendarState.period == .week {
+                Picker("Weeks shown", selection: $calendarState.visibleWeekCount) {
                     ForEach(1...10, id: \.self) { count in
                         Text(count == 1 ? "1 week" : "\(count) weeks")
                             .tag(count)
@@ -93,9 +148,8 @@ struct CalendarPanelView: View {
                 navigationButton(direction: 1)
 
                 Button("Today") {
-                    let today = Date()
-                    anchorDate = today
-                    selectSingleDate(today)
+                    calendarState.goToToday(calendar: calendar)
+                    calendarHasFocus = true
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -108,14 +162,8 @@ struct CalendarPanelView: View {
 
     private func navigationButton(direction: Int) -> some View {
         Button {
-            let offset = period == .week ? direction * visibleWeekCount : direction
-            anchorDate = CalendarToolDateMath.date(
-                byMoving: period,
-                offset: offset,
-                from: anchorDate,
-                calendar: calendar
-            )
-            selectedRange = nil
+            calendarState.navigatePeriod(direction: direction, calendar: calendar)
+            calendarHasFocus = true
         } label: {
             Image(systemName: direction < 0 ? "chevron.left" : "chevron.right")
                 .font(.system(size: 12, weight: .semibold))
@@ -130,7 +178,7 @@ struct CalendarPanelView: View {
 
     @ViewBuilder
     private var periodContent: some View {
-        switch period {
+        switch calendarState.period {
         case .week:
             weekView
         case .month:
@@ -142,8 +190,8 @@ struct CalendarPanelView: View {
 
     private var weekView: some View {
         let weeks = CalendarToolDateMath.weekRows(
-            containing: anchorDate,
-            numberOfWeeks: visibleWeekCount,
+            containing: calendarState.anchorDate,
+            numberOfWeeks: calendarState.visibleWeekCount,
             calendar: calendar
         )
         return VStack(spacing: 5) {
@@ -170,14 +218,14 @@ struct CalendarPanelView: View {
                 }
             }
 
-            if let selectedRange {
+            if let selectedRange = calendarState.selectedRange {
                 selectedRangeCard(selectedRange)
             }
         }
     }
 
     private var monthView: some View {
-        let dates = CalendarToolDateMath.monthGrid(containing: anchorDate, calendar: calendar)
+        let dates = CalendarToolDateMath.monthGrid(containing: calendarState.anchorDate, calendar: calendar)
         return VStack(spacing: 5) {
             weekdayHeader(font: .caption)
 
@@ -187,7 +235,7 @@ struct CalendarPanelView: View {
                 }
             }
 
-            if let selectedRange {
+            if let selectedRange = calendarState.selectedRange {
                 selectedRangeCard(selectedRange)
                     .padding(.top, 7)
             }
@@ -195,7 +243,7 @@ struct CalendarPanelView: View {
     }
 
     private var yearView: some View {
-        let months = CalendarToolDateMath.months(inYearContaining: anchorDate, calendar: calendar)
+        let months = CalendarToolDateMath.months(inYearContaining: calendarState.anchorDate, calendar: calendar)
         return LazyVGrid(
             columns: [GridItem(.adaptive(minimum: 140, maximum: 230), spacing: 12)],
             alignment: .leading,
@@ -213,9 +261,9 @@ struct CalendarPanelView: View {
 
         return VStack(spacing: 5) {
             Button {
-                anchorDate = month
-                selectedRange = nil
-                period = .month
+                calendarState.period = .month
+                calendarState.selectDate(month, calendar: calendar)
+                calendarHasFocus = true
             } label: {
                 HStack {
                     Text(month.formatted(.dateTime.month(.wide)))
@@ -275,7 +323,11 @@ struct CalendarPanelView: View {
     private func dayButton(_ date: Date, style: DayCellStyle) -> some View {
         let isToday = calendar.isDateInToday(date)
         let selectionRole = selectionRole(for: date)
-        let isInAnchorMonth = calendar.isDate(date, equalTo: anchorDate, toGranularity: .month)
+        let isInAnchorMonth = calendar.isDate(
+            date,
+            equalTo: calendarState.anchorDate,
+            toGranularity: .month
+        )
         let hasReminder = reminderStore.hasReminder(on: date, calendar: calendar)
 
         return Button {
@@ -412,7 +464,7 @@ struct CalendarPanelView: View {
     }
 
     private func selectionRole(for date: Date) -> DaySelectionRole {
-        guard let selectedRange,
+        guard let selectedRange = calendarState.selectedRange,
               selectedRange.contains(date, calendar: calendar) else {
             return .none
         }
@@ -439,19 +491,19 @@ struct CalendarPanelView: View {
     private var dayRangeDragGesture: some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(CalendarToolLayout.coordinateSpace))
             .onChanged { value in
-                guard period != .year else { return }
+                guard calendarState.period != .year else { return }
                 let anchor = dragAnchorDate ?? date(at: value.startLocation)
                 guard let anchor else { return }
                 if dragAnchorDate == nil {
                     dragAnchorDate = anchor
                 }
                 guard let current = date(at: value.location) else { return }
-                selectedRange = CalendarToolDateRange(
-                    startDate: anchor,
-                    endDate: current,
+                calendarState.selectRange(
+                    anchor: anchor,
+                    current: current,
                     calendar: calendar
                 )
-                anchorDate = current
+                calendarHasFocus = true
             }
             .onEnded { _ in
                 dragAnchorDate = nil
@@ -465,8 +517,9 @@ struct CalendarPanelView: View {
     }
 
     private func selectSingleDate(_ date: Date) {
-        selectedRange = CalendarToolDateRange(single: date, calendar: calendar)
-        anchorDate = date
+        cancelEditingReminder()
+        calendarState.selectDate(date, calendar: calendar)
+        calendarHasFocus = true
     }
 
     private func selectedRangeCard(_ range: CalendarToolDateRange) -> some View {
@@ -504,21 +557,42 @@ struct CalendarPanelView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Label("New Reminder", systemImage: "bell.badge")
+                HStack {
+                    Label(
+                        editingReminderID == nil ? "New Reminder" : "Edit Reminder",
+                        systemImage: editingReminderID == nil ? "bell.badge" : "pencil"
+                    )
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if editingReminderID != nil {
+                        Button {
+                            cancelEditingReminder()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Cancel editing")
+                    }
+                }
 
                 HStack(spacing: 8) {
                     TextField("What should I remember?", text: $reminderTitle)
                         .textFieldStyle(.roundedBorder)
+                        .focused($reminderTitleHasFocus)
                         .onSubmit {
-                            addReminder(for: range)
+                            saveReminder(for: range)
                         }
 
                     Button {
-                        addReminder(for: range)
+                        saveReminder(for: range)
                     } label: {
-                        Label("Add", systemImage: "plus")
+                        Label(
+                            editingReminderID == nil ? "Add" : "Save",
+                            systemImage: editingReminderID == nil ? "plus" : "checkmark"
+                        )
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
@@ -558,7 +632,16 @@ struct CalendarPanelView: View {
                             Spacer()
 
                             Button {
-                                reminderStore.delete(reminder)
+                                beginEditing(reminder)
+                            } label: {
+                                Image(systemName: "pencil")
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .help("Edit reminder")
+
+                            Button {
+                                deleteReminder(reminder)
                             } label: {
                                 Image(systemName: "trash")
                             }
@@ -569,9 +652,22 @@ struct CalendarPanelView: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                         .background(
-                            Color.secondary.opacity(0.055),
+                            reminder.id == calendarState.selectedReminderID
+                                ? Color.accentColor.opacity(0.10)
+                                : Color.secondary.opacity(0.055),
                             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                         )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            calendarState.selectReminder(reminder, calendar: calendar)
+                            calendarHasFocus = true
+                        }
+                        .contextMenu {
+                            Button("Edit") { beginEditing(reminder) }
+                            Button("Duplicate") { duplicateReminder(reminder) }
+                            Divider()
+                            Button("Delete", role: .destructive) { deleteReminder(reminder) }
+                        }
                     }
                 }
             }
@@ -581,6 +677,167 @@ struct CalendarPanelView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+        }
+    }
+
+    private var agendaSection: some View {
+        let reminders = reminderStore.filteredReminders(
+            query: calendarState.reminderSearchQuery,
+            scope: calendarState.agendaScope,
+            calendar: calendar
+        )
+
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Label("Agenda", systemImage: "list.bullet.rectangle")
+                    .font(.callout.weight(.semibold))
+
+                if !reminders.isEmpty {
+                    Text("\(reminders.count)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.10), in: Capsule())
+                }
+
+                Spacer()
+
+                Picker("Agenda scope", selection: $calendarState.agendaScope) {
+                    ForEach(CalendarToolAgendaScope.allCases) { scope in
+                        Text(scope.title).tag(scope)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .frame(width: 96)
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search titles, dates, or notification timing", text: $calendarState.reminderSearchQuery)
+                    .textFieldStyle(.plain)
+                    .focused($reminderSearchHasFocus)
+                    .onSubmit {
+                        if let first = reminders.first {
+                            calendarState.selectReminder(first, calendar: calendar)
+                        }
+                    }
+
+                if !calendarState.reminderSearchQuery.isEmpty {
+                    Button {
+                        calendarState.reminderSearchQuery = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear search")
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(Color.secondary.opacity(0.075), in: RoundedRectangle(cornerRadius: 7))
+
+            if reminders.isEmpty {
+                VStack(spacing: 5) {
+                    Image(systemName: calendarState.reminderSearchQuery.isEmpty ? "calendar.badge.checkmark" : "magnifyingglass")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text(calendarState.reminderSearchQuery.isEmpty ? "No upcoming reminders" : "No matching reminders")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+            } else {
+                LazyVStack(spacing: 5) {
+                    ForEach(reminders) { reminder in
+                        agendaRow(reminder)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+        }
+    }
+
+    private func agendaRow(_ reminder: CalendarToolReminder) -> some View {
+        let isSelected = reminder.id == calendarState.selectedReminderID
+        let isPast = reminder.range.endDate < calendar.startOfDay(for: .now)
+
+        return HStack(spacing: 9) {
+            VStack(spacing: 0) {
+                Text(reminder.range.startDate.formatted(.dateTime.month(.abbreviated)))
+                    .font(.system(size: 8, weight: .bold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(isSelected ? Color.white.opacity(0.82) : Color.secondary)
+                Text("\(calendar.component(.day, from: reminder.range.startDate))")
+                    .font(.callout.weight(.bold))
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+            }
+            .frame(width: 34, height: 36)
+            .background(
+                isSelected ? Color.accentColor : Color.secondary.opacity(0.08),
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(reminder.title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(rangeTitle(reminder.range))
+                    Text("•")
+                    Text(reminder.notificationLeadTime.label)
+                    if isPast {
+                        Text("• Past")
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+
+            Button {
+                beginEditing(reminder)
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .help("Edit reminder")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            isSelected ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.04),
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.28), lineWidth: 1)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            calendarState.selectReminder(reminder, calendar: calendar)
+            calendarHasFocus = true
+        }
+        .contextMenu {
+            Button("Edit") { beginEditing(reminder) }
+            Button("Duplicate") { duplicateReminder(reminder) }
+            Divider()
+            Button("Delete", role: .destructive) { deleteReminder(reminder) }
         }
     }
 
@@ -615,17 +872,89 @@ struct CalendarPanelView: View {
         }
     }
 
-    private func addReminder(for range: CalendarToolDateRange) {
-        reminderStore.add(
-            title: reminderTitle,
-            range: range,
-            notificationLeadTime: CalendarToolReminderLeadTime(
-                value: reminderLeadValue,
-                unit: reminderLeadUnit
-            ),
+    private func saveReminder(for range: CalendarToolDateRange) {
+        let leadTime = CalendarToolReminderLeadTime(
+            value: reminderLeadValue,
+            unit: reminderLeadUnit
+        )
+        let savedReminder: CalendarToolReminder?
+        if let editingReminderID {
+            savedReminder = reminderStore.update(
+                editingReminderID,
+                title: reminderTitle,
+                range: range,
+                notificationLeadTime: leadTime,
+                calendar: calendar
+            )
+        } else {
+            savedReminder = reminderStore.add(
+                title: reminderTitle,
+                range: range,
+                notificationLeadTime: leadTime,
+                calendar: calendar
+            )
+        }
+        if let savedReminder {
+            calendarState.selectReminder(savedReminder, calendar: calendar)
+        }
+        cancelEditingReminder(clearSelection: false)
+    }
+
+    private func beginEditing(_ reminder: CalendarToolReminder) {
+        editingReminderID = reminder.id
+        reminderTitle = reminder.title
+        reminderLeadValue = reminder.notificationLeadTime.value
+        reminderLeadUnit = reminder.notificationLeadTime.unit
+        calendarState.selectReminder(reminder, calendar: calendar)
+        reminderTitleHasFocus = true
+    }
+
+    private func cancelEditingReminder(clearSelection: Bool = false) {
+        editingReminderID = nil
+        reminderTitle = ""
+        reminderLeadValue = CalendarToolReminderLeadTime.defaultValue.value
+        reminderLeadUnit = CalendarToolReminderLeadUnit.defaultValueUnit
+        if clearSelection {
+            calendarState.selectedReminderID = nil
+        }
+    }
+
+    private func duplicateReminder(_ reminder: CalendarToolReminder) {
+        if let copy = reminderStore.duplicate(reminder.id, calendar: calendar) {
+            calendarState.selectReminder(copy, calendar: calendar)
+        }
+    }
+
+    private func deleteReminder(_ reminder: CalendarToolReminder) {
+        reminderStore.delete(reminder)
+        if calendarState.selectedReminderID == reminder.id {
+            calendarState.selectedReminderID = nil
+        }
+        if editingReminderID == reminder.id {
+            cancelEditingReminder()
+        }
+    }
+
+    private func moveSelection(byDays offset: Int, keyPress: KeyPress) -> KeyPress.Result {
+        guard calendarHasFocus else { return .ignored }
+        calendarState.moveSelection(
+            byDays: offset,
+            extending: keyPress.modifiers.contains(.shift),
             calendar: calendar
         )
-        reminderTitle = ""
+        return .handled
+    }
+
+    private func applyPendingFocus() {
+        switch calendarState.pendingFocusTarget {
+        case .reminderComposer:
+            reminderTitleHasFocus = true
+        case .reminderSearch:
+            reminderSearchHasFocus = true
+        case nil:
+            return
+        }
+        calendarState.pendingFocusTarget = nil
     }
 
     private func reminderCountLabel(_ count: Int) -> String {
@@ -651,11 +980,11 @@ struct CalendarPanelView: View {
     }
 
     private var navigationTitle: String {
-        switch period {
+        switch calendarState.period {
         case .week:
             let dates = CalendarToolDateMath.weekDates(
-                containing: anchorDate,
-                numberOfWeeks: visibleWeekCount,
+                containing: calendarState.anchorDate,
+                numberOfWeeks: calendarState.visibleWeekCount,
                 calendar: calendar
             )
             guard let first = dates.first, let last = dates.last else { return "Week" }
@@ -664,17 +993,19 @@ struct CalendarPanelView: View {
             formatter.timeStyle = .none
             return formatter.string(from: first, to: last)
         case .month:
-            return anchorDate.formatted(.dateTime.month(.wide).year())
+            return calendarState.anchorDate.formatted(.dateTime.month(.wide).year())
         case .year:
-            return anchorDate.formatted(.dateTime.year())
+            return calendarState.anchorDate.formatted(.dateTime.year())
         }
     }
 
     private var navigationSpanTitle: String {
-        if period == .week {
-            return visibleWeekCount == 1 ? "week" : "\(visibleWeekCount) weeks"
+        if calendarState.period == .week {
+            return calendarState.visibleWeekCount == 1
+                ? "week"
+                : "\(calendarState.visibleWeekCount) weeks"
         }
-        return period.title.lowercased()
+        return calendarState.period.title.lowercased()
     }
 
     private var orderedWeekdaySymbols: [String] {

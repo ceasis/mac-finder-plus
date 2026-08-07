@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
 
     @State private var newFolderName = "untitled folder"
     @State private var newFileName = "Untitled.txt"
@@ -35,12 +36,19 @@ struct ContentView: View {
         .sheet(isPresented: $appState.showPreviewSlideshow) {
             PreviewSlideshowView(items: appState.previewSlideshowItems)
         }
-        .sheet(isPresented: $appState.showOnboarding, onDismiss: { hasCompletedOnboarding = true }) {
+        .sheet(isPresented: $appState.showOnboarding, onDismiss: {
+            hasCompletedOnboarding = true
+            presentPermissionsReviewIfNeeded()
+        }) {
             OnboardingView(isPresented: $appState.showOnboarding)
                 .interactiveDismissDisabled()
         }
         .task {
-            if !hasCompletedOnboarding { appState.showOnboarding = true }
+            if !hasCompletedOnboarding {
+                appState.showOnboarding = true
+            } else {
+                presentPermissionsReviewIfNeeded()
+            }
         }
         .alert("Error", isPresented: errorPresented) {
             Button("OK", role: .cancel) {}
@@ -94,6 +102,12 @@ struct ContentView: View {
         let fraction = liveRightPanelWidthFraction ?? rightPanelWidthFraction
         let rawWidth = totalWidth * CGFloat(fraction > 0 ? fraction : 0.5)
         return clampedRightPanelWidth(rawWidth, totalWidth: totalWidth)
+    }
+
+    private func presentPermissionsReviewIfNeeded() {
+        guard PermissionReviewPresentationPolicy.shouldPresentAutomatically else { return }
+        PermissionReviewPresentationPolicy.markPresented()
+        openWindow(id: PermissionsReviewView.windowID)
     }
 
     private func rightPanelWidthLimits(totalWidth: CGFloat) -> (minimum: CGFloat, maximum: CGFloat) {
@@ -406,13 +420,13 @@ struct ContentView: View {
             } content: {
                 ImageAnnotationEditorView(target: target)
             }
-        } else if let target = appState.editingTextFile {
+        } else if let session = appState.textEditorSession {
             // Not outside/Esc-dismissable: the editor guards unsaved changes on
             // close via its own Close button.
             DismissibleToolModal(isDismissable: false, showsCloseButton: false) {
-                appState.editingTextFile = nil
+                appState.textEditorSession = nil
             } content: {
-                TextEditorView(target: target)
+                TextEditorView(session: session)
             }
         }
     }
@@ -544,6 +558,12 @@ struct ContentView: View {
                     appState.showNotes()
                 } label: {
                     Label("Notes", systemImage: "note.text")
+                }
+
+                Button {
+                    appState.beginEditText()
+                } label: {
+                    Label("Text Editor", systemImage: "square.and.pencil")
                 }
 
                 Button {

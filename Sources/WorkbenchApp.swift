@@ -17,12 +17,20 @@ struct WorkbenchApp: App {
         .commands {
             WorkbenchAppInfoCommands(appState: appState)
             AppCommands(appState: appState)
+            CalendarCommands(appState: appState)
         }
 
         Settings {
             SettingsView()
                 .environment(appState)
         }
+
+        Window("Review App Permissions", id: PermissionsReviewView.windowID) {
+            PermissionsReviewView()
+                .environment(appState)
+        }
+        .defaultSize(width: 700, height: 660)
+        .windowResizability(.contentSize)
     }
 }
 
@@ -50,6 +58,31 @@ private struct WindowTitleHider: NSViewRepresentable {
 }
 
 @MainActor
+final class WorkbenchWindowPersistenceScheduler {
+    private let delay: Duration
+    private var pendingTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+
+    init(delay: Duration) {
+        self.delay = delay
+    }
+
+    func schedule(for id: ObjectIdentifier, operation: @escaping @MainActor () -> Void) {
+        cancel(for: id)
+        pendingTasks[id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            pendingTasks[id] = nil
+            operation()
+        }
+    }
+
+    func cancel(for id: ObjectIdentifier) {
+        pendingTasks.removeValue(forKey: id)?.cancel()
+    }
+}
+
+@MainActor
 private final class WorkbenchWindowStateRestorer {
     static let shared = WorkbenchWindowStateRestorer()
 
@@ -57,13 +90,20 @@ private final class WorkbenchWindowStateRestorer {
     private let isZoomedKey = "mainWindow.isZoomed"
     private let isFullScreenKey = "mainWindow.isFullScreen"
     private let minimumSize = NSSize(width: 780, height: 480)
+    private let defaults: UserDefaults
+    private let persistenceScheduler: WorkbenchWindowPersistenceScheduler
 
     private var observedWindowIDs = Set<ObjectIdentifier>()
     private var observers: [ObjectIdentifier: [NSObjectProtocol]] = [:]
     private weak var latestWindow: NSWindow?
     private var terminationObserver: NSObjectProtocol?
 
-    private init() {
+    init(
+        defaults: UserDefaults = .standard,
+        persistenceDelay: Duration = .milliseconds(200)
+    ) {
+        self.defaults = defaults
+        persistenceScheduler = WorkbenchWindowPersistenceScheduler(delay: persistenceDelay)
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
@@ -82,8 +122,8 @@ private final class WorkbenchWindowStateRestorer {
         guard !observedWindowIDs.contains(id) else { return }
         observedWindowIDs.insert(id)
 
-        if UserDefaults.standard.string(forKey: normalFrameKey) == nil {
-            UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: normalFrameKey)
+        if defaults.string(forKey: normalFrameKey) == nil {
+            defaults.set(NSStringFromRect(window.frame), forKey: normalFrameKey)
         }
 
         restore(window)
@@ -95,8 +135,8 @@ private final class WorkbenchWindowStateRestorer {
             window.setFrame(constrainedFrame(savedFrame), display: true, animate: false)
         }
 
-        let shouldRestoreFullScreen = UserDefaults.standard.bool(forKey: isFullScreenKey)
-        let shouldRestoreZoomed = UserDefaults.standard.bool(forKey: isZoomedKey)
+        let shouldRestoreFullScreen = defaults.bool(forKey: isFullScreenKey)
+        let shouldRestoreZoomed = defaults.bool(forKey: isZoomedKey)
 
         if shouldRestoreFullScreen {
             DispatchQueue.main.async { [weak window] in
@@ -130,16 +170,18 @@ private final class WorkbenchWindowStateRestorer {
     private func observe(_ window: NSWindow) {
         let id = ObjectIdentifier(window)
         let notificationCenter = NotificationCenter.default
-        let observedNotifications: [Notification.Name] = [
+        let deferredNotifications: [Notification.Name] = [
             NSWindow.didMoveNotification,
             NSWindow.didResizeNotification,
+        ]
+        let immediateNotifications: [Notification.Name] = [
             NSWindow.didEndLiveResizeNotification,
             NSWindow.didEnterFullScreenNotification,
             NSWindow.didExitFullScreenNotification,
             NSWindow.didDeminiaturizeNotification,
         ]
 
-        var tokens = observedNotifications.map { name in
+        var tokens = deferredNotifications.map { name in
             notificationCenter.addObserver(
                 forName: name,
                 object: window,
@@ -147,10 +189,23 @@ private final class WorkbenchWindowStateRestorer {
             ) { [weak self, weak window] _ in
                 Task { @MainActor [weak self, weak window] in
                     guard let window else { return }
-                    self?.persist(window)
+                    self?.schedulePersistence(for: window)
                 }
             }
         }
+
+        tokens.append(contentsOf: immediateNotifications.map { name in
+            notificationCenter.addObserver(
+                forName: name,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                Task { @MainActor [weak self, weak window] in
+                    guard let window else { return }
+                    self?.persistImmediately(window)
+                }
+            }
+        })
 
         tokens.append(notificationCenter.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -159,7 +214,7 @@ private final class WorkbenchWindowStateRestorer {
         ) { [weak self, weak window] _ in
             Task { @MainActor [weak self, weak window] in
                 if let window {
-                    self?.persist(window)
+                    self?.persistImmediately(window)
                 }
                 self?.removeObservers(for: id)
             }
@@ -168,7 +223,22 @@ private final class WorkbenchWindowStateRestorer {
         observers[id] = tokens
     }
 
+    private func schedulePersistence(for window: NSWindow) {
+        let id = ObjectIdentifier(window)
+        persistenceScheduler.schedule(for: id) { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.persist(window)
+        }
+    }
+
+    private func persistImmediately(_ window: NSWindow) {
+        let id = ObjectIdentifier(window)
+        persistenceScheduler.cancel(for: id)
+        persist(window)
+    }
+
     private func removeObservers(for id: ObjectIdentifier) {
+        persistenceScheduler.cancel(for: id)
         guard let tokens = observers.removeValue(forKey: id) else { return }
         for token in tokens {
             NotificationCenter.default.removeObserver(token)
@@ -178,20 +248,30 @@ private final class WorkbenchWindowStateRestorer {
 
     private func saveLatestWindow() {
         guard let latestWindow else { return }
-        persist(latestWindow)
+        persistImmediately(latestWindow)
     }
 
     private func persist(_ window: NSWindow) {
         let isFullScreen = window.styleMask.contains(.fullScreen)
-        UserDefaults.standard.set(isFullScreen, forKey: isFullScreenKey)
-        UserDefaults.standard.set(window.isZoomed, forKey: isZoomedKey)
+        setIfChanged(isFullScreen, forKey: isFullScreenKey)
+        setIfChanged(window.isZoomed, forKey: isZoomedKey)
 
         guard !isFullScreen, !window.isZoomed, !window.isMiniaturized else { return }
-        UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: normalFrameKey)
+        setIfChanged(NSStringFromRect(window.frame), forKey: normalFrameKey)
+    }
+
+    private func setIfChanged(_ value: Bool, forKey key: String) {
+        guard defaults.object(forKey: key) as? Bool != value else { return }
+        defaults.set(value, forKey: key)
+    }
+
+    private func setIfChanged(_ value: String, forKey key: String) {
+        guard defaults.string(forKey: key) != value else { return }
+        defaults.set(value, forKey: key)
     }
 
     private func savedNormalFrame() -> NSRect? {
-        guard let frameString = UserDefaults.standard.string(forKey: normalFrameKey) else {
+        guard let frameString = defaults.string(forKey: normalFrameKey) else {
             return nil
         }
         let frame = NSRectFromString(frameString)

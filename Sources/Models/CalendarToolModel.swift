@@ -26,6 +26,25 @@ enum CalendarToolPeriod: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum CalendarToolAgendaScope: String, CaseIterable, Identifiable, Sendable {
+    case upcoming
+    case all
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .upcoming: "Upcoming"
+        case .all: "All"
+        }
+    }
+}
+
+enum CalendarToolFocusTarget: Sendable {
+    case reminderComposer
+    case reminderSearch
+}
+
 enum CalendarToolDateMath {
     static func date(
         byMoving period: CalendarToolPeriod,
@@ -131,6 +150,200 @@ struct CalendarToolDateRange: Codable, Equatable, Sendable {
     func dayCount(calendar: Calendar = .current) -> Int {
         let components = calendar.dateComponents([.day], from: startDate, to: endDate)
         return max((components.day ?? 0) + 1, 1)
+    }
+}
+
+enum CalendarToolReminderSearch {
+    static func terms(in query: String) -> [String] {
+        var terms: [String] = []
+        var current = ""
+        var insideQuotes = false
+
+        for character in query {
+            if character == "\"" {
+                insideQuotes.toggle()
+                if !insideQuotes {
+                    append(&terms, token: &current)
+                }
+            } else if character.isWhitespace && !insideQuotes {
+                append(&terms, token: &current)
+            } else {
+                current.append(character)
+            }
+        }
+        append(&terms, token: &current)
+        return terms
+    }
+
+    static func matches(_ reminder: CalendarToolReminder, query: String) -> Bool {
+        let queryTerms = terms(in: query)
+        guard !queryTerms.isEmpty else { return true }
+
+        let formatter = DateIntervalFormatter()
+        formatter.dateStyle = .full
+        formatter.timeStyle = .none
+        let searchableText = [
+            reminder.title,
+            formatter.string(from: reminder.range.startDate, to: reminder.range.endDate),
+            reminder.notificationLeadTime.label
+        ]
+        .joined(separator: " ")
+        .localizedLowercase
+
+        return queryTerms.allSatisfy { searchableText.contains($0.localizedLowercase) }
+    }
+
+    private static func append(_ terms: inout [String], token: inout String) {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            terms.append(trimmed)
+        }
+        token = ""
+    }
+}
+
+@Observable
+@MainActor
+final class CalendarToolState {
+    static let shared = CalendarToolState()
+
+    private enum Key {
+        static let period = "calendarTool.period"
+        static let anchorDate = "calendarTool.anchorDate"
+        static let weeksShown = "calendarTool.weeksShown"
+        static let showsAgenda = "calendarTool.showsAgenda"
+        static let agendaScope = "calendarTool.agendaScope"
+    }
+
+    var period: CalendarToolPeriod {
+        didSet { defaults.set(period.rawValue, forKey: Key.period) }
+    }
+    var anchorDate: Date {
+        didSet { defaults.set(anchorDate, forKey: Key.anchorDate) }
+    }
+    var selectedRange: CalendarToolDateRange?
+    var visibleWeekCount: Int {
+        didSet { defaults.set(visibleWeekCount, forKey: Key.weeksShown) }
+    }
+    var showsAgenda: Bool {
+        didSet { defaults.set(showsAgenda, forKey: Key.showsAgenda) }
+    }
+    var agendaScope: CalendarToolAgendaScope {
+        didSet { defaults.set(agendaScope.rawValue, forKey: Key.agendaScope) }
+    }
+    var reminderSearchQuery = ""
+    var selectedReminderID: UUID?
+    var reminderComposerFocusTick = 0
+    var reminderSearchFocusTick = 0
+    var pendingFocusTarget: CalendarToolFocusTarget?
+
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var selectionAnchorDate: Date
+    @ObservationIgnored private var selectionFocusDate: Date
+
+    init(
+        defaults: UserDefaults = .standard,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) {
+        self.defaults = defaults
+        period = CalendarToolPeriod(
+            rawValue: defaults.string(forKey: Key.period) ?? ""
+        ) ?? .month
+        let restoredAnchorDate = defaults.object(forKey: Key.anchorDate) as? Date ?? now
+        anchorDate = restoredAnchorDate
+        let storedWeekCount = defaults.integer(forKey: Key.weeksShown)
+        visibleWeekCount = min(max(storedWeekCount == 0 ? 1 : storedWeekCount, 1), 10)
+        showsAgenda = defaults.object(forKey: Key.showsAgenda) as? Bool ?? true
+        agendaScope = CalendarToolAgendaScope(
+            rawValue: defaults.string(forKey: Key.agendaScope) ?? ""
+        ) ?? .upcoming
+        let day = calendar.startOfDay(for: restoredAnchorDate)
+        selectedRange = CalendarToolDateRange(single: day, calendar: calendar)
+        selectionAnchorDate = day
+        selectionFocusDate = day
+    }
+
+    func selectDate(_ date: Date, calendar: Calendar = .current) {
+        let day = calendar.startOfDay(for: date)
+        selectedRange = CalendarToolDateRange(single: day, calendar: calendar)
+        selectionAnchorDate = day
+        selectionFocusDate = day
+        anchorDate = day
+        selectedReminderID = nil
+    }
+
+    func selectRange(
+        anchor: Date,
+        current: Date,
+        calendar: Calendar = .current
+    ) {
+        let anchorDay = calendar.startOfDay(for: anchor)
+        let currentDay = calendar.startOfDay(for: current)
+        selectedRange = CalendarToolDateRange(
+            startDate: anchorDay,
+            endDate: currentDay,
+            calendar: calendar
+        )
+        selectionAnchorDate = anchorDay
+        selectionFocusDate = currentDay
+        anchorDate = currentDay
+        selectedReminderID = nil
+    }
+
+    func moveSelection(
+        byDays offset: Int,
+        extending: Bool,
+        calendar: Calendar = .current
+    ) {
+        guard let next = calendar.date(
+            byAdding: .day,
+            value: offset,
+            to: selectionFocusDate
+        ) else { return }
+
+        if extending {
+            selectRange(anchor: selectionAnchorDate, current: next, calendar: calendar)
+        } else {
+            selectDate(next, calendar: calendar)
+        }
+    }
+
+    func navigatePeriod(direction: Int, calendar: Calendar = .current) {
+        let offset = period == .week ? direction * visibleWeekCount : direction
+        let destination = CalendarToolDateMath.date(
+            byMoving: period,
+            offset: offset,
+            from: anchorDate,
+            calendar: calendar
+        )
+        selectDate(destination, calendar: calendar)
+    }
+
+    func goToToday(now: Date = .now, calendar: Calendar = .current) {
+        selectDate(now, calendar: calendar)
+    }
+
+    func selectReminder(_ reminder: CalendarToolReminder, calendar: Calendar = .current) {
+        selectedRange = reminder.range
+        selectionAnchorDate = reminder.range.startDate
+        selectionFocusDate = reminder.range.endDate
+        anchorDate = reminder.range.startDate
+        selectedReminderID = reminder.id
+    }
+
+    func focusReminderComposer() {
+        if period == .year {
+            period = .month
+        }
+        pendingFocusTarget = .reminderComposer
+        reminderComposerFocusTick += 1
+    }
+
+    func focusReminderSearch() {
+        showsAgenda = true
+        pendingFocusTarget = .reminderSearch
+        reminderSearchFocusTick += 1
     }
 }
 
@@ -242,11 +455,13 @@ struct CalendarToolReminder: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+@MainActor
 protocol CalendarToolReminderNotificationScheduling: AnyObject {
     func schedule(_ reminder: CalendarToolReminder, calendar: Calendar, now: Date)
     func cancel(_ reminder: CalendarToolReminder)
 }
 
+@MainActor
 final class CalendarToolUserNotificationScheduler: CalendarToolReminderNotificationScheduling {
     static let shared = CalendarToolUserNotificationScheduler()
 
@@ -366,12 +581,85 @@ final class CalendarToolReminderStore {
         notificationScheduler.cancel(reminder)
     }
 
+    @discardableResult
+    func update(
+        _ reminderID: CalendarToolReminder.ID,
+        title: String,
+        range: CalendarToolDateRange,
+        notificationLeadTime: CalendarToolReminderLeadTime,
+        calendar: Calendar = .current,
+        now: Date = .now
+    ) -> CalendarToolReminder? {
+        guard let index = reminders.firstIndex(where: { $0.id == reminderID }) else {
+            return nil
+        }
+
+        let existing = reminders[index]
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let updated = CalendarToolReminder(
+            id: existing.id,
+            title: trimmed.isEmpty ? "Reminder" : trimmed,
+            range: range,
+            notificationLeadTime: notificationLeadTime,
+            createdAt: existing.createdAt
+        )
+        notificationScheduler.cancel(existing)
+        reminders[index] = updated
+        sortAndPersist()
+        notificationScheduler.schedule(updated, calendar: calendar, now: now)
+        return updated
+    }
+
+    @discardableResult
+    func duplicate(
+        _ reminderID: CalendarToolReminder.ID,
+        calendar: Calendar = .current,
+        now: Date = .now
+    ) -> CalendarToolReminder? {
+        guard let reminder = reminder(id: reminderID) else { return nil }
+        return add(
+            title: "\(reminder.title) Copy",
+            range: reminder.range,
+            notificationLeadTime: reminder.notificationLeadTime,
+            calendar: calendar,
+            now: now
+        )
+    }
+
+    func reminder(id: CalendarToolReminder.ID?) -> CalendarToolReminder? {
+        guard let id else { return nil }
+        return reminders.first { $0.id == id }
+    }
+
+    func filteredReminders(
+        query: String,
+        scope: CalendarToolAgendaScope,
+        now: Date = .now,
+        calendar: Calendar = .current
+    ) -> [CalendarToolReminder] {
+        let today = calendar.startOfDay(for: now)
+        return reminders.filter { reminder in
+            let isInScope = scope == .all || reminder.range.endDate >= today
+            return isInScope && CalendarToolReminderSearch.matches(reminder, query: query)
+        }
+    }
+
     func reminders(overlapping range: CalendarToolDateRange) -> [CalendarToolReminder] {
         reminders.filter { $0.range.overlaps(range) }
     }
 
     func hasReminder(on date: Date, calendar: Calendar = .current) -> Bool {
         reminders.contains { $0.range.contains(date, calendar: calendar) }
+    }
+
+    private func sortAndPersist() {
+        reminders.sort {
+            if $0.range.startDate == $1.range.startDate {
+                return $0.createdAt < $1.createdAt
+            }
+            return $0.range.startDate < $1.range.startDate
+        }
+        persist()
     }
 
     private func persist() {

@@ -31,6 +31,22 @@ enum NoteGrouping: String, CaseIterable, Identifiable, Sendable {
     var label: String { self == .none ? "All" : "By \(rawValue)" }
 }
 
+enum NoteSortOrder: String, CaseIterable, Identifiable, Sendable {
+    case updated
+    case created
+    case title
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .updated: "Last Edited"
+        case .created: "Date Created"
+        case .title: "Title"
+        }
+    }
+}
+
 /// A titled section of notes (e.g. "July 2026" or "2026"). An empty title means
 /// a single ungrouped list.
 struct NoteGroup: Identifiable, Sendable {
@@ -58,6 +74,8 @@ struct NoteItem: Identifiable, Codable, Hashable, Sendable {
     var createdAt: Date
     var updatedAt: Date
     var attachments: [NoteAttachment]
+    /// Optional so notebooks created by older versions decode without a migration pass.
+    var isPinned: Bool? = nil
 
     var displayTitle: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -68,6 +86,89 @@ struct NoteItem: Identifiable, Codable, Hashable, Sendable {
         NoteInlineAttachmentMarkup.displayText(from: body)
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum NoteSearchQuery {
+    static func terms(in query: String) -> [String] {
+        var terms: [String] = []
+        var current = ""
+        var isInsideQuotes = false
+
+        func flush() {
+            let term = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !term.isEmpty { terms.append(term) }
+            current = ""
+        }
+
+        for character in query {
+            if character == "\"" {
+                if isInsideQuotes { flush() }
+                isInsideQuotes.toggle()
+            } else if character.isWhitespace && !isInsideQuotes {
+                flush()
+            } else {
+                current.append(character)
+            }
+        }
+        flush()
+        return terms
+    }
+
+    static func matches(_ note: NoteItem, query: String) -> Bool {
+        let terms = terms(in: query)
+        guard !terms.isEmpty else { return true }
+        let searchableValues = [
+            note.title,
+            NoteInlineAttachmentMarkup.displayText(from: note.body),
+            note.attachments.map(\.originalName).joined(separator: " "),
+            note.attachments.map(\.filename).joined(separator: " "),
+        ]
+        return terms.allSatisfy { term in
+            searchableValues.contains { $0.localizedCaseInsensitiveContains(term) }
+        }
+    }
+}
+
+struct NoteListContinuation: Equatable {
+    let prefixLength: Int
+    let nextPrefix: String
+    let hasContent: Bool
+
+    static func parse(_ paragraph: String) -> NoteListContinuation? {
+        let nsParagraph = paragraph as NSString
+        let prefixes = ["• ", "☐ ", "☑ "]
+        for prefix in prefixes where paragraph.hasPrefix(prefix) {
+            return NoteListContinuation(
+                prefixLength: (prefix as NSString).length,
+                nextPrefix: prefix == "• " ? prefix : "☐ ",
+                hasContent: !nsParagraph.substring(from: (prefix as NSString).length)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
+            )
+        }
+
+        var digitCount = 0
+        while digitCount < nsParagraph.length,
+              let scalar = UnicodeScalar(nsParagraph.character(at: digitCount)),
+              CharacterSet.decimalDigits.contains(scalar) {
+            digitCount += 1
+        }
+        guard digitCount > 0,
+              digitCount + 1 < nsParagraph.length,
+              nsParagraph.character(at: digitCount) == 46,
+              nsParagraph.character(at: digitCount + 1) == 32,
+              let number = Int(nsParagraph.substring(to: digitCount)) else {
+            return nil
+        }
+        let prefixLength = digitCount + 2
+        return NoteListContinuation(
+            prefixLength: prefixLength,
+            nextPrefix: "\(number + 1). ",
+            hasContent: !nsParagraph.substring(from: prefixLength)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        )
     }
 }
 
@@ -140,40 +241,47 @@ final class NotesStore {
     var selectedDay: Date?
     /// How the notes list is sectioned (by month, by year, or a flat list).
     var grouping: NoteGrouping = .none
+    var sortOrder: NoteSortOrder {
+        didSet { defaults.set(sortOrder.rawValue, forKey: Key.sortOrder) }
+    }
+    var searchFocusTick = 0
     var lastSavedAt: Date?
     var lastError: String?
+    private(set) var hasUnsavedChanges = false
     private(set) var recordingNoteID: NoteItem.ID?
     private(set) var recordingStartedAt: Date?
 
     @ObservationIgnored private var audioRecorder: AVAudioRecorder?
     @ObservationIgnored private var recordingFileURL: URL?
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let storageRootDirectory: URL
+    @ObservationIgnored private let saveDelay: Duration
+    @ObservationIgnored private var pendingSaveTask: Task<Void, Never>?
 
-    private init() {
+    init(
+        storageRootDirectory: URL? = nil,
+        defaults: UserDefaults = .standard,
+        saveDelay: Duration = .milliseconds(350)
+    ) {
+        self.defaults = defaults
+        self.storageRootDirectory = storageRootDirectory ?? Self.defaultRootDirectory
+        self.saveDelay = saveDelay
+        sortOrder = NoteSortOrder(rawValue: defaults.string(forKey: Key.sortOrder) ?? "") ?? .updated
         load()
     }
 
     var filteredNotes: [NoteItem] {
-        var result = notes.sorted { lhs, rhs in
-            if lhs.updatedAt == rhs.updatedAt {
-                return lhs.createdAt > rhs.createdAt
-            }
-            return lhs.updatedAt > rhs.updatedAt
-        }
+        var result = notes
         if let selectedDay {
             let calendar = Calendar.current
             let target = calendar.startOfDay(for: selectedDay)
             result = result.filter { calendar.startOfDay(for: $0.createdAt) == target }
         }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return result }
-        return result.filter { note in
-            note.title.localizedCaseInsensitiveContains(query)
-                || note.body.localizedCaseInsensitiveContains(query)
-                || note.attachments.contains {
-                    $0.originalName.localizedCaseInsensitiveContains(query)
-                        || $0.filename.localizedCaseInsensitiveContains(query)
-                }
+        if !query.isEmpty {
+            result = result.filter { NoteSearchQuery.matches($0, query: query) }
         }
+        return ordered(result)
     }
 
     /// Per-day summary used by the calendar to badge days that have notes and
@@ -214,7 +322,7 @@ final class NotesStore {
             .map { key in
                 let date = calendar.date(from: key) ?? Date()
                 let title = formatter.string(from: date)
-                let sorted = (buckets[key] ?? []).sorted { $0.createdAt > $1.createdAt }
+                let sorted = ordered(buckets[key] ?? [])
                 return NoteGroup(id: title, title: title, notes: sorted)
             }
     }
@@ -233,6 +341,63 @@ final class NotesStore {
     func note(for id: NoteItem.ID?) -> NoteItem? {
         guard let id else { return nil }
         return notes.first { $0.id == id }
+    }
+
+    func selectAdjacentNote(offset: Int) {
+        let visibleNotes = filteredNotes
+        guard !visibleNotes.isEmpty else { return }
+        guard let selectedNoteID,
+              let index = visibleNotes.firstIndex(where: { $0.id == selectedNoteID }) else {
+            self.selectedNoteID = visibleNotes.first?.id
+            return
+        }
+        self.selectedNoteID = visibleNotes[min(max(index + offset, 0), visibleNotes.count - 1)].id
+    }
+
+    func togglePinned(_ id: NoteItem.ID) {
+        updateNote(id) { note in
+            note.isPinned = note.isPinned == true ? nil : true
+        }
+    }
+
+    func toggleSelectedNotePinned() {
+        guard let selectedNoteID else { return }
+        togglePinned(selectedNoteID)
+    }
+
+    @discardableResult
+    func duplicateNote(_ id: NoteItem.ID) -> NoteItem.ID? {
+        guard let original = note(for: id) else { return nil }
+        let duplicateID = UUID()
+        do {
+            try ensureStorage()
+            let sourceDirectory = noteDirectory(id)
+            let destinationDirectory = noteDirectory(duplicateID)
+            if FileManager.default.fileExists(atPath: sourceDirectory.path) {
+                try FileManager.default.copyItem(at: sourceDirectory, to: destinationDirectory)
+            }
+            let now = Date()
+            let duplicate = NoteItem(
+                id: duplicateID,
+                title: original.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "Untitled Note Copy"
+                    : "\(original.title) Copy",
+                body: original.body,
+                richBodyData: original.richBodyData,
+                createdAt: now,
+                updatedAt: now,
+                attachments: original.attachments,
+                isPinned: nil
+            )
+            notes.insert(duplicate, at: 0)
+            selectedNoteID = duplicateID
+            save()
+            return duplicateID
+        } catch {
+            lastError = error.localizedDescription
+            try? FileManager.default.removeItem(at: noteDirectory(duplicateID))
+            return nil
+        }
     }
 
     func attachmentURL(for noteID: NoteItem.ID, attachment: NoteAttachment) -> URL {
@@ -313,6 +478,8 @@ final class NotesStore {
     }
 
     func saveNow() {
+        pendingSaveTask?.cancel()
+        pendingSaveTask = nil
         save()
     }
 
@@ -873,10 +1040,24 @@ final class NotesStore {
         guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
         mutation(&notes[index])
         notes[index].updatedAt = Date()
-        save()
+        scheduleSave()
+    }
+
+    private func scheduleSave() {
+        hasUnsavedChanges = true
+        pendingSaveTask?.cancel()
+        let delay = saveDelay
+        pendingSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.pendingSaveTask = nil
+            self?.save()
+        }
     }
 
     private func save() {
+        pendingSaveTask?.cancel()
+        pendingSaveTask = nil
         do {
             try ensureStorage()
             let encoder = JSONEncoder()
@@ -885,8 +1066,10 @@ final class NotesStore {
             try data.write(to: notesFile, options: [.atomic])
             lastSavedAt = Date()
             lastError = nil
+            hasUnsavedChanges = false
         } catch {
             lastError = error.localizedDescription
+            hasUnsavedChanges = true
         }
     }
 
@@ -897,7 +1080,7 @@ final class NotesStore {
         )
     }
 
-    private var rootDirectory: URL {
+    private static var defaultRootDirectory: URL {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -906,11 +1089,11 @@ final class NotesStore {
     }
 
     private var notesFile: URL {
-        rootDirectory.appendingPathComponent("notes.json")
+        storageRootDirectory.appendingPathComponent("notes.json")
     }
 
     private var attachmentsDirectory: URL {
-        rootDirectory.appendingPathComponent("Attachments", isDirectory: true)
+        storageRootDirectory.appendingPathComponent("Attachments", isDirectory: true)
     }
 
     private func noteDirectory(_ noteID: NoteItem.ID) -> URL {
@@ -949,6 +1132,30 @@ final class NotesStore {
         @unknown default:
             return false
         }
+    }
+
+    private func ordered(_ notes: [NoteItem]) -> [NoteItem] {
+        notes.sorted { lhs, rhs in
+            let lhsPinned = lhs.isPinned == true
+            let rhsPinned = rhs.isPinned == true
+            if lhsPinned != rhsPinned { return lhsPinned }
+            switch sortOrder {
+            case .updated:
+                if lhs.updatedAt == rhs.updatedAt { return lhs.createdAt > rhs.createdAt }
+                return lhs.updatedAt > rhs.updatedAt
+            case .created:
+                if lhs.createdAt == rhs.createdAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.createdAt > rhs.createdAt
+            case .title:
+                let comparison = lhs.displayTitle.localizedStandardCompare(rhs.displayTitle)
+                if comparison == .orderedSame { return lhs.updatedAt > rhs.updatedAt }
+                return comparison == .orderedAscending
+            }
+        }
+    }
+
+    private enum Key {
+        static let sortOrder = "notes.sortOrder"
     }
 }
 

@@ -8,8 +8,10 @@ struct SnippetPanelView: View {
     @Environment(AppState.self) private var appState
     @State private var store = SnippetStore.shared
     @State private var draftText = ""
+    @State private var draftTitle = ""
     @State private var isFileDropTargeted = false
     @FocusState private var searchFocused: Bool
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         @Bindable var store = store
@@ -20,8 +22,10 @@ struct SnippetPanelView: View {
             snippetsList(selection: $store.selectedSnippetID)
             Divider()
             selectedSnippetPanel
-            Divider()
-            textComposer
+            if store.isComposerExpanded {
+                Divider()
+                textComposer
+            }
         }
         .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
         .background(.bar)
@@ -36,12 +40,22 @@ struct SnippetPanelView: View {
         }
         .onAppear {
             store.ensureSelection()
+            applyPendingFocus()
         }
         .onChange(of: store.searchText) { _, _ in
             store.ensureSelection()
         }
         .onChange(of: store.filter) { _, _ in
             store.ensureSelection()
+        }
+        .onChange(of: store.showsPinnedOnly) { _, _ in
+            store.ensureSelection()
+        }
+        .onChange(of: store.searchFocusTick) { _, _ in
+            applyPendingFocus()
+        }
+        .onChange(of: store.composerFocusTick) { _, _ in
+            applyPendingFocus()
         }
         .onDrop(
             of: [
@@ -59,6 +73,15 @@ struct SnippetPanelView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(store.lastError ?? "")
+        }
+        .onExitCommand {
+            if !store.searchText.isEmpty {
+                store.searchText = ""
+            } else if store.showsPinnedOnly {
+                store.showsPinnedOnly = false
+            } else {
+                appState.hideSnippets()
+            }
         }
     }
 
@@ -170,6 +193,17 @@ struct SnippetPanelView: View {
                 store.ensureSelection()
             }
 
+            PanelIconButton(
+                systemName: store.isComposerExpanded ? "chevron.down.square" : "square.and.pencil",
+                help: store.isComposerExpanded ? "Hide text composer" : "New text snippet"
+            ) {
+                if store.isComposerExpanded {
+                    store.isComposerExpanded = false
+                } else {
+                    store.focusComposer()
+                }
+            }
+
             PanelIconButton(systemName: "xmark", help: "Hide snippets") {
                 appState.hideSnippets()
             }
@@ -210,13 +244,37 @@ struct SnippetPanelView: View {
             .padding(.vertical, 7)
             .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 7))
 
-            Picker("Filter", selection: $store.filter) {
-                ForEach(SnippetFilter.allCases) { filter in
-                    Text(filter.title).tag(filter)
+            HStack(spacing: 7) {
+                Picker("Filter", selection: $store.filter) {
+                    ForEach(SnippetFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
                 }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+
+                Button {
+                    store.showsPinnedOnly.toggle()
+                } label: {
+                    Image(systemName: store.showsPinnedOnly ? "pin.fill" : "pin")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(store.showsPinnedOnly ? "Show all snippets" : "Show pinned only")
+
+                Menu {
+                    Picker("Sort", selection: $store.sortOrder) {
+                        ForEach(SnippetSortOrder.allCases) { order in
+                            Text(order.title).tag(order)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "arrow.up.arrow.down")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Sort snippets")
             }
-            .labelsHidden()
-            .pickerStyle(.segmented)
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 8)
@@ -243,6 +301,15 @@ struct SnippetPanelView: View {
                             }
                         )
                         .tag(item.id)
+                        .contextMenu {
+                            Button(item.isPinned == true ? "Unpin" : "Pin") {
+                                store.togglePinned(item.id)
+                            }
+                            Button("Copy") { store.copy(item) }
+                            Button("Duplicate") { store.duplicate(item.id) }
+                            Divider()
+                            Button("Delete", role: .destructive) { store.delete(item.id) }
+                        }
                     }
                 }
                 .listStyle(.sidebar)
@@ -280,20 +347,36 @@ struct SnippetPanelView: View {
 
     private var textComposer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("New Text")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            HStack {
+                Text("New Text Snippet")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("⌘↩ to save")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            TextField("Optional label", text: $draftTitle)
+                .textFieldStyle(.roundedBorder)
 
             TextEditor(text: $draftText)
                 .font(.callout)
+                .focused($composerFocused)
                 .scrollContentBackground(.hidden)
                 .frame(height: 90)
                 .padding(6)
                 .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    addDraftTextSnippet()
+                    return .handled
+                }
 
             HStack(spacing: 8) {
                 Button {
                     draftText = ""
+                    draftTitle = ""
                 } label: {
                     Image(systemName: "xmark")
                 }
@@ -307,9 +390,7 @@ struct SnippetPanelView: View {
                 Spacer()
 
                 Button {
-                    store.addText(draftText)
-                    draftText = ""
-                    store.ensureSelection()
+                    addDraftTextSnippet()
                 } label: {
                     Label("Add Text", systemImage: "plus")
                 }
@@ -330,6 +411,26 @@ struct SnippetPanelView: View {
             get: { store.lastError != nil },
             set: { if !$0 { store.lastError = nil } }
         )
+    }
+
+    private func addDraftTextSnippet() {
+        guard store.addText(draftText, title: draftTitle) != nil else { return }
+        draftText = ""
+        draftTitle = ""
+        store.ensureSelection()
+        composerFocused = true
+    }
+
+    private func applyPendingFocus() {
+        switch store.pendingFocusTarget {
+        case .search:
+            searchFocused = true
+        case .composer:
+            composerFocused = true
+        case .editor, nil:
+            return
+        }
+        store.pendingFocusTarget = nil
     }
 }
 
@@ -369,6 +470,12 @@ private struct SnippetRow: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 5) {
+                            if item.isPinned == true {
+                                Image(systemName: "pin.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tint)
+                                    .accessibilityLabel("Pinned")
+                            }
                             Text(item.displayTitle)
                                 .font(.callout.weight(.medium))
                                 .lineLimit(1)
@@ -400,11 +507,24 @@ private struct SnippetRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    copyAction()
+                }
+            )
             .onDrag {
                 store.dragProvider(for: item)
             }
 
             VStack(spacing: 7) {
+                Button {
+                    store.togglePinned(item.id)
+                } label: {
+                    Image(systemName: item.isPinned == true ? "pin.fill" : "pin")
+                }
+                .buttonStyle(.borderless)
+                .help(item.isPinned == true ? "Unpin" : "Pin")
+
                 Button(action: copyAction) {
                     Image(systemName: "doc.on.doc")
                 }
@@ -720,8 +840,14 @@ private struct SnippetDetailView: View {
     let store: SnippetStore
     @State private var labelDraft = ""
     @State private var labelSaveTask: Task<Void, Never>?
+    @State private var textDraft = ""
+    @State private var textSaveTask: Task<Void, Never>?
+    @State private var tagsDraft = ""
+    @State private var tagsSaveTask: Task<Void, Never>?
     @StateObject private var audioPlayback = SnippetAudioPlaybackController()
     @FocusState private var labelFocused: Bool
+    @FocusState private var textFocused: Bool
+    @FocusState private var tagsFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -735,12 +861,28 @@ private struct SnippetDetailView: View {
                 Spacer()
 
                 Button {
+                    store.togglePinned(item.id)
+                } label: {
+                    Image(systemName: item.isPinned == true ? "pin.fill" : "pin")
+                }
+                .buttonStyle(.plain)
+                .help(item.isPinned == true ? "Unpin" : "Pin")
+
+                Button {
                     store.copy(item)
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
                 .buttonStyle(.plain)
                 .help("Copy")
+
+                Button {
+                    store.duplicate(item.id)
+                } label: {
+                    Image(systemName: "plus.square.on.square")
+                }
+                .buttonStyle(.plain)
+                .help("Duplicate")
 
                 Button(role: .destructive) {
                     store.delete(item.id)
@@ -752,6 +894,8 @@ private struct SnippetDetailView: View {
             }
 
             labelEditor
+
+            tagsEditor
 
             preview
 
@@ -765,10 +909,14 @@ private struct SnippetDetailView: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .onAppear(perform: syncLabelDraft)
+        .onAppear {
+            syncDrafts()
+            applyPendingEditorFocus()
+        }
         .onChange(of: item.id) { _, _ in
             audioPlayback.stop()
-            syncLabelDraft()
+            syncDrafts()
+            applyPendingEditorFocus()
         }
         .onChange(of: item.title) { _, _ in
             if !labelFocused {
@@ -785,9 +933,34 @@ private struct SnippetDetailView: View {
                 scheduleLabelSave()
             }
         }
+        .onChange(of: item.text) { _, newValue in
+            if !textFocused, textDraft != newValue {
+                textDraft = newValue
+            }
+        }
+        .onChange(of: textFocused) { _, focused in
+            if !focused { commitText() }
+        }
+        .onChange(of: textDraft) { _, _ in
+            if textFocused { scheduleTextSave() }
+        }
+        .onChange(of: item.tags) { _, _ in
+            if !tagsFocused { syncTagsDraft() }
+        }
+        .onChange(of: tagsFocused) { _, focused in
+            if !focused { commitTags() }
+        }
+        .onChange(of: tagsDraft) { _, _ in
+            if tagsFocused { scheduleTagsSave() }
+        }
+        .onChange(of: store.editorFocusTick) { _, _ in
+            applyPendingEditorFocus()
+        }
         .onDisappear {
             audioPlayback.stop()
             commitLabel()
+            commitText()
+            commitTags()
         }
     }
 
@@ -801,6 +974,19 @@ private struct SnippetDetailView: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($labelFocused)
                 .onSubmit(commitLabel)
+        }
+    }
+
+    private var tagsEditor: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Tags")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            TextField("Comma-separated tags", text: $tagsDraft)
+                .textFieldStyle(.roundedBorder)
+                .focused($tagsFocused)
+                .onSubmit(commitTags)
         }
     }
 
@@ -830,6 +1016,16 @@ private struct SnippetDetailView: View {
             : item.title
     }
 
+    private func syncDrafts() {
+        syncLabelDraft()
+        textDraft = item.text
+        syncTagsDraft()
+    }
+
+    private func syncTagsDraft() {
+        tagsDraft = item.normalizedTags.joined(separator: ", ")
+    }
+
     private func commitLabel() {
         labelSaveTask?.cancel()
         labelSaveTask = nil
@@ -852,25 +1048,80 @@ private struct SnippetDetailView: View {
         }
     }
 
+    private func commitText() {
+        textSaveTask?.cancel()
+        textSaveTask = nil
+        guard item.kind == .text else { return }
+        store.updateText(textDraft, for: item.id)
+    }
+
+    private func scheduleTextSave() {
+        textSaveTask?.cancel()
+        let id = item.id
+        let draft = textDraft
+        textSaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+            store.updateText(draft, for: id)
+            textSaveTask = nil
+        }
+    }
+
+    private func commitTags() {
+        tagsSaveTask?.cancel()
+        tagsSaveTask = nil
+        let tags = normalizedParsedTags
+        store.updateTags(tags, for: item.id)
+        tagsDraft = tags.joined(separator: ", ")
+    }
+
+    private func scheduleTagsSave() {
+        tagsSaveTask?.cancel()
+        let id = item.id
+        let tags = normalizedParsedTags
+        tagsSaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            store.updateTags(tags, for: id)
+            tagsSaveTask = nil
+        }
+    }
+
+    private var normalizedParsedTags: [String] {
+        var seen: Set<String> = []
+        return tagsDraft
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .compactMap { value in
+                let tag = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !tag.isEmpty else { return nil }
+                guard seen.insert(tag.localizedLowercase).inserted else { return nil }
+                return tag
+            }
+    }
+
+    private func applyPendingEditorFocus() {
+        guard store.pendingFocusTarget == .editor,
+              store.selectedSnippetID == item.id,
+              item.kind == .text else { return }
+        textFocused = true
+        store.pendingFocusTarget = nil
+    }
+
     @ViewBuilder
     private var preview: some View {
         switch item.kind {
         case .text:
             VStack(alignment: .leading, spacing: 6) {
-                ScrollView {
-                    Text(item.detailText)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                }
-                if item.isDetailTextTruncated {
-                    Text("Preview limited to keep Workbench responsive")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Text")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $textDraft)
+                    .font(.system(.caption, design: .monospaced))
+                    .focused($textFocused)
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
             }
-            .frame(maxHeight: 180)
+            .frame(minHeight: 130, maxHeight: 240)
             .background(.quaternary.opacity(0.28), in: RoundedRectangle(cornerRadius: 6))
         case .image:
             attachmentPreview

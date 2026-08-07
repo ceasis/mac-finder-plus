@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The built-in text/code editor. Loads a file, edits it with CodeTextView, and
@@ -5,10 +6,11 @@ import SwiftUI
 /// work isn't lost to a stray click — closing goes through a dirty-state guard.
 struct TextEditorView: View {
     @Environment(AppState.self) private var appState
-    let target: FileItem
+    let session: TextEditorSession
 
     @State private var text = ""
     @State private var savedText = ""
+    @State private var documentURL: URL?
     @State private var language: CodeLanguage = .plain
     @State private var wrapsLines = true
     @State private var fontSize: CGFloat = 13
@@ -20,6 +22,9 @@ struct TextEditorView: View {
     @State private var goToLineText = ""
     @State private var showDiscardConfirm = false
 
+    private var target: FileItem? { session.file }
+    private var currentURL: URL? { documentURL ?? target?.url }
+    private var displayName: String { currentURL?.lastPathComponent ?? "Untitled" }
     private var isDirty: Bool { text != savedText }
 
     var body: some View {
@@ -33,7 +38,7 @@ struct TextEditorView: View {
         .frame(minWidth: 560, minHeight: 400)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
-        .task(id: target.id) { load() }
+        .task(id: session.id) { load() }
         .alert("Go to Line", isPresented: $showGoToLine) {
             TextField("Line number", text: $goToLineText)
             Button("Go") {
@@ -46,7 +51,9 @@ struct TextEditorView: View {
             isPresented: $showDiscardConfirm,
             titleVisibility: .visible
         ) {
-            Button("Save") { save(); close() }
+            Button("Save") {
+                if save() { close() }
+            }
             Button("Discard Changes", role: .destructive) { close() }
             Button("Cancel", role: .cancel) {}
         }
@@ -66,8 +73,9 @@ struct TextEditorView: View {
                 language: language,
                 fontSize: fontSize,
                 wrapsLines: wrapsLines,
+                requestsInitialFocus: true,
                 pendingGoToLine: $pendingGoToLine,
-                onSave: save,
+                onSave: { _ = save() },
                 onCursorChange: { line = $0; column = $1 }
             )
             .clipped()
@@ -76,9 +84,9 @@ struct TextEditorView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            Image(systemName: "doc.text")
+            Image(systemName: currentURL == nil ? "doc.badge.plus" : "doc.text")
                 .foregroundStyle(.secondary)
-            Text(target.name)
+            Text(displayName)
                 .font(.callout.weight(.semibold))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -115,9 +123,9 @@ struct TextEditorView: View {
                 .help("Go to line")
                 .frame(minWidth: 30, minHeight: 28)
 
-            Button { save() } label: { Label("Save", systemImage: "square.and.arrow.down") }
+            Button { _ = save() } label: { Label("Save", systemImage: "square.and.arrow.down") }
                 .buttonStyle(.borderedProminent)
-                .disabled(!isDirty || loadError != nil)
+                .disabled((!isDirty && currentURL != nil) || loadError != nil)
                 .help("Save (⌘S)")
 
             Button { attemptClose() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
@@ -148,8 +156,18 @@ struct TextEditorView: View {
     }
 
     private func load() {
+        guard let target else {
+            documentURL = nil
+            text = ""
+            savedText = ""
+            language = .plain
+            loadError = nil
+            return
+        }
+
         language = CodeLanguage.detect(for: target.url)
         let url = target.url
+        documentURL = url
         Task {
             let outcome: (text: String?, error: String?) = await Task.detached(priority: .userInitiated) {
                 do {
@@ -162,7 +180,7 @@ struct TextEditorView: View {
                     return (nil, error.localizedDescription)
                 }
             }.value
-            guard target.url == url else { return }
+            guard self.target?.url == url else { return }
             if let failure = outcome.error {
                 loadError = failure
             } else {
@@ -172,17 +190,42 @@ struct TextEditorView: View {
         }
     }
 
-    private func save() {
-        guard loadError == nil else { return }
-        let url = target.url
+    @discardableResult
+    private func save() -> Bool {
+        guard loadError == nil, let url = destinationURLForSave() else { return false }
         let contents = text
         do {
-            try contents.data(using: .utf8)?.write(to: url, options: .atomic)
+            guard let data = contents.data(using: .utf8) else {
+                throw TextDocumentError.cannotEncode(.utf8)
+            }
+            try data.write(to: url, options: .atomic)
+            documentURL = url
+            language = CodeLanguage.detect(for: url)
             savedText = contents
             appState.activePane.refresh()
+            if url.deletingLastPathComponent().standardizedFileURL
+                == appState.activePane.currentURL.standardizedFileURL {
+                appState.activePane.selection = [url.path]
+            }
+            return true
         } catch {
             appState.lastError = error.localizedDescription
+            return false
         }
+    }
+
+    private func destinationURLForSave() -> URL? {
+        if let currentURL { return currentURL }
+
+        let panel = NSSavePanel()
+        panel.title = "Save Text Document"
+        panel.prompt = "Save"
+        panel.nameFieldStringValue = "Untitled.txt"
+        panel.directoryURL = appState.activePane.currentURL
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
     }
 
     private func attemptClose() {
@@ -194,6 +237,6 @@ struct TextEditorView: View {
     }
 
     private func close() {
-        appState.editingTextFile = nil
+        appState.textEditorSession = nil
     }
 }

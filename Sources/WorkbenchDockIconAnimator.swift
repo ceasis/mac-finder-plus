@@ -113,6 +113,7 @@ final class WorkbenchAppDelegate: NSObject, NSApplicationDelegate, UNUserNotific
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        NotesStore.shared.saveNow()
         TerminalStore.shared.shutdown()
         WorkbenchDockIconAnimator.shared.stopObservingPreferences()
     }

@@ -50,6 +50,13 @@ struct PaneView: View {
         )
         .onAppear { model.startMonitoring() }
         .onDisappear { model.stopMonitoring() }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            model.refresh()
+        }
     }
 
     private func fileTable(model: PaneModel) -> some View {
@@ -211,20 +218,12 @@ struct PaneView: View {
             moveListSelection(by: 1, extending: NSEvent.modifierFlags.contains(.shift), in: model)
             return .handled
         }
-        .onKeyPress(.return) {
-            guard appState.renameTarget == nil, !model.selection.isEmpty else {
-                return .ignored
-            }
-            appState.activePaneIndex = paneIndex
-            appState.beginRenameSelection()
-            return .handled
+        .onKeyPress(.return, phases: .down) { _ in
+            appState.beginRenameSelectionAfterCurrentEvent(in: paneIndex)
+                ? .handled
+                : .ignored
         }
-        .onKeyPress("0") { rateSelection(0); return .handled }
-        .onKeyPress("1") { rateSelection(1); return .handled }
-        .onKeyPress("2") { rateSelection(2); return .handled }
-        .onKeyPress("3") { rateSelection(3); return .handled }
-        .onKeyPress("4") { rateSelection(4); return .handled }
-        .onKeyPress("5") { rateSelection(5); return .handled }
+        .ratingKeyShortcuts { rateSelection($0) }
         .background(
             TableKeyboardSelectionReporter(isEnabled: isActive) { delta in
                 moveListSelection(by: delta, extending: true, in: model)

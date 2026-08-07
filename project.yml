@@ -21,8 +21,9 @@ targets:
         # Workbench ships via direct download (not the Mac App Store), so it is NOT
         # sandboxed — the sandbox blocks spawning /usr/sbin/screencapture, which
         # the screenshot/recording tools rely on. Hardened runtime stays on for
-        # notarization; audio-input re-enables the mic under hardened runtime.
+        # notarization; these capabilities re-enable AV capture under hardened runtime.
         com.apple.security.device.audio-input: true
+        com.apple.security.device.camera: true
     info:
       path: Info.plist
       properties:
@@ -34,6 +35,7 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         LSMinimumSystemVersion: "14.0"
         NSHumanReadableCopyright: "© 2026 Cholo Asis. All rights reserved."
+        NSCameraUsageDescription: Workbench uses the camera only when you record a video journal in Notes.
         NSMicrophoneUsageDescription: Workbench uses the microphone for narrated screen recordings, voice notes, and note attachments.
         UTExportedTypeDeclarations:
           - UTTypeIdentifier: com.qnsub.workbench.file-drag

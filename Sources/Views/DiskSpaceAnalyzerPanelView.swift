@@ -68,6 +68,18 @@ struct DiskSpaceAnalyzerPanelView: View {
                     if store.isScanning {
                         scanStatus
                     }
+                    if let folderTree = analysis.folderTree {
+                        DiskSpaceFolderTreeSection(
+                            root: folderTree,
+                            reveal: { node in
+                                appState.revealInFinder([node.url])
+                            }
+                        )
+                    } else {
+                        DiskSpaceFolderTreeUnavailableSection {
+                            store.startScan(containing: appState.activePane.currentURL, force: true)
+                        }
+                    }
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 300), spacing: 14)],
                         spacing: 14
@@ -240,6 +252,247 @@ struct DiskSpaceAnalyzerPanelView: View {
 
     private func externalDriveDestinations(excluding volumePath: String) -> [DiskSpaceExternalDrive] {
         DiskSpaceExternalDrive.available(excludingVolumePath: volumePath)
+    }
+}
+
+private struct DiskSpaceFolderTreeSection: View {
+    let root: DiskSpaceFolderNode
+    let reveal: (DiskSpaceFolderNode) -> Void
+
+    @State private var expandedPaths: Set<String> = []
+
+    private var visibleRows: [DiskSpaceFolderTreeVisibleRow] {
+        var rows: [DiskSpaceFolderTreeVisibleRow] = []
+        appendVisibleRows(
+            from: root,
+            depth: 0,
+            parentBytes: root.bytes,
+            to: &rows
+        )
+        return rows
+    }
+
+    var body: some View {
+        let rows = visibleRows
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label("Folder Usage", systemImage: "folder.fill")
+                    .font(.headline)
+                Text("Expand folders to find where space is consumed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button {
+                    expandedPaths.removeAll()
+                } label: {
+                    Label("Collapse All", systemImage: "rectangle.compress.vertical")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(expandedPaths.isEmpty)
+            }
+            .padding(14)
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Text("Folder")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("% Parent")
+                    .frame(width: 58, alignment: .trailing)
+                Text("Size")
+                    .frame(width: 82, alignment: .trailing)
+                Color.clear
+                    .frame(width: 22)
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(.quaternary.opacity(0.28))
+
+            LazyVStack(spacing: 0) {
+                ForEach(rows) { row in
+                    DiskSpaceFolderTreeRowView(
+                        row: row,
+                        isExpanded: expandedPaths.contains(row.node.path),
+                        toggleExpansion: {
+                            toggleExpansion(for: row.node)
+                        },
+                        reveal: {
+                            reveal(row.node)
+                        }
+                    )
+
+                    if row.id != rows.last?.id {
+                        Divider()
+                            .padding(.leading, 12 + CGFloat(row.depth) * 16)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+        }
+        .task(id: root.path) {
+            expandedPaths = [root.path]
+        }
+    }
+
+    private func appendVisibleRows(
+        from node: DiskSpaceFolderNode,
+        depth: Int,
+        parentBytes: Int64,
+        to rows: inout [DiskSpaceFolderTreeVisibleRow]
+    ) {
+        rows.append(
+            DiskSpaceFolderTreeVisibleRow(
+                node: node,
+                depth: depth,
+                parentBytes: parentBytes
+            )
+        )
+        guard expandedPaths.contains(node.path) else { return }
+        for child in node.children {
+            appendVisibleRows(
+                from: child,
+                depth: depth + 1,
+                parentBytes: node.bytes,
+                to: &rows
+            )
+        }
+    }
+
+    private func toggleExpansion(for node: DiskSpaceFolderNode) {
+        if expandedPaths.contains(node.path) {
+            expandedPaths.remove(node.path)
+        } else {
+            expandedPaths.insert(node.path)
+        }
+    }
+}
+
+private struct DiskSpaceFolderTreeVisibleRow: Identifiable {
+    let node: DiskSpaceFolderNode
+    let depth: Int
+    let parentBytes: Int64
+
+    var id: String { node.path }
+
+    var parentPercentage: Int {
+        guard parentBytes > 0 else { return 0 }
+        return Int((Double(node.bytes) / Double(parentBytes) * 100).rounded())
+    }
+}
+
+private struct DiskSpaceFolderTreeRowView: View {
+    let row: DiskSpaceFolderTreeVisibleRow
+    let isExpanded: Bool
+    let toggleExpansion: () -> Void
+    let reveal: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                if row.node.children.isEmpty {
+                    Color.clear
+                        .frame(width: 12, height: 16)
+                } else {
+                    Button(action: toggleExpansion) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .frame(width: 12, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(isExpanded ? "Collapse folder" : "Expand folder")
+                }
+
+                Image(systemName: row.depth == 0 ? "internaldrive" : "folder.fill")
+                    .foregroundStyle(row.depth == 0 ? Color.secondary : Color.accentColor)
+                    .frame(width: 17)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.node.name)
+                        .font(.subheadline.weight(row.depth == 0 ? .semibold : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(folderDetail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.leading, CGFloat(row.depth) * 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text("\(row.parentPercentage)%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 58, alignment: .trailing)
+
+            Text(row.node.sizeText)
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .frame(width: 82, alignment: .trailing)
+
+            Button(action: reveal) {
+                Image(systemName: "finder")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Reveal \(row.node.name) in Finder")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                reveal()
+            } label: {
+                Label("Reveal in Finder", systemImage: "finder")
+            }
+        }
+    }
+
+    private var folderDetail: String {
+        let files = "\(row.node.fileCount.formatted()) file\(row.node.fileCount == 1 ? "" : "s")"
+        guard row.node.directBytes > 0 else { return files }
+        return "\(files) · \(row.node.directSizeText) directly inside"
+    }
+}
+
+private struct DiskSpaceFolderTreeUnavailableSection: View {
+    let analyze: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "folder.fill")
+                .font(.title2)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Folder Usage")
+                    .font(.headline)
+                Text("Analyze again to build the expandable folder tree for this disk.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            Button(action: analyze) {
+                Label("Analyze", systemImage: "chart.pie.fill")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+        }
     }
 }
 

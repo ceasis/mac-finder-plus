@@ -178,7 +178,7 @@ final class AppState {
     var showPreviewSlideshow = false
     var previewSlideshowItems: [FileItem] = []
     var annotationTarget: FileItem?
-    var editingTextFile: FileItem?
+    var textEditorSession: TextEditorSession?
     var showOnboarding = false
     var showAboutWorkbench = false
     var showUpdatePanel = false
@@ -437,14 +437,10 @@ final class AppState {
     }
 
     func beginEditText(_ ids: Set<FileItem.ID>? = nil) {
-        let items = resolvedItems(ids)
-        // Prefer a recognized text file, but allow editing any non-directory file.
-        guard let target = items.first(where: \.isText) ?? items.first(where: { !$0.isDirectory }) else {
-            lastError = "Select a text file to edit."
-            return
-        }
+        guard textEditorSession == nil else { return }
+        let session = TextEditorSession.launch(from: resolvedItems(ids))
         closeAllTools()
-        editingTextFile = target
+        textEditorSession = session
     }
 
     func annotationDidSave(_ url: URL) {
@@ -463,7 +459,7 @@ final class AppState {
         dismissPDFToolSheet()
         showMergeIntoVideoSheet = false
         annotationTarget = nil
-        editingTextFile = nil
+        textEditorSession = nil
         showPreviewSlideshow = false
         capturePermissionPrompt = nil
         proToolsPermissionPrompt = nil
@@ -477,7 +473,7 @@ final class AppState {
         dismissPDFToolSheet()
         showMergeIntoVideoSheet = false
         annotationTarget = nil
-        editingTextFile = nil
+        textEditorSession = nil
         showPreviewSlideshow = false
     }
 
@@ -1059,6 +1055,26 @@ final class AppState {
     func beginRenameSelection() {
         guard let item = activePane.selectedItems.first else { return }
         beginRename(item, in: activePaneIndex)
+    }
+
+    /// Starts keyboard-initiated rename after the Return key event has finished.
+    /// Creating and focusing the inline editor during that same event can deliver
+    /// the originating Return to the new field, which immediately commits it.
+    @discardableResult
+    func beginRenameSelectionAfterCurrentEvent(in paneIndex: Int) -> Bool {
+        guard renameTarget == nil,
+              panes.indices.contains(paneIndex),
+              let item = panes[paneIndex].selectedItems.first else { return false }
+
+        activePaneIndex = paneIndex
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.renameTarget == nil,
+                  self.panes.indices.contains(paneIndex),
+                  self.panes[paneIndex].selection.contains(item.id) else { return }
+            self.beginRename(item, in: paneIndex)
+        }
+        return true
     }
 
     func beginRename(_ item: FileItem, in paneIndex: Int) {

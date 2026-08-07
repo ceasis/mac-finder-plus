@@ -10,6 +10,8 @@ struct CodeTextView: NSViewRepresentable {
     var language: CodeLanguage
     var fontSize: CGFloat
     var wrapsLines: Bool
+    var isEditable = true
+    var requestsInitialFocus = false
     @Binding var pendingGoToLine: Int?
     var onSave: () -> Void
     var onCursorChange: (_ line: Int, _ column: Int) -> Void
@@ -22,6 +24,8 @@ struct CodeTextView: NSViewRepresentable {
 
         textView.delegate = context.coordinator
         textView.isRichText = false
+        textView.isEditable = isEditable
+        textView.requestsFocusWhenAttached = requestsInitialFocus
         textView.allowsUndo = true
         textView.usesFindBar = true
         textView.isIncrementalSearchingEnabled = true
@@ -51,6 +55,8 @@ struct CodeTextView: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.ruler = ruler
         context.coordinator.configure(textView)
+        textView.resetDocumentPosition()
+        textView.requestInitialFocusIfNeeded()
         return scrollView
     }
 
@@ -58,10 +64,14 @@ struct CodeTextView: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         context.coordinator.parent = self
         textView.onSave = onSave
+        textView.isEditable = isEditable
+        textView.requestsFocusWhenAttached = requestsInitialFocus
         if textView.string != text {
             textView.string = text
+            textView.resetDocumentPosition()
         }
         context.coordinator.configure(textView)
+        textView.requestInitialFocusIfNeeded()
         if let targetLine = pendingGoToLine {
             textView.goToLine(targetLine)
             DispatchQueue.main.async { pendingGoToLine = nil }
@@ -136,6 +146,31 @@ struct CodeTextView: NSViewRepresentable {
 /// handling that pre-empts the app menu.
 final class EditorTextView: NSTextView {
     var onSave: (() -> Void)?
+    var requestsFocusWhenAttached = false
+    private var didRequestInitialFocus = false
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        requestInitialFocusIfNeeded()
+    }
+
+    func requestInitialFocusIfNeeded() {
+        guard requestsFocusWhenAttached,
+              !didRequestInitialFocus,
+              let window else { return }
+        didRequestInitialFocus = true
+        window.makeFirstResponder(self)
+    }
+
+    /// NSTextView moves its insertion point to the end when `string` is
+    /// replaced. Reset both the caret and viewport so a newly opened document
+    /// always starts at its top-left edge.
+    func resetDocumentPosition() {
+        setSelectedRange(NSRange(location: 0, length: 0))
+        guard let scrollView = enclosingScrollView else { return }
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
 
     override func insertNewline(_ sender: Any?) {
         let indent = TextLineOperations.leadingWhitespace(string, at: selectedRange().location)

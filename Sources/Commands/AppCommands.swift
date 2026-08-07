@@ -13,9 +13,19 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .undoRedo) {
-            Button(appState.undoFileOperationTitle) { appState.undoLastFileOperation() }
+            Button(AppCommandResponder.canUndoFocusedTextEditor ? "Undo" : appState.undoFileOperationTitle) {
+                if !AppCommandResponder.undoFocusedTextEditor() {
+                    appState.undoLastFileOperation()
+                }
+            }
                 .keyboardShortcut("z", modifiers: .command)
-                .disabled(!appState.canUndoFileOperation)
+                .disabled(!AppCommandResponder.canUndoFocusedTextEditor && !appState.canUndoFileOperation)
+
+            Button("Redo") {
+                AppCommandResponder.redoFocusedTextEditor()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!AppCommandResponder.canRedoFocusedTextEditor)
         }
 
         CommandGroup(after: .newItem) {
@@ -26,12 +36,32 @@ struct AppCommands: Commands {
                 .disabled(!appState.hasActiveSelection)
             Button("Batch Rename…") { appState.beginBatchRename() }
                 .disabled(!appState.hasActiveSelection)
-            Button("Duplicate") { appState.duplicateSelection() }
+            Button(duplicateCommandTitle) {
+                if appState.activeToolPanel == .notes,
+                   let noteID = NotesStore.shared.selectedNoteID {
+                    NotesStore.shared.duplicateNote(noteID)
+                } else if appState.activeToolPanel == .calendar,
+                          let reminderID = CalendarToolState.shared.selectedReminderID,
+                          let copy = CalendarToolReminderStore.shared.duplicate(reminderID) {
+                    CalendarToolState.shared.selectReminder(copy)
+                } else if appState.activeToolPanel == .snippets {
+                    SnippetStore.shared.duplicateSelectedSnippet()
+                } else {
+                    appState.duplicateSelection()
+                }
+            }
                 .keyboardShortcut("d", modifiers: .command)
-                .disabled(!appState.hasActiveSelection)
+                .disabled(
+                    appState.activeToolPanel == .notes
+                        ? NotesStore.shared.selectedNoteID == nil
+                        : appState.activeToolPanel == .calendar
+                            ? CalendarToolState.shared.selectedReminderID == nil
+                            : appState.activeToolPanel == .snippets
+                                ? SnippetStore.shared.selectedSnippetID == nil
+                                : !appState.hasActiveSelection
+                )
             Button("Edit in Text Editor") { appState.beginEditText() }
                 .keyboardShortcut("e", modifiers: [.command, .option])
-                .disabled(!appState.hasActiveSelection)
             Button("Resize Images…") { appState.beginResize() }
                 .disabled(!appState.hasActiveSelection)
             Button("Convert…") { appState.beginConvert() }
@@ -63,11 +93,46 @@ struct AppCommands: Commands {
                 .disabled(!appState.hasActiveSelection)
             Button("Flip Vertical") { appState.transformSelection(operation: .flipVertical) }
                 .disabled(!appState.hasActiveSelection)
-            Button("Find") { appState.searchFocusTick += 1 }
+            Button("Find") {
+                if appState.activeToolPanel == .notes {
+                    NotesStore.shared.searchFocusTick += 1
+                } else if appState.activeToolPanel == .calendar {
+                    CalendarToolState.shared.focusReminderSearch()
+                } else if appState.activeToolPanel == .snippets {
+                    SnippetStore.shared.focusSearch()
+                } else {
+                    appState.searchFocusTick += 1
+                }
+            }
                 .keyboardShortcut("f", modifiers: .command)
-            Button("Move to Trash") { appState.trashSelection() }
+            Button(deleteCommandTitle) {
+                if AppCommandResponder.deleteToBeginningOfLineInFocusedTextEditor() {
+                    return
+                } else if appState.activeToolPanel == .notes {
+                    NotesStore.shared.deleteSelectedNote()
+                } else if appState.activeToolPanel == .calendar,
+                          let reminder = CalendarToolReminderStore.shared.reminder(
+                            id: CalendarToolState.shared.selectedReminderID
+                          ) {
+                    CalendarToolReminderStore.shared.delete(reminder)
+                    CalendarToolState.shared.selectedReminderID = nil
+                } else if appState.activeToolPanel == .snippets {
+                    SnippetStore.shared.deleteSelectedSnippet()
+                } else {
+                    appState.trashSelection()
+                }
+            }
                 .keyboardShortcut(.delete, modifiers: .command)
-                .disabled(!appState.hasActiveSelection)
+                .disabled(
+                    !AppCommandResponder.isFocusedTextEditor
+                        && (appState.activeToolPanel == .notes
+                            ? NotesStore.shared.selectedNoteID == nil
+                            : appState.activeToolPanel == .calendar
+                                ? CalendarToolState.shared.selectedReminderID == nil
+                                : appState.activeToolPanel == .snippets
+                                    ? SnippetStore.shared.selectedSnippetID == nil
+                                    : !appState.hasActiveSelection)
+                )
         }
 
         CommandGroup(after: .sidebar) {
@@ -181,14 +246,53 @@ struct AppCommands: Commands {
                 appState.showNotes()
                 NotesStore.shared.createNote()
             }
+            .keyboardShortcut("n", modifiers: [.command, .control])
+            Button("Save Note") {
+                NotesStore.shared.saveNow()
+            }
+            .keyboardShortcut("s", modifiers: .command)
+            .disabled(appState.activeToolPanel != .notes || !NotesStore.shared.hasUnsavedChanges)
+            Divider()
+            Button("Previous Note") { NotesStore.shared.selectAdjacentNote(offset: -1) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(appState.activeToolPanel != .notes || NotesStore.shared.filteredNotes.isEmpty)
+            Button("Next Note") { NotesStore.shared.selectAdjacentNote(offset: 1) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .disabled(appState.activeToolPanel != .notes || NotesStore.shared.filteredNotes.isEmpty)
+            Button("Pin or Unpin Note") { NotesStore.shared.toggleSelectedNotePinned() }
+                .keyboardShortcut("p", modifiers: [.command, .control])
+                .disabled(appState.activeToolPanel != .notes || NotesStore.shared.selectedNoteID == nil)
         }
 
         CommandMenu("Snippets") {
             Button("Show Snippets") { appState.showSnippets() }
+                .keyboardShortcut("j", modifiers: [.command, .option])
+            Button("New Text Snippet") {
+                appState.showSnippets()
+                SnippetStore.shared.focusComposer()
+            }
+            .keyboardShortcut("k", modifiers: [.command, .control])
             Button("Save Current Clipboard") {
                 appState.showSnippets()
                 SnippetStore.shared.addCurrentClipboard()
             }
+            .keyboardShortcut("v", modifiers: [.command, .control])
+            Divider()
+            Button("Previous Snippet") { SnippetStore.shared.selectAdjacentSnippet(offset: -1) }
+                .keyboardShortcut(.upArrow, modifiers: [.control, .option])
+                .disabled(appState.activeToolPanel != .snippets || SnippetStore.shared.filteredSnippets.isEmpty)
+            Button("Next Snippet") { SnippetStore.shared.selectAdjacentSnippet(offset: 1) }
+                .keyboardShortcut(.downArrow, modifiers: [.control, .option])
+                .disabled(appState.activeToolPanel != .snippets || SnippetStore.shared.filteredSnippets.isEmpty)
+            Button("Edit Text") { SnippetStore.shared.focusEditor() }
+                .keyboardShortcut("e", modifiers: [.command, .control])
+                .disabled(
+                    appState.activeToolPanel != .snippets
+                        || SnippetStore.shared.snippet(for: SnippetStore.shared.selectedSnippetID)?.kind != .text
+                )
+            Button("Pin or Unpin Snippet") { SnippetStore.shared.toggleSelectedSnippetPinned() }
+                .keyboardShortcut("p", modifiers: [.control, .option])
+                .disabled(appState.activeToolPanel != .snippets || SnippetStore.shared.selectedSnippetID == nil)
         }
 
         CommandMenu("Tools") {
@@ -198,6 +302,7 @@ struct AppCommands: Commands {
             Button("Drop Stack…") { appState.showDropStack() }
                 .keyboardShortcut("d", modifiers: [.command, .option])
             Button("Notes…") { appState.showNotes() }
+            Button("Text Editor…") { appState.beginEditText() }
             Button("Calendar…") { appState.showCalendarTool() }
             Button("Calculator…") { appState.showCalculatorTool() }
                 .keyboardShortcut("c", modifiers: [.command, .option])
@@ -248,18 +353,38 @@ struct AppCommands: Commands {
         CommandMenu("Clipboard") {
             Button("Show Clipboard History") { appState.showClipboardHistory() }
                 .keyboardShortcut("v", modifiers: [.command, .option])
-            Button("Copy Files") { appState.copyFilesOfSelection() }
+            Button(appState.activeToolPanel == .snippets ? "Copy Snippet" : "Copy Files") {
+                if !AppCommandResponder.copyFocusedTextEditor() {
+                    if appState.activeToolPanel == .snippets {
+                        SnippetStore.shared.copySelectedSnippet()
+                    } else {
+                        appState.copyFilesOfSelection()
+                    }
+                }
+            }
                 .keyboardShortcut("c", modifiers: .command)
-                .disabled(!appState.hasActiveSelection)
+                .disabled(
+                    !AppCommandResponder.isFocusedTextEditor
+                        && (appState.activeToolPanel == .snippets
+                            ? SnippetStore.shared.selectedSnippetID == nil
+                            : !appState.hasActiveSelection)
+                )
             Button("Cut Files") {
                 if !AppCommandResponder.cutFocusedTextEditor() {
-                    appState.cutFilesOfSelection()
+                    if appState.activeToolPanel != .snippets {
+                        appState.cutFilesOfSelection()
+                    }
                 }
             }
                 .keyboardShortcut("x", modifiers: .command)
+                .disabled(appState.activeToolPanel == .snippets && !AppCommandResponder.isFocusedTextEditor)
             Button("Paste") {
                 if !AppCommandResponder.pasteIntoFocusedTextEditor() {
-                    appState.pasteClipboardFilesToActiveFolder()
+                    if appState.activeToolPanel == .snippets {
+                        SnippetStore.shared.addCurrentClipboard()
+                    } else {
+                        appState.pasteClipboardFilesToActiveFolder()
+                    }
                 }
             }
                 .keyboardShortcut("v", modifiers: .command)
@@ -272,6 +397,66 @@ struct AppCommands: Commands {
                 .disabled(ClipboardHistoryStore.shared.entries.isEmpty)
         }
     }
+
+    private var duplicateCommandTitle: String {
+        switch appState.activeToolPanel {
+        case .notes: "Duplicate Note"
+        case .calendar: "Duplicate Reminder"
+        case .snippets: "Duplicate Snippet"
+        default: "Duplicate"
+        }
+    }
+
+    private var deleteCommandTitle: String {
+        switch appState.activeToolPanel {
+        case .notes: "Delete Note"
+        case .calendar: "Delete Reminder"
+        case .snippets: "Delete Snippet"
+        default: "Move to Trash"
+        }
+    }
+}
+
+struct CalendarCommands: Commands {
+    let appState: AppState
+
+    var body: some Commands {
+        CommandMenu("Calendar") {
+            Button("Show Calendar") { appState.showCalendarTool() }
+                .keyboardShortcut("l", modifiers: [.command, .option])
+            Button("New Reminder") {
+                appState.showCalendarTool()
+                CalendarToolState.shared.focusReminderComposer()
+            }
+            .keyboardShortcut("r", modifiers: [.command, .control])
+            Button("Search Reminders") {
+                appState.showCalendarTool()
+                CalendarToolState.shared.focusReminderSearch()
+            }
+            Divider()
+            Button("Today") { CalendarToolState.shared.goToToday() }
+                .keyboardShortcut("t", modifiers: [.command, .control])
+            Button("Previous Period") {
+                CalendarToolState.shared.navigatePeriod(direction: -1)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            Button("Next Period") {
+                CalendarToolState.shared.navigatePeriod(direction: 1)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            Divider()
+            Button("Week View") { CalendarToolState.shared.period = .week }
+                .keyboardShortcut("1", modifiers: [.command, .control])
+            Button("Month View") { CalendarToolState.shared.period = .month }
+                .keyboardShortcut("2", modifiers: [.command, .control])
+            Button("Year View") { CalendarToolState.shared.period = .year }
+                .keyboardShortcut("3", modifiers: [.command, .control])
+            Toggle("Show Agenda", isOn: Binding(
+                get: { CalendarToolState.shared.showsAgenda },
+                set: { CalendarToolState.shared.showsAgenda = $0 }
+            ))
+        }
+    }
 }
 
 /// Lets standard text controls keep native paste behavior before Workbench
@@ -279,6 +464,31 @@ struct AppCommands: Commands {
 @MainActor
 enum AppCommandResponder {
     typealias ActionSender = (_ action: Selector, _ target: AnyObject) -> Bool
+
+    static var isFocusedTextEditor: Bool {
+        guard let firstResponder = NSApp.keyWindow?.firstResponder else { return false }
+        return isEditingText(firstResponder)
+    }
+
+    static func copyFocusedTextEditor(
+        firstResponder: NSResponder? = NSApp.keyWindow?.firstResponder,
+        sendAction: ActionSender = { action, target in
+            NSApp.sendAction(action, to: target, from: nil)
+        }
+    ) -> Bool {
+        guard let firstResponder, isEditingText(firstResponder) else { return false }
+        return sendAction(#selector(NSText.copy(_:)), firstResponder)
+    }
+
+    static func deleteToBeginningOfLineInFocusedTextEditor(
+        firstResponder: NSResponder? = NSApp.keyWindow?.firstResponder,
+        sendAction: ActionSender = { action, target in
+            NSApp.sendAction(action, to: target, from: nil)
+        }
+    ) -> Bool {
+        guard let firstResponder, isEditingText(firstResponder) else { return false }
+        return sendAction(NSSelectorFromString("deleteToBeginningOfLine:"), firstResponder)
+    }
 
     static func pasteIntoFocusedTextEditor(
         firstResponder: NSResponder? = NSApp.keyWindow?.firstResponder,
@@ -300,6 +510,38 @@ enum AppCommandResponder {
         return sendAction(#selector(NSText.cut(_:)), firstResponder)
     }
 
+    static var canUndoFocusedTextEditor: Bool {
+        guard let firstResponder = NSApp.keyWindow?.firstResponder,
+              isEditingText(firstResponder) else { return false }
+        return firstResponder.undoManager?.canUndo == true
+    }
+
+    static var canRedoFocusedTextEditor: Bool {
+        guard let firstResponder = NSApp.keyWindow?.firstResponder,
+              isEditingText(firstResponder) else { return false }
+        return firstResponder.undoManager?.canRedo == true
+    }
+
+    @discardableResult
+    static func undoFocusedTextEditor(firstResponder: NSResponder? = NSApp.keyWindow?.firstResponder) -> Bool {
+        guard let firstResponder,
+              isEditingText(firstResponder),
+              let undoManager = firstResponder.undoManager,
+              undoManager.canUndo else { return false }
+        undoManager.undo()
+        return true
+    }
+
+    @discardableResult
+    static func redoFocusedTextEditor(firstResponder: NSResponder? = NSApp.keyWindow?.firstResponder) -> Bool {
+        guard let firstResponder,
+              isEditingText(firstResponder),
+              let undoManager = firstResponder.undoManager,
+              undoManager.canRedo else { return false }
+        undoManager.redo()
+        return true
+    }
+
     private static func isEditingText(_ responder: NSResponder) -> Bool {
         if responder is NSTextView || responder is NSText {
             return true
@@ -312,11 +554,18 @@ enum AppCommandResponder {
 }
 
 struct WorkbenchAppInfoCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
     let appState: AppState
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
             Button("About Workbench") { appState.showAboutWorkbench = true }
+            Divider()
+            Button("Review App Permissions…") {
+                PermissionReviewPresentationPolicy.markPresented()
+                openWindow(id: PermissionsReviewView.windowID)
+            }
         }
     }
 }

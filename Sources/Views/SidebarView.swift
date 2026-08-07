@@ -25,8 +25,9 @@ private enum SidebarSectionID: String, CaseIterable, Identifiable {
     }
 }
 
-private enum SidebarToolID: String, CaseIterable, Identifiable {
+enum SidebarToolID: String, CaseIterable, Identifiable {
     case notes
+    case textEditor
     case calendar
     case calculator
     case terminal
@@ -49,6 +50,7 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .notes: "Notes"
+        case .textEditor: "Text Editor"
         case .calendar: "Calendar"
         case .calculator: "Calculator"
         case .terminal: "Terminal"
@@ -71,6 +73,7 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .notes: "note.text"
+        case .textEditor: "square.and.pencil"
         case .calendar: "calendar"
         case .calculator: "function"
         case .terminal: "terminal"
@@ -90,9 +93,10 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         }
     }
 
-    var panel: DockedToolPanel {
+    var panel: DockedToolPanel? {
         switch self {
         case .notes: .notes
+        case .textEditor: nil
         case .calendar: .calendar
         case .calculator: .calculator
         case .terminal: .terminal
@@ -115,6 +119,7 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .notes: "Open notes"
+        case .textEditor: "Create a document or edit the selected text file"
         case .calendar: "Browse weeks, months, and years"
         case .calculator: "Calculate expressions and plot functions"
         case .terminal: "Run shell commands in the active folder"
@@ -141,6 +146,43 @@ private enum SidebarToolID: String, CaseIterable, Identifiable {
         default:
             false
         }
+    }
+
+    @MainActor
+    func isActive(in appState: AppState) -> Bool {
+        if self == .textEditor {
+            return appState.textEditorSession != nil
+        }
+        guard let panel else { return false }
+        return appState.activeToolPanel == panel
+    }
+}
+
+enum SidebarToolCatalog {
+    static let defaultOrder: [SidebarToolID] = [
+        .notes,
+        .snippets,
+        .textEditor,
+        .calendar,
+        .calculator,
+        .terminal,
+        .cleanup,
+        .diskSpace,
+        .organize,
+        .clipboard,
+        .voiceRecorder,
+        .pomodoro,
+        .screenshot,
+        .screenRecording,
+    ]
+
+    static func placingTextEditorNextToSnippets(in order: [SidebarToolID]) -> [SidebarToolID] {
+        var updated = order.filter { $0 != .textEditor }
+        let anchorIndex = updated.firstIndex(of: .snippets)
+            ?? updated.firstIndex(of: .notes)
+        let insertionIndex = anchorIndex.map { $0 + 1 } ?? 0
+        updated.insert(.textEditor, at: min(insertionIndex, updated.count))
+        return updated
     }
 }
 
@@ -179,6 +221,7 @@ enum SidebarLayoutPreferences {
     static let deviceOrderKey = "sidebar.deviceOrder"
     static let toolOrderKey = "sidebar.toolOrder"
     static let notesSnippetsOrderMigrationKey = "sidebar.toolOrder.notesSnippetsFirst"
+    static let textEditorOrderMigrationKey = "sidebar.toolOrder.textEditorAfterSnippets"
     static let terminalOrderMigrationKey = "sidebar.toolOrder.terminalAfterCalculator"
     static let recentFoldersSectionMigrationKey = "sidebar.sectionOrder.recentFoldersAfterPlaces"
     static let defaultPlaceOrder = ["home", "desktop", "documents", "downloads"]
@@ -192,6 +235,7 @@ enum SidebarLayoutPreferences {
             toolOrderKey,
             SidebarToolViewMode.defaultsKey,
             notesSnippetsOrderMigrationKey,
+            textEditorOrderMigrationKey,
             terminalOrderMigrationKey,
             recentFoldersSectionMigrationKey,
         ].forEach(defaults.removeObject(forKey:))
@@ -221,6 +265,47 @@ enum SidebarFileDropPolicy {
     }
 }
 
+enum SidebarFavoriteDropPolicy {
+    static func folders(
+        from urls: [URL],
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        var seen = Set<String>()
+        return urls.compactMap { url in
+            let standardized = url.standardizedFileURL
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(
+                atPath: standardized.path,
+                isDirectory: &isDirectory
+            ), isDirectory.boolValue,
+            seen.insert(standardized.path).inserted else {
+                return nil
+            }
+            return standardized
+        }
+    }
+}
+
+enum RecentFolderElapsedFormatter {
+    static let secondsOnlyThreshold = 2 * 60
+
+    static func text(since accessedAt: Date, now: Date) -> String {
+        let totalSeconds = Int(max(now.timeIntervalSince(accessedAt), 0).rounded(.down))
+        if totalSeconds < secondsOnlyThreshold {
+            return "\(totalSeconds) sec"
+        }
+
+        let hours = totalSeconds / 3_600
+        let minutes = (totalSeconds % 3_600) / 60
+        let seconds = totalSeconds % 60
+
+        if hours > 0 {
+            return minutes > 0 ? "\(hours) hr, \(minutes) min" : "\(hours) hr"
+        }
+        return seconds > 0 ? "\(minutes) min, \(seconds) sec" : "\(minutes) min"
+    }
+}
+
 struct SidebarView: View {
     @Environment(AppState.self) private var appState
     @AppStorage(SidebarToolViewMode.defaultsKey) private var toolViewModeRaw = SidebarToolViewMode.list.rawValue
@@ -237,6 +322,7 @@ struct SidebarView: View {
     @State private var deviceDropTargetID: String?
     @State private var draggedFavoriteID: String?
     @State private var favoriteDropTargetID: String?
+    @State private var isFavoritePinDropTargeted = false
     @State private var draggedTool: SidebarToolID?
     @State private var toolDropTarget: SidebarToolID?
 
@@ -281,9 +367,9 @@ struct SidebarView: View {
         if !devices.isEmpty {
             sections.append(.devices)
         }
-        if !favorites.isEmpty {
-            sections.append(.favorites)
-        }
+        // Keep Favorites visible even when empty so there is always a stable
+        // target for dragging a folder out of either file pane.
+        sections.append(.favorites)
         sections.append(.tools)
         sections.append(.proTools)
         return orderStore.orderedSections(sections)
@@ -304,17 +390,11 @@ struct SidebarView: View {
                 SidebarLayoutPreferences.reset()
             }
         }
-        .dropDestination(for: URL.self) { urls, _ in
-            // Dropping a folder pins it as a favorite. Drops from Finder also
-            // extend the sandbox to that folder, so save the bookmark right away.
-            let folders = urls.filter { url in
-                (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-            }
-            guard !folders.isEmpty else { return false }
-            for folder in folders {
-                BookmarkStore.shared.save(folder)
-            }
-            return true
+        .onDrop(
+            of: [AppState.internalFileDragType, UTType.fileURL],
+            isTargeted: $isFavoritePinDropTargeted
+        ) { providers in
+            pinFavoriteDrop(providers: providers)
         }
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
@@ -436,10 +516,17 @@ struct SidebarView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(recentFolderTitle(entry.url))
                                 .lineLimit(1)
-                            Text(entry.accessedAt, style: .relative)
+                            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                                Text(
+                                    RecentFolderElapsedFormatter.text(
+                                        since: entry.accessedAt,
+                                        now: timeline.date
+                                    )
+                                )
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -500,6 +587,46 @@ struct SidebarView: View {
         case .favorites:
             let orderedFavorites = favorites
             Section(header: sidebarSectionHeader(section)) {
+                if orderedFavorites.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "folder.badge.plus")
+                            .frame(width: 16)
+                        Text("Drop folders here")
+                        Spacer(minLength: 0)
+                    }
+                    .font(.callout)
+                    .foregroundStyle(
+                        isFavoritePinDropTargeted ? Color.accentColor : Color.secondary
+                    )
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 8)
+                    .background {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(
+                                isFavoritePinDropTargeted
+                                    ? Color.accentColor.opacity(0.13)
+                                    : Color.secondary.opacity(0.06)
+                            )
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(
+                                isFavoritePinDropTargeted
+                                    ? Color.accentColor.opacity(0.9)
+                                    : Color.secondary.opacity(0.16),
+                                style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                            )
+                    }
+                    .contentShape(Rectangle())
+                    .onDrop(
+                        of: [AppState.internalFileDragType, UTType.fileURL],
+                        isTargeted: $isFavoritePinDropTargeted
+                    ) { providers in
+                        pinFavoriteDrop(providers: providers)
+                    }
+                    .help("Drag folders here to pin them to Favorites")
+                }
+
                 ForEach(orderedFavorites, id: \.self) { url in
                     let favoriteID = favoriteReorderID(url)
                     SidebarReorderableLabelRow(
@@ -538,10 +665,10 @@ struct SidebarView: View {
                         }
                     }
                 }
-                // Drop a folder or file between rows to insert it there;
+                // Drop a folder between rows to insert it there;
                 // SwiftUI draws the blue insertion line automatically.
                 .onInsert(of: [UTType.fileURL]) { index, providers in
-                    insertFavorites(at: index, providers: providers)
+                    _ = pinFavoriteDrop(providers: providers, at: index)
                 }
             }
 
@@ -639,7 +766,7 @@ struct SidebarView: View {
     }
 
     private func toolListRow(_ tool: SidebarToolID, in orderedTools: [SidebarToolID]) -> some View {
-        let isActive = appState.activeToolPanel == tool.panel
+        let isActive = tool.isActive(in: appState)
         return SidebarToolButton(
             title: tool.title,
             systemImage: tool.systemImage,
@@ -675,7 +802,7 @@ struct SidebarView: View {
     }
 
     private func toolIconButton(_ tool: SidebarToolID, in orderedTools: [SidebarToolID]) -> some View {
-        let isActive = appState.activeToolPanel == tool.panel
+        let isActive = tool.isActive(in: appState)
         return SidebarToolIconButton(
             title: tool.title,
             systemImage: tool.systemImage,
@@ -711,7 +838,7 @@ struct SidebarView: View {
     }
 
     private func toolLabeledIconButton(_ tool: SidebarToolID, in orderedTools: [SidebarToolID]) -> some View {
-        let isActive = appState.activeToolPanel == tool.panel
+        let isActive = tool.isActive(in: appState)
         return SidebarToolLabeledIconButton(
             title: tool.title,
             systemImage: tool.systemImage,
@@ -793,7 +920,8 @@ struct SidebarView: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 2)
         .background {
-            if sectionDropTarget == section {
+            if sectionDropTarget == section
+                || (section == .favorites && isFavoritePinDropTargeted) {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(Color.accentColor.opacity(0.14))
             }
@@ -909,6 +1037,8 @@ struct SidebarView: View {
             appState.showClipboardHistory()
         case .notes:
             appState.showNotes()
+        case .textEditor:
+            appState.beginEditText()
         case .calendar:
             appState.showCalendarTool()
         case .calculator:
@@ -985,17 +1115,90 @@ struct SidebarView: View {
         }
     }
 
-    private func insertFavorites(at index: Int, providers: [NSItemProvider]) {
-        for provider in providers {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                let url: URL? = (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
-                    ?? (item as? URL)
-                guard let resolved = url else { return }
-                Task { @MainActor in
-                    BookmarkStore.shared.insert(resolved, at: index)
-                }
+    private func pinFavoriteDrop(
+        providers: [NSItemProvider],
+        at insertionIndex: Int? = nil
+    ) -> Bool {
+        isFavoritePinDropTargeted = false
+
+        if FileDragItemProvider.containsInternalMarker(
+            providers,
+            typeIdentifier: AppState.internalFileDragType.identifier
+        ) {
+            let urls = appState.consumeCurrentFileDragURLs()
+            if !urls.isEmpty {
+                return pinFavoriteFolders(urls, at: insertionIndex)
             }
         }
+
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        guard !fileProviders.isEmpty else { return false }
+
+        let collector = SidebarFavoriteURLCollector()
+        let group = DispatchGroup()
+        for (index, provider) in fileProviders.enumerated() {
+            group.enter()
+            provider.loadItem(
+                forTypeIdentifier: UTType.fileURL.identifier,
+                options: nil
+            ) { item, _ in
+                if let url = FileDropPayload.fileURL(from: item) {
+                    collector.insert(url, at: index)
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            _ = pinFavoriteFolders(collector.urls, at: insertionIndex)
+        }
+        return true
+    }
+
+    @discardableResult
+    private func pinFavoriteFolders(_ urls: [URL], at insertionIndex: Int?) -> Bool {
+        let folders = SidebarFavoriteDropPolicy.folders(from: urls)
+        guard !folders.isEmpty else {
+            if !urls.isEmpty {
+                appState.lastError = "Only folders can be added to Favorites."
+            }
+            return false
+        }
+
+        if let insertionIndex {
+            for (offset, folder) in folders.enumerated() {
+                BookmarkStore.shared.insert(folder, at: insertionIndex + offset)
+            }
+        } else {
+            for folder in folders {
+                BookmarkStore.shared.save(folder)
+            }
+        }
+
+        let insertionDescription = insertionIndex.map { String($0) } ?? "end"
+        DragDropLog.log(
+            "PIN FAVORITES count=\(folders.count) index=\(insertionDescription)"
+        )
+        return true
+    }
+}
+
+private final class SidebarFavoriteURLCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [Int: URL] = [:]
+
+    var urls: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.sorted { $0.key < $1.key }.map(\.value)
+    }
+
+    func insert(_ url: URL, at index: Int) {
+        lock.lock()
+        entries[index] = url
+        lock.unlock()
     }
 }
 
@@ -1004,21 +1207,7 @@ struct SidebarView: View {
 private final class SidebarOrderStore {
     static let shared = SidebarOrderStore()
 
-    private static let defaultToolOrder: [SidebarToolID] = [
-        .notes,
-        .calendar,
-        .calculator,
-        .terminal,
-        .snippets,
-        .cleanup,
-        .diskSpace,
-        .organize,
-        .clipboard,
-        .voiceRecorder,
-        .pomodoro,
-        .screenshot,
-        .screenRecording,
-    ]
+    private static let defaultToolOrder = SidebarToolCatalog.defaultOrder
 
     private var sectionOrder: [SidebarSectionID]
     private var placeOrder: [String]
@@ -1040,6 +1229,7 @@ private final class SidebarOrderStore {
             allCases: Self.defaultToolOrder
         )
         migrateNotesAndSnippetsToTopIfNeeded()
+        migrateTextEditorNextToSnippetsIfNeeded()
         migrateTerminalNextToCalculatorIfNeeded()
         migrateRecentFoldersAfterPlacesIfNeeded()
     }
@@ -1082,6 +1272,18 @@ private final class SidebarOrderStore {
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.notesSnippetsOrderMigrationKey)
     }
 
+    private func migrateTextEditorNextToSnippetsIfNeeded() {
+        guard !UserDefaults.standard.bool(
+            forKey: SidebarLayoutPreferences.textEditorOrderMigrationKey
+        ) else { return }
+        toolOrder = SidebarToolCatalog.placingTextEditorNextToSnippets(in: toolOrder)
+        persistEnumArray(toolOrder, key: SidebarLayoutPreferences.toolOrderKey)
+        UserDefaults.standard.set(
+            true,
+            forKey: SidebarLayoutPreferences.textEditorOrderMigrationKey
+        )
+    }
+
     private func migrateTerminalNextToCalculatorIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: SidebarLayoutPreferences.terminalOrderMigrationKey) else { return }
         toolOrder.removeAll { $0 == .terminal }
@@ -1121,6 +1323,7 @@ private final class SidebarOrderStore {
         persistStringArray(deviceOrder, key: SidebarLayoutPreferences.deviceOrderKey)
         persistEnumArray(toolOrder, key: SidebarLayoutPreferences.toolOrderKey)
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.notesSnippetsOrderMigrationKey)
+        UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.textEditorOrderMigrationKey)
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.terminalOrderMigrationKey)
         UserDefaults.standard.set(true, forKey: SidebarLayoutPreferences.recentFoldersSectionMigrationKey)
     }

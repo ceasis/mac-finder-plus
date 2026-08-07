@@ -14,6 +14,40 @@ private struct PendingLongVideoTransform {
     }
 }
 
+enum VideoPreviewPlaybackPreferences {
+    static let mutedKey = "previewVideo.isMuted"
+    static let lastUnmutedAtKey = "previewVideo.lastUnmutedAt"
+    static let unmutedValidityInterval: TimeInterval = 60 * 60
+
+    static func shouldStartMuted(
+        defaults: UserDefaults = .standard,
+        now: Date = .now
+    ) -> Bool {
+        guard defaults.object(forKey: mutedKey) as? Bool == false,
+              let lastUnmutedAt = defaults.object(forKey: lastUnmutedAtKey) as? Date else {
+            return true
+        }
+
+        let elapsed = max(now.timeIntervalSince(lastUnmutedAt), 0)
+        guard elapsed <= unmutedValidityInterval else {
+            defaults.set(true, forKey: mutedKey)
+            return true
+        }
+        return false
+    }
+
+    static func recordMuteState(
+        _ isMuted: Bool,
+        defaults: UserDefaults = .standard,
+        now: Date = .now
+    ) {
+        defaults.set(isMuted, forKey: mutedKey)
+        if !isMuted {
+            defaults.set(now, forKey: lastUnmutedAtKey)
+        }
+    }
+}
+
 /// Inline media preview for the active pane's selection: images (downsampled,
 /// off-main decode) and video/audio with autoplay and a loop toggle.
 struct PreviewPane: View {
@@ -25,7 +59,7 @@ struct PreviewPane: View {
     @State private var transformActivityID: UUID?
     @State private var pendingLongVideoTransform: PendingLongVideoTransform?
     @State private var isCheckingVideoDuration = false
-    @State private var showsVideoControls = true
+    @AppStorage("previewVideo.showsControls") private var showsVideoControls = true
 
     private var selectedItems: [FileItem] { appState.activePane.selectedItems }
     private var mediaItems: [FileItem] { selectedItems.filter(\.isPreviewable) }
@@ -92,12 +126,7 @@ struct PreviewPane: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 240, idealWidth: 340, maxHeight: .infinity)
-        .onKeyPress("0") { rateSelection(0); return .handled }
-        .onKeyPress("1") { rateSelection(1); return .handled }
-        .onKeyPress("2") { rateSelection(2); return .handled }
-        .onKeyPress("3") { rateSelection(3); return .handled }
-        .onKeyPress("4") { rateSelection(4); return .handled }
-        .onKeyPress("5") { rateSelection(5); return .handled }
+        .ratingKeyShortcuts { rateSelection($0) }
         .alert("Long Video Export", isPresented: Binding(
             get: { pendingLongVideoTransform != nil },
             set: { isPresented in
@@ -342,8 +371,10 @@ struct PreviewPane: View {
                 sizeScale: previewMediaSizeScale,
                 showsVideoControls: $showsVideoControls
             )
-        } else if item.isText {
+        } else if item.isDelimitedSpreadsheet {
             TextFilePreview(item: item)
+        } else if item.isText {
+            TextDocumentEditorView(item: item)
         } else if item.isRichDocument {
             // Quick Look renders PDFs, RTF, and Office docs natively.
             QuickLookPreview(url: item.url)
@@ -561,6 +592,7 @@ private struct SingleVideoPreview: View {
     private func preparePlayer() {
         teardown()
         let newPlayer = AVPlayer(url: item.url)
+        newPlayer.isMuted = VideoPreviewPlaybackPreferences.shouldStartMuted()
         player = newPlayer
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
@@ -709,6 +741,19 @@ private struct MediaPreviewTile: View {
     }
 }
 
+enum VideoPlaybackMuteControl {
+    static func symbolName(isMuted: Bool) -> String {
+        isMuted ? "speaker.slash.circle.fill" : "speaker.wave.2.circle.fill"
+    }
+
+    @discardableResult
+    static func toggle(player: AVPlayer?) -> Bool {
+        guard let player else { return false }
+        player.isMuted.toggle()
+        return player.isMuted
+    }
+}
+
 private struct VideoPlaybackControls: View {
     let player: AVPlayer?
 
@@ -716,6 +761,7 @@ private struct VideoPlaybackControls: View {
     @State private var duration: Double = 0
     @State private var currentTime: Double = 0
     @State private var isPlaying = false
+    @State private var isMuted = false
     @State private var isScrubbing = false
     @State private var resumesAfterScrubbing = false
     @State private var timeObserver: Any?
@@ -746,6 +792,20 @@ private struct VideoPlaybackControls: View {
             .buttonStyle(.plain)
             .disabled(player == nil)
             .help(isPlaying ? "Pause" : "Play")
+
+            Button {
+                isMuted = VideoPlaybackMuteControl.toggle(player: player)
+                VideoPreviewPlaybackPreferences.recordMuteState(isMuted)
+            } label: {
+                Image(systemName: VideoPlaybackMuteControl.symbolName(isMuted: isMuted))
+                    .font(.system(size: 30))
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(player == nil)
+            .help(isMuted ? "Unmute video" : "Mute video")
+            .accessibilityLabel(isMuted ? "Unmute video" : "Mute video")
 
             VStack(spacing: 4) {
                 Slider(
@@ -784,6 +844,7 @@ private struct VideoPlaybackControls: View {
         observedPlayer = activePlayer
         currentTime = max(CMTimeGetSeconds(activePlayer.currentTime()), 0)
         isPlaying = activePlayer.timeControlStatus != .paused
+        isMuted = activePlayer.isMuted
         timeObserver = activePlayer.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 1.0 / 30.0, preferredTimescale: 600),
             queue: .main
@@ -852,6 +913,7 @@ private struct VideoPlaybackControls: View {
         duration = 0
         currentTime = 0
         isPlaying = false
+        isMuted = false
         isScrubbing = false
         resumesAfterScrubbing = false
     }
@@ -908,8 +970,9 @@ private struct VideoTimelineTrimView: View {
     @State private var activeHandle: TrimHandle?
     @State private var removeAudio = false
     @State private var showsIntervalCapture = false
-    @State private var screenshotIntervalText = "100"
-    @State private var screenshotIntervalUnit: VideoScreenshotIntervalUnit = .milliseconds
+    @AppStorage("previewVideo.screenshotInterval") private var screenshotIntervalText = "100"
+    @AppStorage("previewVideo.screenshotIntervalUnit") private var screenshotIntervalUnitRaw =
+        VideoScreenshotIntervalUnit.milliseconds.rawValue
     @State private var hasAudioTrack = false
 
     private let thumbnailHeight: CGFloat = 66
@@ -945,6 +1008,17 @@ private struct VideoTimelineTrimView: View {
 
     private var screenshotIntervalValue: Double {
         Double(screenshotIntervalText) ?? 0
+    }
+
+    private var screenshotIntervalUnit: VideoScreenshotIntervalUnit {
+        VideoScreenshotIntervalUnit(rawValue: screenshotIntervalUnitRaw) ?? .milliseconds
+    }
+
+    private var screenshotIntervalUnitBinding: Binding<VideoScreenshotIntervalUnit> {
+        Binding(
+            get: { screenshotIntervalUnit },
+            set: { screenshotIntervalUnitRaw = $0.rawValue }
+        )
     }
 
     private var screenshotIntervalSeconds: Double {
@@ -1013,91 +1087,98 @@ private struct VideoTimelineTrimView: View {
 
             Spacer()
 
-            NativePreviewToolbarButton(
-                systemImage: "arrow.left.to.line",
-                accessibilityLabel: "Set In Point",
-                help: "Set trim start to the current playback position",
-                isEnabled: player != nil && duration > 0
-            ) {
+            Button {
                 markIn()
+            } label: {
+                Image(systemName: "arrow.left.to.line")
+                    .frame(width: 28, height: 16)
+                    .contentShape(Rectangle())
             }
-            .frame(width: 42, height: 22)
+            .disabled(player == nil || duration <= 0)
+            .help("Set trim start to the current playback position")
+            .accessibilityLabel("Set In Point")
 
-            NativePreviewToolbarButton(
-                systemImage: "arrow.right.to.line",
-                accessibilityLabel: "Set Out Point",
-                help: "Set trim end to the current playback position",
-                isEnabled: player != nil && duration > 0
-            ) {
+            Button {
                 markOut()
+            } label: {
+                Image(systemName: "arrow.right.to.line")
+                    .frame(width: 28, height: 16)
+                    .contentShape(Rectangle())
             }
-            .frame(width: 42, height: 22)
+            .disabled(player == nil || duration <= 0)
+            .help("Set trim end to the current playback position")
+            .accessibilityLabel("Set Out Point")
 
-            NativePreviewToolbarButton(
-                systemImage: "camera",
-                accessibilityLabel: "Capture Frame",
-                help: "Save the current video frame as a PNG beside the video",
-                isEnabled: player != nil
-            ) {
+            Button {
                 captureCurrentFrame()
+            } label: {
+                Image(systemName: "camera")
+                    .frame(width: 28, height: 16)
+                    .contentShape(Rectangle())
             }
-            .frame(width: 44, height: 22)
+            .disabled(player == nil)
+            .help("Save the current video frame as a PNG beside the video")
+            .accessibilityLabel("Capture Frame")
 
-            NativePreviewToolbarButton(
-                systemImage: "camera.on.rectangle",
-                accessibilityLabel: "Capture Screenshots at an Interval",
-                help: "Capture screenshots from the full video at a chosen interval",
-                isEnabled: duration > 0
-            ) {
+            Button {
                 showsIntervalCapture.toggle()
+            } label: {
+                Image(systemName: "camera.on.rectangle")
+                    .frame(width: 29, height: 16)
+                    .contentShape(Rectangle())
             }
-            .frame(width: 45, height: 22)
+            .disabled(duration <= 0)
+            .help("Capture screenshots from the full video at a chosen interval")
+            .accessibilityLabel("Capture Screenshots at an Interval")
             .popover(isPresented: $showsIntervalCapture, arrowEdge: .bottom) {
                 intervalCapturePopover
             }
 
-            NativePreviewToolbarButton(
-                title: "Remove Audio",
-                systemImage: removeAudio ? "speaker.slash.fill" : "speaker.slash",
-                accessibilityLabel: "Remove Audio",
-                help: "Keep the audio track and set its volume to zero",
-                isEnabled: hasAudioTrack,
-                isToggle: true,
-                isOn: removeAudio
-            ) { newValue in
-                removeAudio = newValue
+            Button {
+                removeAudio.toggle()
+            } label: {
+                Label(
+                    "Remove Audio",
+                    systemImage: removeAudio ? "speaker.slash.fill" : "speaker.slash"
+                )
             }
+            .disabled(!hasAudioTrack)
+            .help("Keep the audio track and set its volume to zero")
+            .accessibilityValue(removeAudio ? "On" : "Off")
 
-            NativePreviewToolbarButton(
-                title: "Export Audio",
-                systemImage: "waveform",
-                accessibilityLabel: "Export Audio",
-                help: hasAudioTrack
-                    ? "Export the selected range as an audio-only M4A file"
-                    : "This video has no audio track",
-                isEnabled: isValid && hasAudioTrack
-            ) {
+            Button {
                 appState.exportVideoAudio(item, inTime: inTime, outTime: outTime)
+            } label: {
+                Label("Export Audio", systemImage: "waveform")
             }
+            .disabled(!isValid || !hasAudioTrack)
+            .help(
+                hasAudioTrack
+                    ? "Export the selected range as an audio-only M4A file"
+                    : "This video has no audio track"
+            )
 
-            NativePreviewToolbarButton(
-                title: "Export",
-                systemImage: "square.and.arrow.down",
-                accessibilityLabel: "Export Video",
-                help: removeAudio
-                    ? "Export the selected range with a silent audio track"
-                    : "Export the selected range without re-encoding",
-                isEnabled: isValid
-            ) {
+            Button {
                 appState.exportVideoTrim(
                     item,
                     inTime: inTime,
                     outTime: outTime,
                     muteAudio: removeAudio
                 )
+            } label: {
+                Label("Export", systemImage: "square.and.arrow.down")
             }
+            .disabled(!isValid)
+            .help(
+                removeAudio
+                    ? "Export the selected range with a silent audio track"
+                    : "Export the selected range without re-encoding"
+            )
         }
         .font(.caption)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .zIndex(10)
         .onChange(of: removeAudio) { _, shouldMute in
             player?.volume = shouldMute ? 0 : 1
         }
@@ -1142,7 +1223,7 @@ private struct VideoTimelineTrimView: View {
                     }
                 }
 
-                Picker("Unit", selection: $screenshotIntervalUnit) {
+                Picker("Unit", selection: screenshotIntervalUnitBinding) {
                     ForEach(VideoScreenshotIntervalUnit.allCases) { unit in
                         Text(unit.title).tag(unit)
                     }
@@ -1163,7 +1244,7 @@ private struct VideoTimelineTrimView: View {
                     ForEach(screenshotIntervalPresets) { preset in
                         Button(preset.title) {
                             screenshotIntervalText = String(preset.value)
-                            screenshotIntervalUnit = preset.unit
+                            screenshotIntervalUnitRaw = preset.unit.rawValue
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -2501,136 +2582,6 @@ private struct QuickLookPreview: NSViewRepresentable {
 final class PassthroughAVPlayerView: AVPlayerView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
-    }
-}
-
-@MainActor
-final class PreviewToolbarNSButton: NSButton {
-    var onPress: (Bool) -> Void = { _ in }
-    private var reportsToggleState = false
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        target = self
-        action = #selector(performToolbarAction)
-        bezelStyle = .rounded
-        controlSize = .small
-        imageScaling = .scaleProportionallyDown
-        font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        target = self
-        action = #selector(performToolbarAction)
-    }
-
-    func configure(
-        title: String,
-        systemImage: String,
-        accessibilityLabel: String,
-        help: String,
-        isEnabled: Bool,
-        isToggle: Bool,
-        isOn: Bool,
-        onPress: @escaping (Bool) -> Void
-    ) {
-        self.title = title
-        image = NSImage(
-            systemSymbolName: systemImage,
-            accessibilityDescription: accessibilityLabel
-        )
-        imagePosition = title.isEmpty ? .imageOnly : .imageLeading
-        toolTip = help
-        setAccessibilityLabel(accessibilityLabel)
-        self.isEnabled = isEnabled
-        reportsToggleState = isToggle
-        setButtonType(isToggle ? .toggle : .momentaryPushIn)
-        state = isToggle && isOn ? .on : .off
-        self.onPress = onPress
-    }
-
-    @objc
-    private func performToolbarAction() {
-        onPress(reportsToggleState && state == .on)
-    }
-}
-
-private struct NativePreviewToolbarButton: NSViewRepresentable {
-    let title: String
-    let systemImage: String
-    let accessibilityLabel: String
-    let help: String
-    let isEnabled: Bool
-    let isToggle: Bool
-    let isOn: Bool
-    let action: (Bool) -> Void
-
-    init(
-        title: String = "",
-        systemImage: String,
-        accessibilityLabel: String,
-        help: String,
-        isEnabled: Bool,
-        action: @escaping () -> Void
-    ) {
-        self.title = title
-        self.systemImage = systemImage
-        self.accessibilityLabel = accessibilityLabel
-        self.help = help
-        self.isEnabled = isEnabled
-        self.isToggle = false
-        self.isOn = false
-        self.action = { _ in action() }
-    }
-
-    init(
-        title: String,
-        systemImage: String,
-        accessibilityLabel: String,
-        help: String,
-        isEnabled: Bool,
-        isToggle: Bool,
-        isOn: Bool,
-        action: @escaping (Bool) -> Void
-    ) {
-        self.title = title
-        self.systemImage = systemImage
-        self.accessibilityLabel = accessibilityLabel
-        self.help = help
-        self.isEnabled = isEnabled
-        self.isToggle = isToggle
-        self.isOn = isOn
-        self.action = action
-    }
-
-    func makeNSView(context: Context) -> PreviewToolbarNSButton {
-        PreviewToolbarNSButton(frame: .zero)
-    }
-
-    func updateNSView(_ button: PreviewToolbarNSButton, context: Context) {
-        button.configure(
-            title: title,
-            systemImage: systemImage,
-            accessibilityLabel: accessibilityLabel,
-            help: help,
-            isEnabled: isEnabled,
-            isToggle: isToggle,
-            isOn: isOn,
-            onPress: action
-        )
-    }
-
-    func sizeThatFits(
-        _ proposal: ProposedViewSize,
-        nsView: PreviewToolbarNSButton,
-        context: Context
-    ) -> CGSize? {
-        let intrinsic = nsView.intrinsicContentSize
-        return CGSize(
-            width: proposal.width ?? intrinsic.width,
-            height: proposal.height ?? intrinsic.height
-        )
     }
 }
 

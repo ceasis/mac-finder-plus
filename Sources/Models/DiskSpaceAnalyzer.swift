@@ -129,6 +129,25 @@ struct DiskSpaceDeletionCandidate: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+struct DiskSpaceFolderNode: Codable, Identifiable, Hashable, Sendable {
+    let path: String
+    let name: String
+    let bytes: Int64
+    let directBytes: Int64
+    let fileCount: Int
+    let directFileCount: Int
+    let children: [DiskSpaceFolderNode]
+
+    var id: String { path }
+    var url: URL { URL(fileURLWithPath: path, isDirectory: true) }
+    var sizeText: String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+    var directSizeText: String {
+        ByteCountFormatter.string(fromByteCount: directBytes, countStyle: .file)
+    }
+}
+
 enum DiskSpaceSystemItem {
     private static let protectedRoots = [
         "/System",
@@ -159,6 +178,7 @@ struct DiskSpaceAnalysis: Codable, Sendable {
     let sizeSlices: [DiskSpaceSlice]
     let applications: [DiskSpaceApplication]
     let deletionCandidates: [DiskSpaceContentKind: [DiskSpaceDeletionCandidate]]
+    let folderTree: DiskSpaceFolderNode?
     let scannedFileCount: Int
 
     var totalBytes: Int64 {
@@ -295,6 +315,7 @@ enum DiskSpaceAnalyzerEngine {
         }
 
         var accumulator = DiskSpaceAccumulator(
+            root: root,
             thresholds: options.sizeThresholds,
             now: Date(),
             calendar: Calendar.current
@@ -424,6 +445,7 @@ enum DiskSpaceAnalyzerEngine {
 private struct DiskSpaceAccumulator {
     private static let deletionCandidateLimit = 50
 
+    let root: URL
     let thresholds: DiskSpaceSizeThresholds
     let now: Date
     let calendar: Calendar
@@ -437,6 +459,7 @@ private struct DiskSpaceAccumulator {
     var deletionCandidates = Dictionary(
         uniqueKeysWithValues: DiskSpaceContentKind.allCases.map { ($0, [DiskSpaceDeletionCandidate]()) }
     )
+    var folderUsage: [String: DiskSpaceFolderUsage] = [:]
     var scannedFileCount = 0
     var totalBytes: Int64 = 0
 
@@ -444,6 +467,11 @@ private struct DiskSpaceAccumulator {
         let size = max(bytes, 0)
         let kind = DiskSpaceAnalyzerEngine.contentKind(for: url)
         add(size: size, kind: kind, modified: modified)
+        addFolderUsage(
+            startingAt: url.deletingLastPathComponent(),
+            bytes: size,
+            fileCount: 1
+        )
         addDeletionCandidate(
             DiskSpaceDeletionCandidate(
                 path: url.path,
@@ -457,7 +485,13 @@ private struct DiskSpaceAccumulator {
 
     mutating func addApplication(at url: URL, bytes: Int64, fileCount: Int, modified: Date) {
         let size = max(bytes, 0)
-        add(size: size, kind: .apps, modified: modified, fileCount: max(fileCount, 1))
+        let countedFiles = max(fileCount, 1)
+        add(size: size, kind: .apps, modified: modified, fileCount: countedFiles)
+        addFolderUsage(
+            startingAt: url,
+            bytes: size,
+            fileCount: countedFiles
+        )
         applications[url.path] = DiskSpaceApplication(
             path: url.path,
             name: url.deletingPathExtension().lastPathComponent,
@@ -512,8 +546,46 @@ private struct DiskSpaceAccumulator {
             },
             applications: applications.values.sorted { $0.bytes > $1.bytes },
             deletionCandidates: deletionCandidates,
+            folderTree: makeFolderTree(volumeName: volumeName),
             scannedFileCount: scannedFileCount
         )
+    }
+
+    private func makeFolderTree(volumeName: String) -> DiskSpaceFolderNode? {
+        let rootPath = root.standardizedFileURL.path
+        guard folderUsage[rootPath] != nil else { return nil }
+
+        var childPathsByParent: [String: [String]] = [:]
+        for path in folderUsage.keys where path != rootPath {
+            let parentPath = URL(fileURLWithPath: path, isDirectory: true)
+                .deletingLastPathComponent()
+                .standardizedFileURL.path
+            guard folderUsage[parentPath] != nil else { continue }
+            childPathsByParent[parentPath, default: []].append(path)
+        }
+
+        func node(for path: String) -> DiskSpaceFolderNode {
+            let usage = folderUsage[path] ?? DiskSpaceFolderUsage()
+            let children = childPathsByParent[path, default: []]
+                .map(node(for:))
+                .sorted {
+                    if $0.bytes != $1.bytes { return $0.bytes > $1.bytes }
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                }
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            let fallbackName = url.lastPathComponent.isEmpty ? path : url.lastPathComponent
+            return DiskSpaceFolderNode(
+                path: path,
+                name: path == rootPath ? volumeName : fallbackName,
+                bytes: usage.bytes,
+                directBytes: usage.directBytes,
+                fileCount: usage.fileCount,
+                directFileCount: usage.directFileCount,
+                children: children
+            )
+        }
+
+        return node(for: rootPath)
     }
 
     private mutating func addDeletionCandidate(_ candidate: DiskSpaceDeletionCandidate) {
@@ -556,6 +628,34 @@ private struct DiskSpaceAccumulator {
         totalBytes += size
     }
 
+    private mutating func addFolderUsage(startingAt folder: URL, bytes: Int64, fileCount: Int) {
+        let rootPath = root.standardizedFileURL.path
+        var current = folder.standardizedFileURL
+        var isDirectFolder = true
+
+        while isInsideRoot(current.path, rootPath: rootPath) {
+            var usage = folderUsage[current.path, default: DiskSpaceFolderUsage()]
+            usage.bytes += bytes
+            usage.fileCount += fileCount
+            if isDirectFolder {
+                usage.directBytes += bytes
+                usage.directFileCount += fileCount
+            }
+            folderUsage[current.path] = usage
+
+            if current.path == rootPath { break }
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            guard parent.path != current.path else { break }
+            current = parent
+            isDirectFolder = false
+        }
+    }
+
+    private func isInsideRoot(_ path: String, rootPath: String) -> Bool {
+        if rootPath == "/" { return path.hasPrefix("/") }
+        return path == rootPath || path.hasPrefix("\(rootPath)/")
+    }
+
     private func bucket(for modified: Date) -> DiskSpaceDateBucket {
         let currentYear = calendar.component(.year, from: now)
         let modifiedYear = calendar.component(.year, from: modified)
@@ -566,6 +666,13 @@ private struct DiskSpaceAccumulator {
         default: return .older
         }
     }
+}
+
+private struct DiskSpaceFolderUsage {
+    var bytes: Int64 = 0
+    var directBytes: Int64 = 0
+    var fileCount: Int = 0
+    var directFileCount: Int = 0
 }
 
 private enum DiskSpaceAnalyzerError: LocalizedError {

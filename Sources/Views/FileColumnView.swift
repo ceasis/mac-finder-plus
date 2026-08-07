@@ -138,20 +138,12 @@ struct FileColumnView: View {
                     appState.quickLookSelection()
                     return .handled
                 }
-                .onKeyPress(.return) {
-                    guard appState.renameTarget == nil, !model.selection.isEmpty else {
-                        return .ignored
-                    }
-                    appState.activePaneIndex = paneIndex
-                    appState.beginRenameSelection()
-                    return .handled
+                .onKeyPress(.return, phases: .down) { _ in
+                    appState.beginRenameSelectionAfterCurrentEvent(in: paneIndex)
+                        ? .handled
+                        : .ignored
                 }
-                .onKeyPress("0") { rateSelection(0); return .handled }
-                .onKeyPress("1") { rateSelection(1); return .handled }
-                .onKeyPress("2") { rateSelection(2); return .handled }
-                .onKeyPress("3") { rateSelection(3); return .handled }
-                .onKeyPress("4") { rateSelection(4); return .handled }
-                .onKeyPress("5") { rateSelection(5); return .handled }
+                .ratingKeyShortcuts { rateSelection($0) }
                 .onAppear { focused = true }
             }
         }

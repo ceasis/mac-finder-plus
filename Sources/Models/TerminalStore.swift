@@ -60,13 +60,33 @@ enum PrivilegedShellCommand {
     }
 }
 
+enum TerminalShellArgument {
+    static func quote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+enum TerminalCommandHistoryPolicy {
+    /// Mirrors the common shell `HIST_IGNORE_SPACE` convention.
+    static func shouldRecord(_ command: String) -> Bool {
+        guard let first = command.first else { return false }
+        return !first.isWhitespace
+    }
+}
+
 @Observable
 @MainActor
 final class TerminalStore {
     static let shared = TerminalStore()
 
     private(set) var output = ""
-    var commandText = ""
+    var commandText = "" {
+        didSet {
+            guard !isApplyingHistory else { return }
+            historyIndex = nil
+            historyDraft = commandText
+        }
+    }
     private(set) var isRunning = false
     private(set) var isExecuting = false
     private(set) var isAwaitingSecureInput = false
@@ -92,6 +112,8 @@ final class TerminalStore {
     @ObservationIgnored private var pendingCommandCount = 0
     @ObservationIgnored private var commandHistory: [String] = []
     @ObservationIgnored private var historyIndex: Int?
+    @ObservationIgnored private var historyDraft = ""
+    @ObservationIgnored private var isApplyingHistory = false
 
     private static let markerPrefix = "\u{1E}__WORKBENCH_TERMINAL_STATUS__"
     private static let markerFieldSeparator = "\u{1F}"
@@ -100,6 +122,10 @@ final class TerminalStore {
     private static let retainedOutputCharacters = 400_000
     private static let maximumRecentCommands = 50
     private static let maximumPresetCommands = 50
+
+    var canBeginSecureInput: Bool {
+        isRunning && isExecuting && !isAwaitingSecureInput
+    }
 
     init(shellPath: String? = nil, defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -200,7 +226,7 @@ final class TerminalStore {
         }
     }
 
-    func executeCommand() {
+    func executeCommand(recordInHistory: Bool = true) {
         let command = commandText.trimmingCharacters(in: .newlines)
         guard isRunning, let inputPipe else {
             errorMessage = "The shell session is not running."
@@ -228,10 +254,12 @@ final class TerminalStore {
             }
 
             appendOutput("\(promptPath) % \(command)\n")
-            recordRecentCommand(command)
-            if commandHistory.last != command {
-                commandHistory.append(command)
-                if commandHistory.count > 200 { commandHistory.removeFirst() }
+            if recordInHistory && TerminalCommandHistoryPolicy.shouldRecord(command) {
+                recordRecentCommand(command)
+                if commandHistory.last != command {
+                    commandHistory.append(command)
+                    if commandHistory.count > 200 { commandHistory.removeFirst() }
+                }
             }
             pendingCommandCount += 1
             isExecuting = true
@@ -242,11 +270,20 @@ final class TerminalStore {
         }
     }
 
+    /// Manually switches the current interactive response to password mode.
+    /// This covers prompts whose wording is not recognized automatically.
+    func beginSecureInput() {
+        guard canBeginSecureInput else { return }
+        isAwaitingSecureInput = true
+        errorMessage = nil
+    }
+
     func previousCommand() {
         guard !commandHistory.isEmpty else { return }
+        if historyIndex == nil { historyDraft = commandText }
         let index = max(0, (historyIndex ?? commandHistory.count) - 1)
         historyIndex = index
-        commandText = commandHistory[index]
+        applyHistoryText(commandHistory[index])
     }
 
     func nextCommand() {
@@ -254,11 +291,28 @@ final class TerminalStore {
         let next = historyIndex + 1
         if next < commandHistory.count {
             self.historyIndex = next
-            commandText = commandHistory[next]
+            applyHistoryText(commandHistory[next])
         } else {
             self.historyIndex = nil
-            commandText = ""
+            applyHistoryText(historyDraft)
         }
+    }
+
+    func changeDirectory(to directory: URL) {
+        let destination = resolvedDirectory(directory)
+        if !isRunning {
+            start(at: destination)
+            return
+        }
+        guard !isExecuting else {
+            errorMessage = "Wait for the current command to finish before changing folders."
+            return
+        }
+        guard destination != currentDirectory.standardizedFileURL else { return }
+        runCommand(
+            "cd -- \(TerminalShellArgument.quote(destination.path(percentEncoded: false)))",
+            recordInHistory: false
+        )
     }
 
     func clearOutput() {
@@ -267,6 +321,9 @@ final class TerminalStore {
 
     func runWithAdministratorPrivileges(_ command: String) {
         guard !isRunningPrivilegedCommand else { return }
+        let recordsCommand = TerminalCommandHistoryPolicy.shouldRecord(
+            command.trimmingCharacters(in: .newlines)
+        )
         let normalizedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedCommand.isEmpty else { return }
 
@@ -293,10 +350,12 @@ final class TerminalStore {
             commandText = ""
         }
         historyIndex = nil
-        recordRecentCommand(normalizedCommand)
-        if commandHistory.last != normalizedCommand {
-            commandHistory.append(normalizedCommand)
-            if commandHistory.count > 200 { commandHistory.removeFirst() }
+        if recordsCommand {
+            recordRecentCommand(normalizedCommand)
+            if commandHistory.last != normalizedCommand {
+                commandHistory.append(normalizedCommand)
+                if commandHistory.count > 200 { commandHistory.removeFirst() }
+            }
         }
         appendOutput("\n[Administrator] % \(normalizedCommand)\n")
         appendOutput("Waiting for macOS administrator approval…\n")
@@ -329,9 +388,9 @@ final class TerminalStore {
         historyIndex = nil
     }
 
-    func runCommand(_ command: String) {
+    func runCommand(_ command: String, recordInHistory: Bool = true) {
         loadCommand(command)
-        executeCommand()
+        executeCommand(recordInHistory: recordInHistory)
     }
 
     func isPreset(_ command: String) -> Bool {
@@ -367,6 +426,7 @@ final class TerminalStore {
         recentCommands = []
         commandHistory = []
         historyIndex = nil
+        historyDraft = commandText
         defaults.removeObject(forKey: Key.recentCommands)
     }
 
@@ -407,14 +467,20 @@ final class TerminalStore {
 
     private var shellSetupCommand: String {
         if URL(fileURLWithPath: shellPath).lastPathComponent == "bash" {
-            return "stty -echo; PS1=''; PROMPT_COMMAND='__wb_status=$?; printf \\\"\\\\036__WORKBENCH_TERMINAL_STATUS__%s\\\\037%s\\\\036\\\" \\\"$__wb_status\\\" \\\"$PWD\\\"'\n"
+            return "stty -echo; set +o emacs; set +o vi; PS1=''; PROMPT_COMMAND='__wb_status=$?; printf \\\"\\\\036__WORKBENCH_TERMINAL_STATUS__%s\\\\037%s\\\\036\\\" \\\"$__wb_status\\\" \\\"$PWD\\\"'\n"
         }
-        return "stty -echo; unset RPROMPT; PROMPT=$'\\036__WORKBENCH_TERMINAL_STATUS__%?\\037%/\\036'\n"
+        return "stty -echo; unsetopt zle; unset RPROMPT; PROMPT=$'\\036__WORKBENCH_TERMINAL_STATUS__%?\\037%/\\036'\n"
     }
 
     private func normalizedCommand(_ command: String) -> String? {
         let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? nil : normalized
+    }
+
+    private func applyHistoryText(_ text: String) {
+        isApplyingHistory = true
+        commandText = text
+        isApplyingHistory = false
     }
 
     private func recordRecentCommand(_ command: String) {

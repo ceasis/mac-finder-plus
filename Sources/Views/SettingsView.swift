@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The Preferences window (⌘,). A tabbed surface over the settings that were
@@ -21,11 +22,36 @@ struct SettingsView: View {
 }
 
 private struct PermissionsSettingsView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
     @State private var permissions = PermissionsManager()
 
     var body: some View {
         Form {
-            Section("Capture Permissions") {
+            Section {
+                Button {
+                    PermissionReviewPresentationPolicy.markPresented()
+                    openWindow(id: PermissionsReviewView.windowID)
+                } label: {
+                    Label("Review App Permissions…", systemImage: "lock.shield")
+                }
+                .buttonStyle(.borderedProminent)
+            } footer: {
+                Text("Review every permission Workbench uses and enable only the features you need.")
+            }
+
+            Section("App Permissions") {
+                permissionRow(
+                    title: "Files & Folders",
+                    detail: "Required to browse, remember, and organize folders you choose.",
+                    status: permissions.folderAccess,
+                    enableAction: {
+                        permissions.requestFolderAccess(startingAt: appState.activePane.currentURL)
+                    },
+                    settingsAction: {
+                        permissions.openSettings(for: .folderAccess)
+                    }
+                )
                 permissionRow(
                     title: "Screen Recording",
                     detail: "Required for screenshots and screen recording.",
@@ -47,6 +73,13 @@ private struct PermissionsSettingsView: View {
                     enableAction: { Task { await permissions.requestCamera() } },
                     settingsAction: { permissions.openCameraSettings() }
                 )
+                permissionRow(
+                    title: "Notifications",
+                    detail: "Required for Calendar reminder alerts.",
+                    status: permissions.notifications,
+                    enableAction: { Task { await permissions.requestNotifications() } },
+                    settingsAction: { permissions.openNotificationSettings() }
+                )
             }
             Section {
                 Text("macOS only prompts once. If a permission was denied, use “Open System Settings” to change it, then return here.")
@@ -55,7 +88,10 @@ private struct PermissionsSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { permissions.refresh() }
+        .task { await permissions.refreshAll() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await permissions.refreshAll() }
+        }
     }
 
     @ViewBuilder

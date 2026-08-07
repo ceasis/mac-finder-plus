@@ -28,6 +28,8 @@
 	<string>14.0</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Cholo Asis. All rights reserved.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Workbench uses the camera only when you record a video journal in Notes.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Workbench uses the microphone for narrated screen recordings, voice notes, and note attachments.</string>
 	<key>UTExportedTypeDeclarations</key>

@@ -64,6 +64,73 @@ enum SnippetFilter: String, CaseIterable, Identifiable {
     }
 }
 
+enum SnippetSortOrder: String, CaseIterable, Identifiable, Sendable {
+    case updated
+    case created
+    case title
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .updated: "Recently Updated"
+        case .created: "Recently Created"
+        case .title: "Title"
+        }
+    }
+}
+
+enum SnippetFocusTarget: Sendable {
+    case search
+    case composer
+    case editor
+}
+
+enum SnippetSearchQuery {
+    static func terms(in query: String) -> [String] {
+        var terms: [String] = []
+        var current = ""
+        var insideQuotes = false
+
+        for character in query {
+            if character == "\"" {
+                insideQuotes.toggle()
+                if !insideQuotes {
+                    append(&terms, token: &current)
+                }
+            } else if character.isWhitespace && !insideQuotes {
+                append(&terms, token: &current)
+            } else {
+                current.append(character)
+            }
+        }
+        append(&terms, token: &current)
+        return terms
+    }
+
+    static func matches(_ item: SnippetItem, query: String) -> Bool {
+        let queryTerms = terms(in: query)
+        guard !queryTerms.isEmpty else { return true }
+        let searchableText = ([
+            item.displayTitle,
+            item.searchableText,
+            item.originalName ?? "",
+            item.filename ?? ""
+        ] + item.normalizedTags + item.files.map(\.originalName))
+            .joined(separator: " ")
+            .localizedLowercase
+        return queryTerms.allSatisfy { searchableText.contains($0.localizedLowercase) }
+    }
+
+    private static func append(_ terms: inout [String], token: inout String) {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            terms.append(trimmed)
+        }
+        token = ""
+    }
+}
+
 struct SnippetItem: Identifiable, Codable, Hashable, Sendable {
     static let maximumTextBytes = 1_000_000
     static let listPreviewCharacterLimit = 240
@@ -81,9 +148,12 @@ struct SnippetItem: Identifiable, Codable, Hashable, Sendable {
     var updatedAt: Date
     /// Every file attached to this snippet.
     var files: [SnippetFile] = []
+    /// Optional to keep snippets written by older Workbench builds decodable.
+    var isPinned: Bool? = nil
+    var tags: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, title, text, filename, originalName, createdAt, updatedAt, files
+        case id, kind, title, text, filename, originalName, createdAt, updatedAt, files, isPinned, tags
     }
 
     var displayTitle: String {
@@ -119,6 +189,10 @@ struct SnippetItem: Identifiable, Codable, Hashable, Sendable {
         String(text.prefix(Self.searchCharacterLimit))
     }
 
+    var normalizedTags: [String] {
+        (tags ?? []).filter { !$0.isEmpty }
+    }
+
     private func isTextTruncated(at limit: Int) -> Bool {
         guard let boundary = text.index(
             text.startIndex,
@@ -150,6 +224,8 @@ extension SnippetItem {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         files = try container.decodeIfPresent([SnippetFile].self, forKey: .files) ?? []
+        isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned)
+        tags = try container.decodeIfPresent([String].self, forKey: .tags)
     }
 }
 
@@ -158,40 +234,62 @@ extension SnippetItem {
 final class SnippetStore {
     static let shared = SnippetStore()
 
+    private enum PreferenceKey {
+        static let filter = "snippets.filter"
+        static let sortOrder = "snippets.sortOrder"
+        static let showsPinnedOnly = "snippets.showsPinnedOnly"
+        static let composerExpanded = "snippets.composerExpanded"
+    }
+
     private(set) var snippets: [SnippetItem] = []
     var selectedSnippetID: SnippetItem.ID?
     var searchText = ""
-    var filter: SnippetFilter = .all
+    var filter: SnippetFilter {
+        didSet { defaults.set(filter.rawValue, forKey: PreferenceKey.filter) }
+    }
+    var sortOrder: SnippetSortOrder {
+        didSet { defaults.set(sortOrder.rawValue, forKey: PreferenceKey.sortOrder) }
+    }
+    var showsPinnedOnly: Bool {
+        didSet { defaults.set(showsPinnedOnly, forKey: PreferenceKey.showsPinnedOnly) }
+    }
+    var isComposerExpanded: Bool {
+        didSet { defaults.set(isComposerExpanded, forKey: PreferenceKey.composerExpanded) }
+    }
+    var pendingFocusTarget: SnippetFocusTarget?
+    var searchFocusTick = 0
+    var composerFocusTick = 0
+    var editorFocusTick = 0
     var lastError: String?
     private(set) var pendingImportFileCount = 0
     private let rootDirectory: URL
+    private let defaults: UserDefaults
 
-    init(storageRoot: URL? = nil) {
+    init(storageRoot: URL? = nil, defaults: UserDefaults = .standard) {
         rootDirectory = storageRoot ?? Self.defaultRootDirectory
+        self.defaults = defaults
+        filter = SnippetFilter(
+            rawValue: defaults.string(forKey: PreferenceKey.filter) ?? ""
+        ) ?? .all
+        sortOrder = SnippetSortOrder(
+            rawValue: defaults.string(forKey: PreferenceKey.sortOrder) ?? ""
+        ) ?? .updated
+        showsPinnedOnly = defaults.object(forKey: PreferenceKey.showsPinnedOnly) as? Bool ?? false
+        isComposerExpanded = defaults.object(forKey: PreferenceKey.composerExpanded) as? Bool ?? true
         load()
     }
 
     var filteredSnippets: [SnippetItem] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return snippets
-            .sorted {
-                if $0.updatedAt == $1.updatedAt {
-                    return $0.createdAt > $1.createdAt
-                }
-                return $0.updatedAt > $1.updatedAt
-            }
             .filter { item in
                 guard let kind = filter.kind else { return true }
                 return item.kind == kind
             }
+            .filter { !showsPinnedOnly || ($0.isPinned ?? false) }
             .filter { item in
-                guard !query.isEmpty else { return true }
-                return item.displayTitle.localizedCaseInsensitiveContains(query)
-                    || item.searchableText.localizedCaseInsensitiveContains(query)
-                    || item.preview.localizedCaseInsensitiveContains(query)
-                    || (item.originalName?.localizedCaseInsensitiveContains(query) ?? false)
-                    || (item.filename?.localizedCaseInsensitiveContains(query) ?? false)
+                SnippetSearchQuery.matches(item, query: searchText)
             }
+            .sorted(by: snippetSort)
     }
 
     func ensureSelection() {
@@ -216,18 +314,20 @@ final class SnippetStore {
         return assetsDirectory.appendingPathComponent(filename)
     }
 
-    func addText(_ text: String) {
+    @discardableResult
+    func addText(_ text: String, title: String? = nil) -> SnippetItem.ID? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         guard text.utf8.count <= SnippetItem.maximumTextBytes else {
             lastError = "That text is too large for a snippet. Add it as a file instead."
-            return
+            return nil
         }
         let now = Date()
+        let preferredTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let item = SnippetItem(
             id: UUID(),
             kind: .text,
-            title: title(forText: trimmed),
+            title: preferredTitle.isEmpty ? self.title(forText: trimmed) : preferredTitle,
             text: text,
             filename: nil,
             originalName: nil,
@@ -236,6 +336,35 @@ final class SnippetStore {
             files: []
         )
         insert(item)
+        return item.id
+    }
+
+    func focusSearch() {
+        pendingFocusTarget = .search
+        searchFocusTick += 1
+    }
+
+    func focusComposer() {
+        isComposerExpanded = true
+        pendingFocusTarget = .composer
+        composerFocusTick += 1
+    }
+
+    func focusEditor() {
+        pendingFocusTarget = .editor
+        editorFocusTick += 1
+    }
+
+    func selectAdjacentSnippet(offset: Int) {
+        let visible = filteredSnippets
+        guard !visible.isEmpty else { return }
+        guard let selectedSnippetID,
+              let index = visible.firstIndex(where: { $0.id == selectedSnippetID }) else {
+            self.selectedSnippetID = visible.first?.id
+            return
+        }
+        let destination = min(max(index + offset, 0), visible.count - 1)
+        self.selectedSnippetID = visible[destination].id
     }
 
     func addCurrentClipboard() {
@@ -512,6 +641,10 @@ final class SnippetStore {
             pasteboard.clearContents()
             pasteboard.setString(item.text, forType: .string)
         case .image:
+            if item.files.count > 1 {
+                copyFiles(item.files, to: pasteboard)
+                break
+            }
             guard let url = assetURL(for: item),
                   FileManager.default.fileExists(atPath: url.path) else {
                 lastError = "The image file for this snippet is missing."
@@ -525,16 +658,121 @@ final class SnippetStore {
             }
             pasteboard.setString(url.path, forType: .string)
         case .file:
-            guard let url = assetURL(for: item),
-                  FileManager.default.fileExists(atPath: url.path) else {
+            let files = item.files.isEmpty
+                ? assetURL(for: item).map { [$0] } ?? []
+                : item.files.map(assetURL(for:))
+            let existingFiles = files.filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard !existingFiles.isEmpty else {
                 lastError = "The file for this snippet is missing."
                 return
             }
             pasteboard.clearContents()
-            pasteboard.writeObjects([url as NSURL])
-            pasteboard.setString(url.path, forType: .string)
+            pasteboard.writeObjects(existingFiles.map { $0 as NSURL })
+            pasteboard.setString(existingFiles.map(\.path).joined(separator: "\n"), forType: .string)
         }
         selectedSnippetID = item.id
+    }
+
+    func copySelectedSnippet() {
+        guard let item = snippet(for: selectedSnippetID) else { return }
+        copy(item)
+    }
+
+    func togglePinned(_ id: SnippetItem.ID) {
+        guard let index = snippets.firstIndex(where: { $0.id == id }) else { return }
+        snippets[index].isPinned = !(snippets[index].isPinned ?? false)
+        snippets[index].updatedAt = Date()
+        selectedSnippetID = id
+        save()
+    }
+
+    func toggleSelectedSnippetPinned() {
+        guard let selectedSnippetID else { return }
+        togglePinned(selectedSnippetID)
+    }
+
+    func updateText(_ text: String, for id: SnippetItem.ID) {
+        guard text.utf8.count <= SnippetItem.maximumTextBytes else {
+            lastError = "That text is too large for a snippet. Add it as a file instead."
+            return
+        }
+        guard let index = snippets.firstIndex(where: { $0.id == id }),
+              snippets[index].kind == .text,
+              snippets[index].text != text else { return }
+        snippets[index].text = text
+        snippets[index].updatedAt = Date()
+        selectedSnippetID = id
+        save()
+    }
+
+    func updateTags(_ tags: [String], for id: SnippetItem.ID) {
+        guard let index = snippets.firstIndex(where: { $0.id == id }) else { return }
+        var seen: Set<String> = []
+        let normalized = tags.compactMap { value -> String? in
+            let tag = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !tag.isEmpty else { return nil }
+            let key = tag.localizedLowercase
+            guard seen.insert(key).inserted else { return nil }
+            return tag
+        }
+        guard snippets[index].normalizedTags != normalized else { return }
+        snippets[index].tags = normalized
+        snippets[index].updatedAt = Date()
+        selectedSnippetID = id
+        save()
+    }
+
+    @discardableResult
+    func duplicate(_ id: SnippetItem.ID) -> SnippetItem.ID? {
+        guard let source = snippet(for: id) else { return nil }
+        do {
+            try ensureStorage()
+            let now = Date()
+            var copiedFiles: [SnippetFile] = []
+            for file in source.files {
+                let sourceURL = assetURL(for: file)
+                guard FileManager.default.fileExists(atPath: sourceURL.path) else { continue }
+                let destination = Self.importDestination(for: sourceURL, in: assetsDirectory)
+                try FileManager.default.copyItem(at: sourceURL, to: destination)
+                copiedFiles.append(SnippetFile(
+                    id: UUID(),
+                    filename: destination.lastPathComponent,
+                    originalName: file.originalName,
+                    kind: file.kind,
+                    addedAt: now
+                ))
+            }
+
+            var copy = SnippetItem(
+                id: UUID(),
+                kind: source.kind,
+                title: "\(source.displayTitle) Copy",
+                text: source.text,
+                filename: copiedFiles.first?.filename,
+                originalName: copiedFiles.first?.originalName ?? source.originalName,
+                createdAt: now,
+                updatedAt: now,
+                files: copiedFiles,
+                isPinned: false,
+                tags: source.normalizedTags
+            )
+            normalizePrimary(&copy)
+            insert(copy)
+            return copy.id
+        } catch {
+            lastError = "Could not duplicate the snippet. \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func duplicateSelectedSnippet() {
+        guard let selectedSnippetID else { return }
+        duplicate(selectedSnippetID)
+    }
+
+    func deleteSelectedSnippet() {
+        guard let selectedSnippetID else { return }
+        delete(selectedSnippetID)
     }
 
     func updateTitle(_ title: String, for id: SnippetItem.ID) {
@@ -594,6 +832,37 @@ final class SnippetStore {
         snippets.insert(item, at: 0)
         selectedSnippetID = item.id
         save()
+    }
+
+    private func copyFiles(_ files: [SnippetFile], to pasteboard: NSPasteboard) {
+        let urls = files.map(assetURL(for:))
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !urls.isEmpty else {
+            lastError = "The files for this snippet are missing."
+            return
+        }
+        pasteboard.clearContents()
+        pasteboard.writeObjects(urls.map { $0 as NSURL })
+        pasteboard.setString(urls.map(\.path).joined(separator: "\n"), forType: .string)
+    }
+
+    private func snippetSort(_ lhs: SnippetItem, _ rhs: SnippetItem) -> Bool {
+        let lhsPinned = lhs.isPinned ?? false
+        let rhsPinned = rhs.isPinned ?? false
+        if lhsPinned != rhsPinned { return lhsPinned }
+
+        switch sortOrder {
+        case .updated:
+            if lhs.updatedAt == rhs.updatedAt { return lhs.createdAt > rhs.createdAt }
+            return lhs.updatedAt > rhs.updatedAt
+        case .created:
+            if lhs.createdAt == rhs.createdAt { return lhs.updatedAt > rhs.updatedAt }
+            return lhs.createdAt > rhs.createdAt
+        case .title:
+            let comparison = lhs.displayTitle.localizedStandardCompare(rhs.displayTitle)
+            if comparison == .orderedSame { return lhs.updatedAt > rhs.updatedAt }
+            return comparison == .orderedAscending
+        }
     }
 
     private nonisolated static func snippetKind(for url: URL) -> SnippetKind {

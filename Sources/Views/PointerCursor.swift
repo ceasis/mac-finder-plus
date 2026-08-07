@@ -14,6 +14,10 @@ extension View {
         cursor(.resizeLeftRight, isEnabled: isEnabled)
     }
 
+    func verticalResizeCursor(_ isEnabled: Bool = true) -> some View {
+        cursor(.resizeUpDown, isEnabled: isEnabled)
+    }
+
     private func cursor(_ cursor: NSCursor, isEnabled: Bool) -> some View {
         background(CursorRegion(cursor: cursor, isEnabled: isEnabled))
     }

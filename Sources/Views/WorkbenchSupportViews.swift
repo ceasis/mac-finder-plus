@@ -755,3 +755,33 @@ private struct ActivityHistoryRow: View {
         return nil
     }
 }
+
+extension View {
+    /// Rates the selection with 0–5. `onKeyPress` also sees keys aimed at
+    /// descendants, so the digits must fall through whenever a text control —
+    /// the preview's file editor, an inline rename field — is taking input.
+    func ratingKeyShortcuts(_ rate: @escaping (Int) -> Void) -> some View {
+        modifier(RatingKeyShortcuts(rate: rate))
+    }
+}
+
+private struct RatingKeyShortcuts: ViewModifier {
+    let rate: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onKeyPress("0") { handle(0) }
+            .onKeyPress("1") { handle(1) }
+            .onKeyPress("2") { handle(2) }
+            .onKeyPress("3") { handle(3) }
+            .onKeyPress("4") { handle(4) }
+            .onKeyPress("5") { handle(5) }
+    }
+
+    @MainActor
+    private func handle(_ rating: Int) -> KeyPress.Result {
+        guard !AppCommandResponder.isFocusedTextEditor else { return .ignored }
+        rate(rating)
+        return .handled
+    }
+}

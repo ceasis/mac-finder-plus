@@ -91,60 +91,184 @@ final class PlayerPreviewInteractionTests: XCTestCase {
 }
 
 @MainActor
-final class PreviewToolbarNSButtonTests: XCTestCase {
-    func testEnabledButtonInvokesItsAction() {
-        var receivedState: Bool?
-        let button = PreviewToolbarNSButton(frame: .zero)
-        button.configure(
-            title: "Export",
-            systemImage: "square.and.arrow.down",
-            accessibilityLabel: "Export Video",
-            help: "Export",
-            isEnabled: true,
-            isToggle: false,
-            isOn: false
-        ) { receivedState = $0 }
-
-        button.performClick(nil)
-
-        XCTAssertEqual(receivedState, false)
+final class VideoPlaybackMuteControlTests: XCTestCase {
+    func testVideoPreviewStartsMutedWithoutARecentUnmutePreference() {
+        withMutePreferences { defaults, now in
+            XCTAssertTrue(
+                VideoPreviewPlaybackPreferences.shouldStartMuted(
+                    defaults: defaults,
+                    now: now
+                )
+            )
+        }
     }
 
-    func testDisabledButtonDoesNotInvokeItsAction() {
-        var invocationCount = 0
-        let button = PreviewToolbarNSButton(frame: .zero)
-        button.configure(
-            title: "Export Audio",
-            systemImage: "waveform",
-            accessibilityLabel: "Export Audio",
-            help: "No audio track",
-            isEnabled: false,
-            isToggle: false,
-            isOn: false
-        ) { _ in invocationCount += 1 }
+    func testRecentUnmutePreferenceIsRestored() {
+        withMutePreferences { defaults, now in
+            VideoPreviewPlaybackPreferences.recordMuteState(
+                false,
+                defaults: defaults,
+                now: now.addingTimeInterval(-30 * 60)
+            )
 
-        button.performClick(nil)
-
-        XCTAssertEqual(invocationCount, 0)
+            XCTAssertFalse(
+                VideoPreviewPlaybackPreferences.shouldStartMuted(
+                    defaults: defaults,
+                    now: now
+                )
+            )
+        }
     }
 
-    func testToggleButtonReportsItsNewState() {
-        var receivedState: Bool?
-        let button = PreviewToolbarNSButton(frame: .zero)
-        button.configure(
-            title: "Remove Audio",
-            systemImage: "speaker.slash",
-            accessibilityLabel: "Remove Audio",
-            help: "Mute audio",
-            isEnabled: true,
-            isToggle: true,
-            isOn: false
-        ) { receivedState = $0 }
+    func testUnmutePreferenceExpiresAfterOneHour() {
+        withMutePreferences { defaults, now in
+            VideoPreviewPlaybackPreferences.recordMuteState(
+                false,
+                defaults: defaults,
+                now: now.addingTimeInterval(-60 * 60 - 1)
+            )
 
-        button.performClick(nil)
+            XCTAssertTrue(
+                VideoPreviewPlaybackPreferences.shouldStartMuted(
+                    defaults: defaults,
+                    now: now
+                )
+            )
+            XCTAssertTrue(defaults.bool(forKey: VideoPreviewPlaybackPreferences.mutedKey))
+        }
+    }
 
-        XCTAssertEqual(receivedState, true)
-        XCTAssertEqual(button.state, .on)
+    func testUnmutePreferenceRemainsValidAtExactlyOneHour() {
+        withMutePreferences { defaults, now in
+            VideoPreviewPlaybackPreferences.recordMuteState(
+                false,
+                defaults: defaults,
+                now: now.addingTimeInterval(-60 * 60)
+            )
+
+            XCTAssertFalse(
+                VideoPreviewPlaybackPreferences.shouldStartMuted(
+                    defaults: defaults,
+                    now: now
+                )
+            )
+        }
+    }
+
+    func testExplicitMuteAlwaysRestoresMuted() {
+        withMutePreferences { defaults, now in
+            VideoPreviewPlaybackPreferences.recordMuteState(
+                false,
+                defaults: defaults,
+                now: now
+            )
+            VideoPreviewPlaybackPreferences.recordMuteState(
+                true,
+                defaults: defaults,
+                now: now
+            )
+
+            XCTAssertTrue(
+                VideoPreviewPlaybackPreferences.shouldStartMuted(
+                    defaults: defaults,
+                    now: now.addingTimeInterval(10)
+                )
+            )
+        }
+    }
+
+    func testMuteControlUsesMatchingFilledCircleSymbols() {
+        XCTAssertEqual(
+            VideoPlaybackMuteControl.symbolName(isMuted: false),
+            "speaker.wave.2.circle.fill"
+        )
+        XCTAssertEqual(
+            VideoPlaybackMuteControl.symbolName(isMuted: true),
+            "speaker.slash.circle.fill"
+        )
+    }
+
+    func testMuteControlTogglesTheLivePlayerWithoutChangingTheMedia() {
+        let player = AVPlayer()
+
+        XCTAssertFalse(player.isMuted)
+        XCTAssertTrue(VideoPlaybackMuteControl.toggle(player: player))
+        XCTAssertTrue(player.isMuted)
+        XCTAssertFalse(VideoPlaybackMuteControl.toggle(player: player))
+        XCTAssertFalse(player.isMuted)
+    }
+
+    func testMuteControlSafelyIgnoresAnUnavailablePlayer() {
+        XCTAssertFalse(VideoPlaybackMuteControl.toggle(player: nil))
+    }
+
+    private func withMutePreferences(
+        _ body: (UserDefaults, Date) -> Void
+    ) {
+        let suiteName = "VideoPlaybackMuteControlTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        body(defaults, Date(timeIntervalSinceReferenceDate: 900_000_000))
+    }
+}
+
+@MainActor
+final class SidebarToolCatalogTests: XCTestCase {
+    func testTextEditorIsAVisibleStandardSidebarTool() {
+        XCTAssertTrue(SidebarToolCatalog.defaultOrder.contains(.textEditor))
+        XCTAssertEqual(SidebarToolID.textEditor.title, "Text Editor")
+        XCTAssertEqual(SidebarToolID.textEditor.systemImage, "square.and.pencil")
+        XCTAssertFalse(SidebarToolID.textEditor.isProTool)
+    }
+
+    func testExistingLayoutsPlaceTextEditorImmediatelyAfterSnippets() {
+        let migrated = SidebarToolCatalog.placingTextEditorNextToSnippets(
+            in: [.notes, .calendar, .snippets, .calculator, .textEditor]
+        )
+
+        XCTAssertEqual(migrated, [.notes, .calendar, .snippets, .textEditor, .calculator])
+    }
+}
+
+@MainActor
+final class CodeTextViewInitialPositionTests: XCTestCase {
+    func testResetDocumentPositionMovesCaretAndHorizontalViewportToTheStart() {
+        let scrollView = EditorTextView.scrollableTextView()
+        scrollView.frame = NSRect(x: 0, y: 0, width: 240, height: 160)
+        let textView = scrollView.documentView as! EditorTextView
+        textView.frame = NSRect(x: 0, y: 0, width: 2_000, height: 400)
+        textView.string = String(repeating: "a", count: 500)
+        scrollView.contentView.scroll(to: NSPoint(x: 400, y: 0))
+
+        XCTAssertEqual(textView.selectedRange().location, 500)
+        XCTAssertGreaterThan(scrollView.contentView.bounds.origin.x, 0)
+
+        textView.resetDocumentPosition()
+
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: 0, length: 0))
+        XCTAssertEqual(scrollView.contentView.bounds.origin.x, 0)
+    }
+}
+
+@MainActor
+final class WorkbenchWindowPersistenceSchedulerTests: XCTestCase {
+    func testRepeatedResizeEventsCoalesceIntoTheLatestPersistenceOperation() async throws {
+        let scheduler = WorkbenchWindowPersistenceScheduler(delay: .milliseconds(40))
+        let windowIdentity = ObjectIdentifier(NSObject())
+        var persistedFrames: [String] = []
+
+        scheduler.schedule(for: windowIdentity) {
+            persistedFrames.append("intermediate")
+        }
+        scheduler.schedule(for: windowIdentity) {
+            persistedFrames.append("final")
+        }
+        await Task.yield()
+        XCTAssertTrue(persistedFrames.isEmpty)
+
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(persistedFrames, ["final"])
     }
 }
 
@@ -623,10 +747,68 @@ final class FileDropTests: XCTestCase {
         XCTAssertTrue(SidebarFileDropPolicy.acceptsDestination(folder))
         XCTAssertFalse(SidebarFileDropPolicy.acceptsDestination(file))
     }
+
+    func testSidebarFavoritesKeepOnlyExistingFoldersAndPreserveOrder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let firstFolder = root.appendingPathComponent("First", isDirectory: true)
+        let secondFolder = root.appendingPathComponent("Second", isDirectory: true)
+        let file = root.appendingPathComponent("Not a Folder.txt")
+        try FileManager.default.createDirectory(
+            at: firstFolder,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: secondFolder,
+            withIntermediateDirectories: true
+        )
+        try Data("file".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertEqual(
+            SidebarFavoriteDropPolicy.folders(
+                from: [secondFolder, file, firstFolder, secondFolder]
+            ),
+            [secondFolder.standardizedFileURL, firstFolder.standardizedFileURL]
+        )
+    }
 }
 
 @MainActor
 final class RecentFolderStoreTests: EngineTestCase {
+    func testElapsedTimeUsesOnlySecondsBelowTwoMinutes() {
+        let now = Date(timeIntervalSince1970: 10_000)
+
+        XCTAssertEqual(
+            RecentFolderElapsedFormatter.text(
+                since: now.addingTimeInterval(-62),
+                now: now
+            ),
+            "62 sec"
+        )
+        XCTAssertEqual(
+            RecentFolderElapsedFormatter.text(
+                since: now.addingTimeInterval(-119),
+                now: now
+            ),
+            "119 sec"
+        )
+        XCTAssertEqual(
+            RecentFolderElapsedFormatter.text(
+                since: now.addingTimeInterval(-120),
+                now: now
+            ),
+            "2 min"
+        )
+        XCTAssertEqual(
+            RecentFolderElapsedFormatter.text(
+                since: now.addingTimeInterval(-602),
+                now: now
+            ),
+            "10 min, 2 sec"
+        )
+    }
+
     func testShowsOnlyThreeFoldersAccessedWithinEightHoursNewestFirst() throws {
         let suiteName = "RecentFolderStoreTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -775,6 +957,159 @@ final class AppCommandResponderTests: XCTestCase {
         XCTAssertTrue(didRoute)
         XCTAssertEqual(routedAction, #selector(NSText.cut(_:)))
         XCTAssertTrue(routedTarget === textView)
+    }
+
+    func testCopyRoutesToFocusedTextEditor() {
+        let textView = NSTextView()
+        var routedAction: Selector?
+        weak var routedTarget: AnyObject?
+
+        let didRoute = AppCommandResponder.copyFocusedTextEditor(
+            firstResponder: textView
+        ) { action, target in
+            routedAction = action
+            routedTarget = target
+            return true
+        }
+
+        XCTAssertTrue(didRoute)
+        XCTAssertEqual(routedAction, #selector(NSText.copy(_:)))
+        XCTAssertTrue(routedTarget === textView)
+    }
+
+    func testCommandDeleteStaysInFocusedTextEditor() {
+        let textView = NSTextView()
+        var routedAction: Selector?
+
+        let didRoute = AppCommandResponder.deleteToBeginningOfLineInFocusedTextEditor(
+            firstResponder: textView
+        ) { action, _ in
+            routedAction = action
+            return true
+        }
+
+        XCTAssertTrue(didRoute)
+        XCTAssertEqual(routedAction, NSSelectorFromString("deleteToBeginningOfLine:"))
+    }
+
+    func testUndoUsesTheFocusedTextEditorsUndoManager() {
+        let textView = UndoableTestTextView()
+        var didUndo = false
+        textView.testUndoManager.registerUndo(withTarget: textView) { _ in
+            didUndo = true
+        }
+
+        XCTAssertTrue(AppCommandResponder.undoFocusedTextEditor(firstResponder: textView))
+        XCTAssertTrue(didUndo)
+    }
+
+    private final class UndoableTestTextView: NSTextView {
+        let testUndoManager = UndoManager()
+        override var undoManager: UndoManager? { testUndoManager }
+    }
+}
+
+@MainActor
+final class NotesPowerUserTests: EngineTestCase {
+    func testSearchSupportsMultipleTermsAndQuotedPhrases() {
+        let note = NoteItem(
+            id: UUID(),
+            title: "Launch Plan",
+            body: "Review the final pricing model with the team.",
+            richBodyData: nil,
+            createdAt: Date(),
+            updatedAt: Date(),
+            attachments: []
+        )
+
+        XCTAssertEqual(NoteSearchQuery.terms(in: #"launch "pricing model""#), ["launch", "pricing model"])
+        XCTAssertTrue(NoteSearchQuery.matches(note, query: #"launch "pricing model""#))
+        XCTAssertFalse(NoteSearchQuery.matches(note, query: "launch roadmap"))
+    }
+
+    func testListContinuationHandlesBulletsNumbersAndChecklists() {
+        XCTAssertEqual(
+            NoteListContinuation.parse("• First"),
+            NoteListContinuation(prefixLength: 2, nextPrefix: "• ", hasContent: true)
+        )
+        XCTAssertEqual(
+            NoteListContinuation.parse("9. Ninth"),
+            NoteListContinuation(prefixLength: 3, nextPrefix: "10. ", hasContent: true)
+        )
+        XCTAssertEqual(
+            NoteListContinuation.parse("☑ Done"),
+            NoteListContinuation(prefixLength: 2, nextPrefix: "☐ ", hasContent: true)
+        )
+        XCTAssertEqual(NoteListContinuation.parse("☐ ")?.hasContent, false)
+        XCTAssertNil(NoteListContinuation.parse("Regular paragraph"))
+    }
+
+    func testPinnedNotesStayFirstAcrossSortModes() {
+        let (store, defaults, suiteName) = makeStore(saveDelay: .seconds(5))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let zebraID = store.createNote()
+        store.updateTitle(zebraID, title: "Zebra")
+        let alphaID = store.createNote()
+        store.updateTitle(alphaID, title: "Alpha")
+        store.sortOrder = .title
+        XCTAssertEqual(store.filteredNotes.map(\.id), [alphaID, zebraID])
+
+        store.togglePinned(zebraID)
+        XCTAssertEqual(store.filteredNotes.map(\.id), [zebraID, alphaID])
+    }
+
+    func testEditingUsesDebouncedAutosaveAndPersistsTheLatestBody() async throws {
+        let (store, defaults, suiteName) = makeStore(saveDelay: .milliseconds(50))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let noteID = store.createNote()
+
+        store.updateBody(noteID, body: "first draft")
+        store.updateBody(noteID, body: "final draft")
+        XCTAssertTrue(store.hasUnsavedChanges)
+
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertFalse(store.hasUnsavedChanges)
+
+        let reloaded = NotesStore(
+            storageRootDirectory: tempDir,
+            defaults: defaults,
+            saveDelay: .milliseconds(50)
+        )
+        XCTAssertEqual(reloaded.note(for: noteID)?.body, "final draft")
+    }
+
+    func testDuplicateNoteCopiesContentAndSelectsTheCopy() {
+        let (store, defaults, suiteName) = makeStore(saveDelay: .seconds(5))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let originalID = store.createNote()
+        store.updateTitle(originalID, title: "Research")
+        store.updateBody(originalID, body: "Source material")
+        store.saveNow()
+
+        let duplicateID = store.duplicateNote(originalID)
+
+        XCTAssertNotNil(duplicateID)
+        XCTAssertEqual(store.selectedNoteID, duplicateID)
+        XCTAssertEqual(store.note(for: duplicateID)?.title, "Research Copy")
+        XCTAssertEqual(store.note(for: duplicateID)?.body, "Source material")
+    }
+
+    private func makeStore(
+        saveDelay: Duration
+    ) -> (NotesStore, UserDefaults, String) {
+        let suiteName = "NotesPowerUserTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return (
+            NotesStore(
+                storageRootDirectory: tempDir,
+                defaults: defaults,
+                saveDelay: saveDelay
+            ),
+            defaults,
+            suiteName
+        )
     }
 }
 
@@ -1084,7 +1419,11 @@ final class SnippetStoreTests: EngineTestCase {
     // MARK: Multi-file snippets
 
     private func makeStore() -> SnippetStore {
-        SnippetStore(storageRoot: tempDir.appendingPathComponent("SnippetStore", isDirectory: true))
+        let defaults = UserDefaults(suiteName: "SnippetStoreTests.\(UUID().uuidString)")!
+        return SnippetStore(
+            storageRoot: tempDir.appendingPathComponent("SnippetStore", isDirectory: true),
+            defaults: defaults
+        )
     }
 
     func testDroppingOneFileCreatesSnippetLabelledWithFilename() async throws {
@@ -1197,6 +1536,87 @@ final class SnippetStoreTests: EngineTestCase {
 
         XCTAssertTrue(store.snippets.isEmpty)
         XCTAssertNotNil(store.lastError)
+    }
+
+    func testQuotedSearchIncludesTagsAndPinnedItemsSortFirst() throws {
+        let store = makeStore()
+        let launchID = try XCTUnwrap(store.addText(
+            "Review the production deployment checklist",
+            title: "Launch Runbook"
+        ))
+        let otherID = try XCTUnwrap(store.addText("Loose notes", title: "Alpha"))
+        store.updateTags(["Operations", "Release"], for: launchID)
+        store.togglePinned(launchID)
+        store.sortOrder = .title
+        store.searchText = #""launch runbook" operations"#
+
+        XCTAssertEqual(SnippetSearchQuery.terms(in: store.searchText), ["launch runbook", "operations"])
+        XCTAssertEqual(store.filteredSnippets.map(\.id), [launchID])
+
+        store.searchText = ""
+        XCTAssertEqual(store.filteredSnippets.first?.id, launchID)
+        XCTAssertTrue(store.filteredSnippets.contains { $0.id == otherID })
+    }
+
+    func testTextEditsTagsPinsAndPreferencesPersist() throws {
+        let suiteName = "SnippetStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let root = tempDir.appendingPathComponent("PersistentSnippetStore", isDirectory: true)
+        let store = SnippetStore(storageRoot: root, defaults: defaults)
+        let id = try XCTUnwrap(store.addText("Draft", title: "Template"))
+
+        store.updateText("Final reusable response", for: id)
+        store.updateTags(["Support", "Customer"], for: id)
+        store.togglePinned(id)
+        store.sortOrder = .created
+        store.showsPinnedOnly = true
+
+        let reloaded = SnippetStore(storageRoot: root, defaults: defaults)
+        let item = try XCTUnwrap(reloaded.snippet(for: id))
+        XCTAssertEqual(item.text, "Final reusable response")
+        XCTAssertEqual(item.normalizedTags, ["Support", "Customer"])
+        XCTAssertEqual(item.isPinned, true)
+        XCTAssertEqual(reloaded.sortOrder, .created)
+        XCTAssertTrue(reloaded.showsPinnedOnly)
+    }
+
+    func testDuplicateCopiesEveryAttachedFile() async throws {
+        let store = makeStore()
+        store.createSnippet(withFiles: [
+            try writeFile("one.txt", "1"),
+            try writeFile("two.txt", "2")
+        ])
+        await store.waitForPendingImports()
+        let original = try XCTUnwrap(store.snippets.first)
+
+        let duplicateID = try XCTUnwrap(store.duplicate(original.id))
+        let duplicate = try XCTUnwrap(store.snippet(for: duplicateID))
+
+        XCTAssertEqual(duplicate.files.count, 2)
+        XCTAssertEqual(Set(duplicate.files.map(\.originalName)), ["one.txt", "two.txt"])
+        XCTAssertTrue(duplicate.files.allSatisfy {
+            FileManager.default.fileExists(atPath: store.assetURL(for: $0).path)
+        })
+        XCTAssertTrue(Set(duplicate.files.map(\.filename)).isDisjoint(with: original.files.map(\.filename)))
+    }
+
+    func testCopyingMultiFileSnippetWritesEveryFileToPasteboard() async throws {
+        let store = makeStore()
+        store.createSnippet(withFiles: [
+            try writeFile("first.txt", "1"),
+            try writeFile("second.txt", "2")
+        ])
+        await store.waitForPendingImports()
+        let snippet = try XCTUnwrap(store.snippets.first)
+
+        store.copy(snippet)
+
+        let fileItems = NSPasteboard.general.pasteboardItems?.filter {
+            $0.availableType(from: [.fileURL]) != nil
+        }
+        XCTAssertEqual(fileItems?.count, 2)
     }
 }
 
@@ -1498,6 +1918,99 @@ final class TextFilePreviewLoaderTests: EngineTestCase {
     }
 }
 
+final class TextDocumentSupportTests: EngineTestCase {
+    func testTextEditorLaunchesAnUntitledSessionWithoutASelection() {
+        let id = UUID()
+        let session = TextEditorSession.launch(from: [], untitledID: id)
+
+        XCTAssertTrue(session.isUntitled)
+        XCTAssertNil(session.file)
+        XCTAssertEqual(session.id, "untitled:\(id.uuidString)")
+    }
+
+    func testTextEditorPrefersASelectedTextFile() throws {
+        let binaryURL = try writeFile("payload.bin", "binary")
+        let textURL = try writeFile("readme.md", "# Workbench")
+        let session = TextEditorSession.launch(
+            from: [FileItem.make(url: binaryURL), FileItem.make(url: textURL)]
+        )
+
+        XCTAssertFalse(session.isUntitled)
+        XCTAssertEqual(session.file?.url, textURL)
+    }
+
+    func testViewerKindMatchesSupportedFileTypes() {
+        XCTAssertEqual(TextDocumentViewerKind.detect(for: URL(fileURLWithPath: "/tmp/readme.md")), .markdown)
+        XCTAssertEqual(TextDocumentViewerKind.detect(for: URL(fileURLWithPath: "/tmp/data.json")), .json)
+        XCTAssertEqual(TextDocumentViewerKind.detect(for: URL(fileURLWithPath: "/tmp/layout.xml")), .xml)
+        XCTAssertEqual(TextDocumentViewerKind.detect(for: URL(fileURLWithPath: "/tmp/page.html")), .html)
+        XCTAssertEqual(TextDocumentViewerKind.detect(for: URL(fileURLWithPath: "/tmp/config.yml")), .yaml)
+        XCTAssertNil(TextDocumentViewerKind.detect(for: URL(fileURLWithPath: "/tmp/notes.txt")))
+    }
+
+    func testCodecPreservesUTF8BOMAndCRLFWhenSaving() throws {
+        let url = tempDir.appendingPathComponent("windows.txt")
+        let original = Data([0xEF, 0xBB, 0xBF]) + Data("one\r\ntwo\r\n".utf8)
+        try original.write(to: url)
+
+        let loaded = try TextDocumentCodec.load(from: url)
+        XCTAssertEqual(loaded.text, "one\r\ntwo\r\n")
+        XCTAssertEqual(loaded.encoding, .utf8WithBOM)
+        XCTAssertEqual(loaded.lineEnding, .crlf)
+
+        try TextDocumentCodec.save(
+            "one\nchanged\n",
+            to: url,
+            encoding: loaded.encoding,
+            lineEnding: loaded.lineEnding
+        )
+
+        let saved = try Data(contentsOf: url)
+        XCTAssertTrue(saved.starts(with: Data([0xEF, 0xBB, 0xBF])))
+        XCTAssertEqual(String(data: saved.dropFirst(3), encoding: .utf8), "one\r\nchanged\r\n")
+    }
+
+    func testCodecRejectsFilesOverTheEditableLimit() throws {
+        let url = tempDir.appendingPathComponent("large.txt")
+        try Data(repeating: 0x61, count: 32).write(to: url)
+
+        XCTAssertThrowsError(try TextDocumentCodec.load(from: url, maximumBytes: 16)) { error in
+            XCTAssertEqual(
+                error as? TextDocumentError,
+                .fileTooLarge(actualBytes: 32, maximumBytes: 16)
+            )
+        }
+    }
+
+    func testJSONViewerPrettyPrintsAndReportsInvalidInput() {
+        let valid = TextDocumentViewerFormatter.format(
+            "{\"name\":\"Workbench\",\"count\":2}",
+            as: .json
+        )
+        XCTAssertNil(valid.errorMessage)
+        XCTAssertTrue(valid.text.contains("\n"))
+        XCTAssertTrue(valid.text.contains("\"name\" : \"Workbench\""))
+
+        let invalid = TextDocumentViewerFormatter.format("{broken", as: .json)
+        XCTAssertNotNil(invalid.errorMessage)
+        XCTAssertEqual(invalid.text, "{broken")
+    }
+
+    func testXMLViewerPrettyPrintsAndReportsInvalidInput() {
+        let valid = TextDocumentViewerFormatter.format(
+            "<root><item>Workbench</item></root>",
+            as: .xml
+        )
+        XCTAssertNil(valid.errorMessage)
+        XCTAssertTrue(valid.text.contains("\n"))
+        XCTAssertTrue(valid.text.contains("<item>Workbench</item>"))
+
+        let invalid = TextDocumentViewerFormatter.format("<root>", as: .xml)
+        XCTAssertNotNil(invalid.errorMessage)
+        XCTAssertEqual(invalid.text, "<root>")
+    }
+}
+
 final class InlineRenameSelectionTests: XCTestCase {
     func testFileRenameSelectsTheNameWithoutItsExtension() {
         XCTAssertEqual(
@@ -1675,6 +2188,66 @@ final class CalendarToolDateRangeTests: XCTestCase {
     }
 }
 
+@MainActor
+final class CalendarToolStateTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.firstWeekday = 2
+        return calendar
+    }
+
+    func testKeyboardMovementAndShiftExtensionPreserveSelectionAnchor() {
+        let (state, defaults, suiteName) = makeState()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        state.moveSelection(byDays: 1, extending: false, calendar: calendar)
+        state.moveSelection(byDays: 3, extending: true, calendar: calendar)
+
+        XCTAssertEqual(state.selectedRange?.dayCount(calendar: calendar), 4)
+        XCTAssertEqual(
+            state.selectedRange?.startDate,
+            calendar.date(from: DateComponents(year: 2026, month: 8, day: 3))
+        )
+        XCTAssertEqual(
+            state.selectedRange?.endDate,
+            calendar.date(from: DateComponents(year: 2026, month: 8, day: 6))
+        )
+    }
+
+    func testViewPreferencesPersist() {
+        let (state, defaults, suiteName) = makeState()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        state.period = .week
+        state.visibleWeekCount = 7
+        state.showsAgenda = false
+        state.agendaScope = .all
+
+        let reloaded = CalendarToolState(
+            defaults: defaults,
+            now: calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))!,
+            calendar: calendar
+        )
+        XCTAssertEqual(reloaded.period, .week)
+        XCTAssertEqual(reloaded.visibleWeekCount, 7)
+        XCTAssertFalse(reloaded.showsAgenda)
+        XCTAssertEqual(reloaded.agendaScope, .all)
+    }
+
+    private func makeState() -> (CalendarToolState, UserDefaults, String) {
+        let suiteName = "CalendarToolStateTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let now = calendar.date(from: DateComponents(year: 2026, month: 8, day: 2, hour: 12))!
+        return (
+            CalendarToolState(defaults: defaults, now: now, calendar: calendar),
+            defaults,
+            suiteName
+        )
+    }
+}
+
 final class CalendarToolReminderLeadTimeTests: XCTestCase {
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -1789,6 +2362,69 @@ final class CalendarToolReminderStoreTests: XCTestCase {
                 defaults: defaults,
                 notificationScheduler: scheduler
             ).reminders.isEmpty)
+        }
+    }
+
+    func testUpdateReschedulesAndPersistsReminder() {
+        withStore { store, defaults, scheduler in
+            let originalRange = CalendarToolDateRange(
+                single: calendar.date(from: DateComponents(year: 2026, month: 8, day: 2))!,
+                calendar: calendar
+            )
+            let updatedRange = CalendarToolDateRange(
+                startDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 5))!,
+                endDate: calendar.date(from: DateComponents(year: 2026, month: 8, day: 7))!,
+                calendar: calendar
+            )
+            let reminder = store.add(title: "Draft", range: originalRange)
+
+            let updated = store.update(
+                reminder.id,
+                title: "  Ship release  ",
+                range: updatedRange,
+                notificationLeadTime: CalendarToolReminderLeadTime(value: 4, unit: .hours),
+                calendar: calendar
+            )
+
+            XCTAssertEqual(updated?.title, "Ship release")
+            XCTAssertEqual(updated?.range, updatedRange)
+            XCTAssertEqual(scheduler.cancelledReminders.map(\.id), [reminder.id])
+            XCTAssertEqual(scheduler.scheduledReminders.map(\.id), [reminder.id, reminder.id])
+
+            let reloaded = CalendarToolReminderStore(
+                defaults: defaults,
+                notificationScheduler: scheduler
+            )
+            XCTAssertEqual(reloaded.reminder(id: reminder.id)?.title, "Ship release")
+        }
+    }
+
+    func testDuplicateAndSearchableAgenda() throws {
+        withStore { store, _, _ in
+            let future = CalendarToolDateRange(
+                single: calendar.date(from: DateComponents(year: 2026, month: 9, day: 4))!,
+                calendar: calendar
+            )
+            let past = CalendarToolDateRange(
+                single: calendar.date(from: DateComponents(year: 2026, month: 7, day: 1))!,
+                calendar: calendar
+            )
+            let launch = store.add(title: "Launch Review", range: future)
+            store.add(title: "Old meeting", range: past)
+            let copy = store.duplicate(launch.id)
+
+            XCTAssertEqual(copy?.title, "Launch Review Copy")
+            XCTAssertEqual(copy?.range, future)
+
+            let now = calendar.date(from: DateComponents(year: 2026, month: 8, day: 1))!
+            let matches = store.filteredReminders(
+                query: #""launch review" day"#,
+                scope: .upcoming,
+                now: now,
+                calendar: calendar
+            )
+            XCTAssertEqual(matches.count, 2)
+            XCTAssertTrue(matches.allSatisfy { $0.title.contains("Launch Review") })
         }
     }
 
@@ -2101,6 +2737,24 @@ final class PaneModelNavigationTests: EngineTestCase {
         let didObserveDownload = await waitUntil {
             model.items.contains { $0.name == "browser-download.zip" }
         }
+        XCTAssertTrue(didObserveDownload)
+    }
+
+    func testPollingFallbackRefreshesWhenFileSystemEventsAreUnavailable() async throws {
+        var didRefresh = false
+        let watcher = DirectoryWatcher(
+            debounce: .milliseconds(10),
+            pollingInterval: .milliseconds(20),
+            usesFileSystemEvents: false
+        ) {
+            didRefresh = true
+        }
+        watcher.watch(tempDir)
+        defer { watcher.stop() }
+
+        try writeFile("download-without-event-source.dmg")
+
+        let didObserveDownload = await waitUntil { didRefresh }
         XCTAssertTrue(didObserveDownload)
     }
 
@@ -2460,6 +3114,33 @@ final class DiskSpaceAnalyzerTests: EngineTestCase {
         XCTAssertTrue(zip(candidates, candidates.dropFirst()).allSatisfy { $0.bytes >= $1.bytes })
     }
 
+    func testAnalyzerBuildsLargestFirstFolderUsageTree() async throws {
+        let media = tempDir.appendingPathComponent("Media", isDirectory: true)
+        let videos = media.appendingPathComponent("Videos", isDirectory: true)
+        let documents = tempDir.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: videos, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        try makeSizedFile("large.mp4", size: 32_768, modified: .now, in: videos)
+        try makeSizedFile("small.txt", size: 4_096, modified: .now, in: documents)
+
+        let analysis = try await DiskSpaceAnalyzerEngine.analyze(
+            options: DiskSpaceScanOptions(root: tempDir)
+        )
+        let root = try XCTUnwrap(analysis.folderTree)
+        let mediaNode = try XCTUnwrap(folderNode(at: media.path, in: root))
+        let videosNode = try XCTUnwrap(folderNode(at: videos.path, in: root))
+        let documentsNode = try XCTUnwrap(folderNode(at: documents.path, in: root))
+
+        XCTAssertEqual(root.path, tempDir.standardizedFileURL.path)
+        XCTAssertEqual(root.bytes, analysis.totalBytes)
+        XCTAssertEqual(root.fileCount, analysis.scannedFileCount)
+        XCTAssertEqual(root.children.first?.path, media.path)
+        XCTAssertGreaterThan(mediaNode.bytes, documentsNode.bytes)
+        XCTAssertEqual(mediaNode.directBytes, 0)
+        XCTAssertEqual(videosNode.directBytes, videosNode.bytes)
+        XCTAssertEqual(videosNode.directFileCount, 1)
+    }
+
     func testSystemManagedPathsAreMarkedAsProtectedCandidates() {
         let systemCandidate = DiskSpaceDeletionCandidate(
             path: "/System/Library/CoreServices/Finder.app",
@@ -2496,10 +3177,32 @@ final class DiskSpaceAnalyzerTests: EngineTestCase {
         XCTAssertEqual(restored.completedAt, completedAt)
         XCTAssertEqual(restored.analysis.totalBytes, analysis.totalBytes)
         XCTAssertEqual(restored.analysis.volumePath, analysis.volumePath)
+        XCTAssertEqual(restored.analysis.folderTree, analysis.folderTree)
         XCTAssertEqual(
             restored.analysis.deletionCandidates(for: .archives).first?.name,
             "archive.zip"
         )
+    }
+
+    func testAnalysisSnapshotWithoutFolderTreeStillDecodes() async throws {
+        try makeSizedFile("legacy.txt", size: 4_096, modified: .now)
+        let analysis = try await DiskSpaceAnalyzerEngine.analyze(
+            options: DiskSpaceScanOptions(root: tempDir)
+        )
+        let snapshot = DiskSpaceAnalysisSnapshot(analysis: analysis, completedAt: .now)
+        let encoded = try JSONEncoder().encode(snapshot)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        var analysisObject = try XCTUnwrap(object["analysis"] as? [String: Any])
+        analysisObject.removeValue(forKey: "folderTree")
+        object["analysis"] = analysisObject
+
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let restored = try JSONDecoder().decode(DiskSpaceAnalysisSnapshot.self, from: legacyData)
+
+        XCTAssertNil(restored.analysis.folderTree)
+        XCTAssertEqual(restored.analysis.totalBytes, analysis.totalBytes)
     }
 
     private func makeSizedFile(
@@ -2515,6 +3218,14 @@ final class DiskSpaceAnalyzerTests: EngineTestCase {
 
     private func bytes(in slices: [DiskSpaceSlice], id: String) -> Int64 {
         slices.first(where: { $0.id == id })?.bytes ?? 0
+    }
+
+    private func folderNode(at path: String, in node: DiskSpaceFolderNode) -> DiskSpaceFolderNode? {
+        if node.path == path { return node }
+        for child in node.children {
+            if let match = folderNode(at: path, in: child) { return match }
+        }
+        return nil
     }
 }
 
@@ -3733,8 +4444,58 @@ final class PrivilegedShellCommandTests: XCTestCase {
     }
 }
 
+final class TerminalPowerUserPolicyTests: XCTestCase {
+    func testCommandInputResizeClampsAndMovesOppositeTheTopDivider() {
+        XCTAssertEqual(
+            TerminalCommandInputLayout.resizedHeight(from: 100, translation: -40),
+            140
+        )
+        XCTAssertEqual(
+            TerminalCommandInputLayout.resizedHeight(from: 100, translation: 500),
+            TerminalCommandInputLayout.minimumHeight
+        )
+        XCTAssertEqual(
+            TerminalCommandInputLayout.resizedHeight(from: 100, translation: -500),
+            TerminalCommandInputLayout.maximumHeight
+        )
+    }
+
+    func testShellArgumentQuotesSpacesAndApostrophes() {
+        XCTAssertEqual(
+            TerminalShellArgument.quote("/tmp/O'Brien Files"),
+            "'/tmp/O'\\''Brien Files'"
+        )
+    }
+
+    func testLeadingWhitespaceKeepsACommandOutOfHistory() {
+        XCTAssertFalse(TerminalCommandHistoryPolicy.shouldRecord(" secret-command"))
+        XCTAssertFalse(TerminalCommandHistoryPolicy.shouldRecord("\tsecret-command"))
+        XCTAssertTrue(TerminalCommandHistoryPolicy.shouldRecord("printf visible"))
+    }
+}
+
 @MainActor
 final class TerminalStoreTests: XCTestCase {
+    func testUnknownCommandOutputStartsOnTheLineAfterTheRenderedCommand() async {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let command = "workbench_missing_command_91827"
+        store.commandText = command
+        store.executeCommand()
+        let finished = await waitUntil { !store.isExecuting }
+
+        XCTAssertTrue(finished)
+        XCTAssertTrue(
+            store.output.contains("~ % \(command)\nzsh: command not found: \(command)"),
+            "Unexpected terminal transcript: \(store.output.debugDescription)"
+        )
+    }
+
     func testRunsCommandsAndTracksTheShellWorkingDirectory() async throws {
         let (store, defaults, suiteName) = makeStore()
         store.start(at: FileManager.default.homeDirectoryForCurrentUser)
@@ -3785,6 +4546,7 @@ final class TerminalStoreTests: XCTestCase {
         store.executeCommand()
         _ = await waitUntil { !store.isExecuting }
 
+        store.commandText = "unfinished draft"
         store.previousCommand()
         XCTAssertEqual(store.commandText, "printf second")
         store.previousCommand()
@@ -3792,7 +4554,55 @@ final class TerminalStoreTests: XCTestCase {
         store.nextCommand()
         XCTAssertEqual(store.commandText, "printf second")
         store.nextCommand()
-        XCTAssertEqual(store.commandText, "")
+        XCTAssertEqual(store.commandText, "unfinished draft")
+    }
+
+    func testLeadingSpaceCommandIsNotSavedInRecentCommandsOrSessionHistory() async {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let visibleCommand = "printf visible-output"
+        store.commandText = visibleCommand
+        store.executeCommand()
+        _ = await waitUntil { !store.isExecuting }
+
+        let privateCommand = " printf private-output"
+        store.commandText = privateCommand
+        store.executeCommand()
+        let finished = await waitUntil {
+            !store.isExecuting && store.output.contains("private-output")
+        }
+
+        XCTAssertTrue(finished)
+        XCTAssertFalse(store.recentCommands.contains(privateCommand))
+        store.previousCommand()
+        XCTAssertEqual(store.commandText, visibleCommand)
+    }
+
+    func testChangingDirectoryHandlesApostrophesWithoutPollutingHistory() async throws {
+        let (store, defaults, suiteName) = makeStore()
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Workbench O'Brien Folder \(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            try? FileManager.default.removeItem(at: destination)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        store.changeDirectory(to: destination)
+        let changedDirectory = await waitUntil {
+            !store.isExecuting
+                && store.currentDirectory.standardizedFileURL == destination.standardizedFileURL
+        }
+
+        XCTAssertTrue(changedDirectory)
+        XCTAssertTrue(store.recentCommands.isEmpty)
     }
 
     func testRecentCommandsAndPresetsPersist() async {
@@ -3868,6 +4678,49 @@ final class TerminalStoreTests: XCTestCase {
         XCTAssertTrue(finished)
         XCTAssertFalse(store.output.contains(secret))
         XCTAssertFalse(store.recentCommands.contains(secret))
+    }
+
+    func testManualSecureInputHandlesUnrecognizedPasswordPrompt() async {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        store.commandText = "printf 'Secret code: '; read secret; printf '\nreceived-secure-input'"
+        store.executeCommand()
+        XCTAssertTrue(store.isExecuting)
+        XCTAssertFalse(store.isAwaitingSecureInput)
+        XCTAssertTrue(store.canBeginSecureInput)
+
+        store.beginSecureInput()
+        XCTAssertTrue(store.isAwaitingSecureInput)
+        XCTAssertFalse(store.canBeginSecureInput)
+
+        let secret = "manual-secret"
+        store.commandText = secret
+        store.executeCommand()
+
+        let finished = await waitUntil {
+            !store.isExecuting && store.output.contains("received-secure-input")
+        }
+        XCTAssertTrue(finished)
+        XCTAssertFalse(store.output.contains(secret))
+        XCTAssertFalse(store.recentCommands.contains(secret))
+    }
+
+    func testManualSecureInputCannotStartWithoutRunningCommand() {
+        let (store, defaults, suiteName) = makeStore()
+        store.start(at: FileManager.default.homeDirectoryForCurrentUser)
+        defer {
+            store.stop(appendMessage: false)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        XCTAssertFalse(store.canBeginSecureInput)
+        store.beginSecureInput()
+        XCTAssertFalse(store.isAwaitingSecureInput)
     }
 
     private func makeStore() -> (TerminalStore, UserDefaults, String) {

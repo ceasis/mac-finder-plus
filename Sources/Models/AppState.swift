@@ -99,6 +99,35 @@ enum FileDropOperationPolicy {
     }
 }
 
+enum MountedVolumeSupport {
+    nonisolated static func contains(_ candidate: URL, volumeRoot: URL) -> Bool {
+        let candidateComponents = candidate.standardizedFileURL.pathComponents
+        let rootComponents = volumeRoot.standardizedFileURL.pathComponents
+        return candidateComponents.starts(with: rootComponents)
+    }
+
+    nonisolated static func isMounted(_ volumeURL: URL, among mountedVolumes: [URL]) -> Bool {
+        let targetPath = volumeURL.standardizedFileURL.path
+        return mountedVolumes.contains {
+            $0.standardizedFileURL.path == targetPath
+        }
+    }
+
+    nonisolated static func isMounted(_ volumeURL: URL) -> Bool {
+        let mountedVolumes = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: nil,
+            options: []
+        ) ?? []
+        return isMounted(volumeURL, among: mountedVolumes)
+    }
+}
+
+extension Notification.Name {
+    static let workbenchMountedVolumesChanged = Notification.Name(
+        "WorkbenchMountedVolumesChanged"
+    )
+}
+
 /// App-wide state: the two panes, which one is active, global toggles, and the
 /// entry points that menu commands and toolbar buttons call.
 @Observable
@@ -3507,14 +3536,47 @@ final class AppState {
         let deviceURL = url.standardizedFileURL
         let name = deviceURL.lastPathComponent.isEmpty ? deviceURL.path : deviceURL.lastPathComponent
         Task {
+            let isMounted = await Task.detached(priority: .userInitiated) {
+                MountedVolumeSupport.isMounted(deviceURL)
+            }.value
+            guard isMounted else {
+                completeDeviceUnmount(at: deviceURL)
+                return
+            }
+
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try NSWorkspace.shared.unmountAndEjectDevice(at: deviceURL)
                 }.value
+                completeDeviceUnmount(at: deviceURL)
             } catch {
+                // Physical removal can race with this call. If macOS no longer
+                // reports the volume as mounted, the requested end state has
+                // already been reached and there is no error to present.
+                let isStillMounted = await Task.detached(priority: .userInitiated) {
+                    MountedVolumeSupport.isMounted(deviceURL)
+                }.value
+                guard isStillMounted else {
+                    completeDeviceUnmount(at: deviceURL)
+                    return
+                }
                 lastError = "Couldn’t unmount “\(name)”: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func completeDeviceUnmount(at deviceURL: URL) {
+        let fallback = FileManager.default.homeDirectoryForCurrentUser
+        panes.forEach {
+            $0.recoverFromUnavailableVolume(deviceURL, fallback: fallback)
+        }
+        if lastError?.hasPrefix("Couldn’t unmount “") == true {
+            lastError = nil
+        }
+        NotificationCenter.default.post(
+            name: .workbenchMountedVolumesChanged,
+            object: deviceURL
+        )
     }
 
     func reportProblem() {

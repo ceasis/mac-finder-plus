@@ -35,6 +35,8 @@ struct TextDocumentEditorView: View {
     @State private var viewerResult: TextDocumentViewerResult?
     @State private var viewerGeneration = UUID()
     @State private var isRenderingViewer = false
+    @State private var autosaveTask: Task<Void, Never>?
+    @StateObject private var undoController = CodeTextViewUndoController()
 
     private var viewerKind: TextDocumentViewerKind? {
         TextDocumentViewerKind.detect(for: item.url)
@@ -52,9 +54,11 @@ struct TextDocumentEditorView: View {
         }
         .background(.background)
         .task(id: item.id) { await loadDocument() }
+        .onChange(of: text) { _, _ in scheduleAutosave() }
         .onChange(of: selectedTab) { _, newTab in
             if newTab == .viewer { renderViewer() }
         }
+        .onDisappear { commitPendingAutosave() }
         .alert("File Changed on Disk", isPresented: $showsExternalChangeAlert) {
             Button("Reload from Disk") {
                 Task { await loadDocument() }
@@ -125,6 +129,22 @@ struct TextDocumentEditorView: View {
                 .popover(isPresented: $showsGoToLine, arrowEdge: .top) {
                     goToLinePopover
                 }
+
+                Button {
+                    undoController.undo()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .disabled(!undoController.canUndo)
+                .help("Undo (⌘Z)")
+
+                Button {
+                    undoController.redo()
+                } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .disabled(!undoController.canRedo)
+                .help("Redo (⇧⌘Z)")
             }
 
             Button {
@@ -139,7 +159,7 @@ struct TextDocumentEditorView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(!isDirty || isSaving || isLoading || loadError != nil)
-            .help("Save (⌘S)")
+            .help("Save now (⌘S) · Changes also save automatically")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -165,6 +185,8 @@ struct TextDocumentEditorView: View {
                 language: language,
                 fontSize: fontSize,
                 wrapsLines: wrapsLines,
+                requestsInitialFocus: true,
+                undoController: undoController,
                 pendingGoToLine: $pendingGoToLine,
                 onSave: { save() },
                 onCursorChange: { line = $0; column = $1 }
@@ -248,10 +270,10 @@ struct TextDocumentEditorView: View {
                     Label(saveError, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                         .help(saveError)
+                } else if isSaving {
+                    Label("Saving…", systemImage: "arrow.triangle.2.circlepath")
                 } else if isDirty {
-                    Label("Modified", systemImage: "circle.fill")
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(.orange)
+                    Label("Autosaving…", systemImage: "clock")
                 } else if !isLoading, loadError == nil {
                     Label("Saved", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -296,6 +318,8 @@ struct TextDocumentEditorView: View {
 
     @MainActor
     private func loadDocument() async {
+        autosaveTask?.cancel()
+        autosaveTask = nil
         let url = item.url
         selectedTab = .text
         language = CodeLanguage.detect(for: url)
@@ -327,6 +351,8 @@ struct TextDocumentEditorView: View {
     }
 
     private func save(force: Bool = false) {
+        autosaveTask?.cancel()
+        autosaveTask = nil
         guard !isLoading, loadError == nil, !isSaving, isDirty else { return }
         let url = item.url
         let contents = text
@@ -366,12 +392,36 @@ struct TextDocumentEditorView: View {
                 loadedModificationDate = modificationDate
                 isSaving = false
                 appState.activePane.refresh()
+                if isDirty {
+                    scheduleAutosave()
+                }
             } catch {
                 guard item.url == url else { return }
                 isSaving = false
                 saveError = error.localizedDescription
                 appState.lastError = error.localizedDescription
             }
+        }
+    }
+
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        guard !isLoading, loadError == nil, isDirty else {
+            autosaveTask = nil
+            return
+        }
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, isDirty else { return }
+            save()
+        }
+    }
+
+    private func commitPendingAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        if isDirty {
+            save()
         }
     }
 

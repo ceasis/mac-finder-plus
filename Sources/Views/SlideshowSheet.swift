@@ -9,10 +9,11 @@ struct MergeIntoVideoSheet: View {
     @State private var orderedTargets: [FileItem]
     @State private var orderPreset = VideoMergeOrder.fileView
     @State private var hasCustomOrder = false
-    @State private var secondsPerImage = 2.0
-    @State private var sizeChoice = SizeChoice.landscape1080
-    @State private var fill = false
-    @State private var includeAudio = true
+    @AppStorage("videoMerge.secondsPerImage") private var secondsPerImage = 2.0
+    @AppStorage("videoMerge.sizeChoice") private var sizeChoiceRawValue =
+        SizeChoice.landscape1080.rawValue
+    @AppStorage("videoMerge.fillFrame") private var fill = false
+    @AppStorage("videoMerge.includeAudio") private var includeAudio = true
 
     init(targets: [FileItem]) {
         self.targets = targets
@@ -39,6 +40,9 @@ struct MergeIntoVideoSheet: View {
 
     private var imageCount: Int { orderedTargets.filter(\.isImage).count }
     private var videoCount: Int { orderedTargets.count - imageCount }
+    private var sizeChoice: SizeChoice {
+        SizeChoice(rawValue: sizeChoiceRawValue) ?? .landscape1080
+    }
 
     private var mediaSummary: String {
         let images = imageCount == 0 ? nil : "\(imageCount) image\(imageCount == 1 ? "" : "s")"
@@ -145,9 +149,9 @@ struct MergeIntoVideoSheet: View {
 
                         GridRow {
                             Text("Video size")
-                            Picker("", selection: $sizeChoice) {
+                            Picker("", selection: $sizeChoiceRawValue) {
                                 ForEach(SizeChoice.allCases) { choice in
-                                    Text(choice.rawValue).tag(choice)
+                                    Text(choice.rawValue).tag(choice.rawValue)
                                 }
                             }
                             .labelsHidden()

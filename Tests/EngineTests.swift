@@ -249,6 +249,55 @@ final class CodeTextViewInitialPositionTests: XCTestCase {
         XCTAssertEqual(textView.selectedRange(), NSRange(location: 0, length: 0))
         XCTAssertEqual(scrollView.contentView.bounds.origin.x, 0)
     }
+
+    func testResetDocumentPositionMovesViewportToTheTopLeft() {
+        let scrollView = EditorTextView.scrollableTextView()
+        scrollView.frame = NSRect(x: 0, y: 0, width: 240, height: 160)
+        let textView = scrollView.documentView as! EditorTextView
+        textView.frame = NSRect(x: 0, y: 0, width: 2_000, height: 1_200)
+        textView.string = (0..<80).map { "line \($0) " + String(repeating: "c", count: 120) }
+            .joined(separator: "\n")
+        scrollView.contentView.scroll(to: NSPoint(x: 400, y: 500))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        textView.resetDocumentPosition()
+
+        let documentBounds = textView.bounds
+        let visibleSize = scrollView.contentView.bounds.size
+        let topY = textView.isFlipped
+            ? documentBounds.minY
+            : max(documentBounds.minY, documentBounds.maxY - visibleSize.height)
+        let expectedOrigin = scrollView.contentView.constrainBoundsRect(NSRect(
+            x: documentBounds.minX,
+            y: topY,
+            width: visibleSize.width,
+            height: visibleSize.height
+        )).origin
+
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: 0, length: 0))
+        XCTAssertEqual(scrollView.contentView.bounds.origin.x, expectedOrigin.x)
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, expectedOrigin.y)
+    }
+
+    func testResetDocumentPositionCorrectsDeferredHorizontalScrollChanges() async {
+        let scrollView = EditorTextView.scrollableTextView()
+        scrollView.frame = NSRect(x: 0, y: 0, width: 240, height: 160)
+        let textView = scrollView.documentView as! EditorTextView
+        textView.frame = NSRect(x: 0, y: 0, width: 2_000, height: 400)
+        textView.string = String(repeating: "b", count: 500)
+
+        textView.resetDocumentPosition()
+        scrollView.contentView.scroll(to: NSPoint(x: 320, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+
+        let deferredReset = expectation(description: "deferred scroll reset")
+        DispatchQueue.main.async { deferredReset.fulfill() }
+        await fulfillment(of: [deferredReset], timeout: 1)
+
+        XCTAssertEqual(textView.selectedRange(), NSRange(location: 0, length: 0))
+        XCTAssertEqual(scrollView.contentView.bounds.origin.x, 0)
+    }
+
 }
 
 @MainActor
@@ -1003,9 +1052,126 @@ final class AppCommandResponderTests: XCTestCase {
         XCTAssertTrue(didUndo)
     }
 
+    func testToolbarUndoControllerTargetsItsEditorAndSupportsRedo() async {
+        let textView = ToolbarUndoTextView()
+
+        let controller = CodeTextViewUndoController()
+        controller.attach(textView)
+        XCTAssertFalse(controller.canUndo, "Attachment must not publish during the SwiftUI update cycle")
+        try? await Task.sleep(for: .milliseconds(10))
+        XCTAssertTrue(controller.canUndo)
+        XCTAssertFalse(controller.canRedo)
+
+        controller.undo()
+        XCTAssertTrue(textView.testUndoManager.didUndo)
+        XCTAssertFalse(controller.canUndo)
+        XCTAssertTrue(controller.canRedo)
+
+        controller.redo()
+        XCTAssertTrue(textView.testUndoManager.didRedo)
+        XCTAssertTrue(controller.canUndo)
+        XCTAssertFalse(controller.canRedo)
+    }
+
     private final class UndoableTestTextView: NSTextView {
         let testUndoManager = UndoManager()
         override var undoManager: UndoManager? { testUndoManager }
+    }
+
+    private final class ToolbarUndoTextView: NSTextView {
+        let testUndoManager = ToolbarUndoManager()
+        override var undoManager: UndoManager? { testUndoManager }
+    }
+
+    private final class ToolbarUndoManager: UndoManager {
+        var didUndo = false
+        var didRedo = false
+        private var undoAvailable = true
+        private var redoAvailable = false
+
+        override var canUndo: Bool { undoAvailable }
+        override var canRedo: Bool { redoAvailable }
+
+        override func undo() {
+            didUndo = true
+            undoAvailable = false
+            redoAvailable = true
+        }
+
+        override func redo() {
+            didRedo = true
+            undoAvailable = true
+            redoAvailable = false
+        }
+    }
+}
+
+@MainActor
+final class MountedVolumeRecoveryTests: EngineTestCase {
+    func testMountedVolumeMatchingUsesTheExactVolumeRoot() {
+        let drive = URL(fileURLWithPath: "/Volumes/External", isDirectory: true)
+        let similarlyNamedDrive = URL(
+            fileURLWithPath: "/Volumes/External Backup",
+            isDirectory: true
+        )
+
+        XCTAssertTrue(MountedVolumeSupport.isMounted(drive, among: [drive]))
+        XCTAssertFalse(
+            MountedVolumeSupport.isMounted(drive, among: [similarlyNamedDrive])
+        )
+    }
+
+    func testVolumeContainmentDoesNotMatchSimilarNames() {
+        let drive = URL(fileURLWithPath: "/Volumes/External", isDirectory: true)
+
+        XCTAssertTrue(MountedVolumeSupport.contains(
+            drive.appendingPathComponent("Movies", isDirectory: true),
+            volumeRoot: drive
+        ))
+        XCTAssertFalse(MountedVolumeSupport.contains(
+            URL(fileURLWithPath: "/Volumes/External Backup/Movies", isDirectory: true),
+            volumeRoot: drive
+        ))
+    }
+
+    func testPaneRecoversTabsAndHistoryFromUnavailableVolume() {
+        let drive = URL(fileURLWithPath: "/Volumes/External", isDirectory: true)
+        let driveFolder = drive.appendingPathComponent("Movies", isDirectory: true)
+        let fallback = tempDir.standardizedFileURL
+        let localFolder = fallback.appendingPathComponent("Local", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: localFolder,
+            withIntermediateDirectories: true
+        )
+        let pane = PaneModel(
+            tabs: [
+                PaneTab(
+                    url: driveFolder,
+                    backStack: [drive, localFolder],
+                    forwardStack: [driveFolder]
+                ),
+                PaneTab(
+                    url: localFolder,
+                    backStack: [driveFolder],
+                    forwardStack: []
+                ),
+            ],
+            activeTabIndex: 0
+        )
+
+        XCTAssertTrue(pane.recoverFromUnavailableVolume(drive, fallback: fallback))
+        XCTAssertEqual(pane.currentURL, fallback)
+        XCTAssertEqual(pane.tabs[0].url, fallback)
+        XCTAssertEqual(pane.tabs[1].url, localFolder)
+        XCTAssertTrue(pane.tabs.allSatisfy { tab in
+            !MountedVolumeSupport.contains(tab.url, volumeRoot: drive)
+                && tab.backStack.allSatisfy {
+                    !MountedVolumeSupport.contains($0, volumeRoot: drive)
+                }
+                && tab.forwardStack.allSatisfy {
+                    !MountedVolumeSupport.contains($0, volumeRoot: drive)
+                }
+        })
     }
 }
 

@@ -1,9 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The built-in text/code editor. Loads a file, edits it with CodeTextView, and
-/// saves back to disk. Presented as a non-outside-dismissable modal so unsaved
-/// work isn't lost to a stray click — closing goes through a dirty-state guard.
+/// The built-in text/code editor. Edits auto-save after a short pause while the
+/// native text view retains its full undo and redo history.
 struct TextEditorView: View {
     @Environment(AppState.self) private var appState
     let session: TextEditorSession
@@ -20,7 +19,9 @@ struct TextEditorView: View {
     @State private var pendingGoToLine: Int?
     @State private var showGoToLine = false
     @State private var goToLineText = ""
-    @State private var showDiscardConfirm = false
+    @State private var autosaveTask: Task<Void, Never>?
+    @State private var saveError: String?
+    @StateObject private var undoController = CodeTextViewUndoController()
 
     private var target: FileItem? { session.file }
     private var currentURL: URL? { documentURL ?? target?.url }
@@ -39,22 +40,13 @@ struct TextEditorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
         .task(id: session.id) { load() }
+        .onChange(of: text) { _, _ in scheduleAutosave() }
+        .onDisappear { commitPendingAutosave() }
         .alert("Go to Line", isPresented: $showGoToLine) {
             TextField("Line number", text: $goToLineText)
             Button("Go") {
                 if let number = Int(goToLineText) { pendingGoToLine = number }
             }
-            Button("Cancel", role: .cancel) {}
-        }
-        .confirmationDialog(
-            "You have unsaved changes.",
-            isPresented: $showDiscardConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Save") {
-                if save() { close() }
-            }
-            Button("Discard Changes", role: .destructive) { close() }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -74,6 +66,7 @@ struct TextEditorView: View {
                 fontSize: fontSize,
                 wrapsLines: wrapsLines,
                 requestsInitialFocus: true,
+                undoController: undoController,
                 pendingGoToLine: $pendingGoToLine,
                 onSave: { _ = save() },
                 onCursorChange: { line = $0; column = $1 }
@@ -96,6 +89,20 @@ struct TextEditorView: View {
             }
 
             Spacer()
+
+            Button { undoController.undo() } label: {
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .disabled(!undoController.canUndo)
+            .help("Undo (⌘Z)")
+            .frame(minWidth: 30, minHeight: 28)
+
+            Button { undoController.redo() } label: {
+                Image(systemName: "arrow.uturn.forward")
+            }
+            .disabled(!undoController.canRedo)
+            .help("Redo (⇧⌘Z)")
+            .frame(minWidth: 30, minHeight: 28)
 
             Picker("Language", selection: $language) {
                 ForEach(CodeLanguage.allCases) { lang in
@@ -126,7 +133,7 @@ struct TextEditorView: View {
             Button { _ = save() } label: { Label("Save", systemImage: "square.and.arrow.down") }
                 .buttonStyle(.borderedProminent)
                 .disabled((!isDirty && currentURL != nil) || loadError != nil)
-                .help("Save (⌘S)")
+                .help("Save now (⌘S) · Changes also save automatically")
 
             Button { attemptClose() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                 .buttonStyle(.plain)
@@ -145,6 +152,16 @@ struct TextEditorView: View {
             Text("Ln \(line), Col \(column)")
             Text("\(text.count) chars")
             Spacer()
+            if let saveError {
+                Label(saveError, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .help(saveError)
+            } else if isDirty {
+                Label("Autosaving…", systemImage: "clock")
+            } else if currentURL != nil {
+                Label("Saved", systemImage: "checkmark.circle.fill")
+            }
             Text(language.title)
             Text(wrapsLines ? "Wrap" : "No Wrap")
         }
@@ -162,6 +179,7 @@ struct TextEditorView: View {
             savedText = ""
             language = .plain
             loadError = nil
+            saveError = nil
             return
         }
 
@@ -186,13 +204,17 @@ struct TextEditorView: View {
             } else {
                 text = outcome.text ?? ""
                 savedText = text
+                saveError = nil
             }
         }
     }
 
     @discardableResult
-    private func save() -> Bool {
-        guard loadError == nil, let url = destinationURLForSave() else { return false }
+    private func save(automatically: Bool = false) -> Bool {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        let destination = automatically ? destinationURLForAutosave() : destinationURLForSave()
+        guard loadError == nil, let url = destination else { return false }
         let contents = text
         do {
             guard let data = contents.data(using: .utf8) else {
@@ -202,6 +224,7 @@ struct TextEditorView: View {
             documentURL = url
             language = CodeLanguage.detect(for: url)
             savedText = contents
+            saveError = nil
             appState.activePane.refresh()
             if url.deletingLastPathComponent().standardizedFileURL
                 == appState.activePane.currentURL.standardizedFileURL {
@@ -209,9 +232,17 @@ struct TextEditorView: View {
             }
             return true
         } catch {
+            saveError = error.localizedDescription
             appState.lastError = error.localizedDescription
             return false
         }
+    }
+
+    private func destinationURLForAutosave() -> URL? {
+        if let currentURL { return currentURL }
+        return FileOperations.uniqueDestination(
+            for: appState.activePane.currentURL.appendingPathComponent("Untitled.txt")
+        )
     }
 
     private func destinationURLForSave() -> URL? {
@@ -229,10 +260,29 @@ struct TextEditorView: View {
     }
 
     private func attemptClose() {
+        commitPendingAutosave()
+        guard !isDirty else { return }
+        close()
+    }
+
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        guard loadError == nil, isDirty else {
+            autosaveTask = nil
+            return
+        }
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, isDirty else { return }
+            _ = save(automatically: true)
+        }
+    }
+
+    private func commitPendingAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
         if isDirty {
-            showDiscardConfirm = true
-        } else {
-            close()
+            _ = save(automatically: true)
         }
     }
 

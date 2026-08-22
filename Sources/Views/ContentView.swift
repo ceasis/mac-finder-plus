@@ -421,8 +421,8 @@ struct ContentView: View {
                 ImageAnnotationEditorView(target: target)
             }
         } else if let session = appState.textEditorSession {
-            // Not outside/Esc-dismissable: the editor guards unsaved changes on
-            // close via its own Close button.
+            // Not outside/Esc-dismissable: closing stays explicit while edits
+            // are continuously auto-saved by the editor.
             DismissibleToolModal(isDismissable: false, showsCloseButton: false) {
                 appState.textEditorSession = nil
             } content: {

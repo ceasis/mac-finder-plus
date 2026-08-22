@@ -326,7 +326,7 @@ struct SidebarView: View {
     @State private var draggedTool: SidebarToolID?
     @State private var toolDropTarget: SidebarToolID?
 
-    fileprivate struct Place: Identifiable {
+    fileprivate struct Place: Identifiable, Equatable {
         let id: String
         let name: String
         let icon: String
@@ -459,6 +459,17 @@ struct SidebarView: View {
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(
             for: NSWorkspace.didRenameVolumeNotification
         )) { _ in
+            refreshDevices()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: .workbenchMountedVolumesChanged
+        )) { _ in
+            refreshDevices()
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            // NSWorkspace notifications can arrive before Disk Arbitration has
+            // finished updating mountedVolumeURLs. Polling keeps a physically
+            // removed drive from lingering as an actionable sidebar row.
             refreshDevices()
         }
         .onReceive(NotificationCenter.default.publisher(for: SidebarLayoutPreferences.didResetNotification)) { _ in
@@ -1067,7 +1078,14 @@ struct SidebarView: View {
     }
 
     private func refreshDevices() {
-        devices = orderStore.orderedDevices(Self.externalVolumePlaces())
+        let refreshed = orderStore.orderedDevices(Self.externalVolumePlaces())
+        guard refreshed != devices else { return }
+        if let selection,
+           devices.contains(where: { $0.url == selection }),
+           !refreshed.contains(where: { $0.url == selection }) {
+            self.selection = nil
+        }
+        devices = refreshed
     }
 
     private func resetSidebarLayout() {

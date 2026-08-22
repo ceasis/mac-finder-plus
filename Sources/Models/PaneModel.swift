@@ -803,6 +803,71 @@ final class PaneModel {
         load()
     }
 
+    /// Replaces browser state that points into a volume which macOS has
+    /// already removed. This also strips dead entries from tab history so Back
+    /// and Forward cannot navigate straight back to the missing device.
+    @discardableResult
+    func recoverFromUnavailableVolume(_ volumeURL: URL, fallback: URL) -> Bool {
+        syncActiveTabState()
+
+        let fallbackURL = fallback.standardizedFileURL
+        let currentWasUnavailable = MountedVolumeSupport.contains(
+            currentURL,
+            volumeRoot: volumeURL
+        )
+        var changed = false
+
+        for index in tabs.indices {
+            if MountedVolumeSupport.contains(tabs[index].url, volumeRoot: volumeURL) {
+                tabs[index].url = fallbackURL
+                changed = true
+            }
+
+            let originalBackCount = tabs[index].backStack.count
+            tabs[index].backStack.removeAll {
+                MountedVolumeSupport.contains($0, volumeRoot: volumeURL)
+            }
+            let originalForwardCount = tabs[index].forwardStack.count
+            tabs[index].forwardStack.removeAll {
+                MountedVolumeSupport.contains($0, volumeRoot: volumeURL)
+            }
+            if tabs[index].backStack.count != originalBackCount
+                || tabs[index].forwardStack.count != originalForwardCount {
+                changed = true
+            }
+        }
+
+        guard changed else { return false }
+
+        if currentWasUnavailable {
+            searchTask?.cancel()
+            cancelFolderSizeCalculation()
+            isApplyingTabState = true
+            currentURL = fallbackURL
+            backStack.removeAll {
+                MountedVolumeSupport.contains($0, volumeRoot: volumeURL)
+            }
+            forwardStack.removeAll {
+                MountedVolumeSupport.contains($0, volumeRoot: volumeURL)
+            }
+            selection.removeAll()
+            filterText = ""
+            searchSubfolders = false
+            searchResults = []
+            isSearching = false
+            resetAdvancedSearchResults()
+            resetDuplicateResults()
+            resetCompare()
+            isApplyingTabState = false
+            syncActiveTabState()
+            persistentStateChanged?()
+            load()
+        } else {
+            persistentStateChanged?()
+        }
+        return true
+    }
+
     // MARK: - Tabs
 
     func newTab(at url: URL? = nil) {

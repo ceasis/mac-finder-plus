@@ -1,5 +1,53 @@
 import AppKit
+import Combine
 import SwiftUI
+
+/// A narrow bridge to the native text system's undo manager. Toolbar buttons
+/// use this controller instead of relying on whichever control becomes first
+/// responder after the click.
+@MainActor
+final class CodeTextViewUndoController: ObservableObject {
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+
+    private weak var textView: NSTextView?
+
+    func attach(_ textView: NSTextView) {
+        guard self.textView !== textView else { return }
+        self.textView = textView
+        // NSViewRepresentable calls this while SwiftUI is updating the native
+        // view. Publishing synchronously from that cycle causes a render loop.
+        refreshAfterCurrentEvent()
+    }
+
+    func undo() {
+        guard let undoManager = textView?.undoManager, undoManager.canUndo else { return }
+        undoManager.undo()
+        refresh()
+        refreshAfterCurrentEvent()
+    }
+
+    func redo() {
+        guard let undoManager = textView?.undoManager, undoManager.canRedo else { return }
+        undoManager.redo()
+        refresh()
+        refreshAfterCurrentEvent()
+    }
+
+    func refreshAfterCurrentEvent() {
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.refresh()
+        }
+    }
+
+    private func refresh() {
+        let nextCanUndo = textView?.undoManager?.canUndo == true
+        let nextCanRedo = textView?.undoManager?.canRedo == true
+        if canUndo != nextCanUndo { canUndo = nextCanUndo }
+        if canRedo != nextCanRedo { canRedo = nextCanRedo }
+    }
+}
 
 /// A full NSTextView-backed code editor: line-number ruler, native find/replace
 /// (⌘F / ⌥⌘F, regex-capable), syntax highlighting, auto-indent, and Notepad++-
@@ -12,6 +60,7 @@ struct CodeTextView: NSViewRepresentable {
     var wrapsLines: Bool
     var isEditable = true
     var requestsInitialFocus = false
+    var undoController: CodeTextViewUndoController? = nil
     @Binding var pendingGoToLine: Int?
     var onSave: () -> Void
     var onCursorChange: (_ line: Int, _ column: Int) -> Void
@@ -40,6 +89,7 @@ struct CodeTextView: NSViewRepresentable {
         textView.allowsDocumentBackgroundColorChange = false
         textView.usesFontPanel = false
         textView.string = text
+        textView.undoManager?.removeAllActions()
         textView.onSave = onSave
 
         let ruler = LineNumberRulerView(textView: textView)
@@ -54,8 +104,9 @@ struct CodeTextView: NSViewRepresentable {
 
         context.coordinator.textView = textView
         context.coordinator.ruler = ruler
+        undoController?.attach(textView)
         context.coordinator.configure(textView)
-        textView.resetDocumentPosition()
+        textView.resetDocumentPosition(requestFocus: requestsInitialFocus)
         textView.requestInitialFocusIfNeeded()
         return scrollView
     }
@@ -66,11 +117,16 @@ struct CodeTextView: NSViewRepresentable {
         textView.onSave = onSave
         textView.isEditable = isEditable
         textView.requestsFocusWhenAttached = requestsInitialFocus
-        if textView.string != text {
+        undoController?.attach(textView)
+        let didReplaceDocumentText = textView.string != text
+        if didReplaceDocumentText {
             textView.string = text
-            textView.resetDocumentPosition()
+            textView.undoManager?.removeAllActions()
         }
         context.coordinator.configure(textView)
+        if didReplaceDocumentText {
+            textView.resetDocumentPosition(requestFocus: requestsInitialFocus)
+        }
         textView.requestInitialFocusIfNeeded()
         if let targetLine = pendingGoToLine {
             textView.goToLine(targetLine)
@@ -121,6 +177,7 @@ struct CodeTextView: NSViewRepresentable {
             parent.text = textView.string
             highlight()
             ruler?.needsDisplay = true
+            parent.undoController?.refreshAfterCurrentEvent()
             reportCursor()
         }
 
@@ -148,6 +205,7 @@ final class EditorTextView: NSTextView {
     var onSave: (() -> Void)?
     var requestsFocusWhenAttached = false
     private var didRequestInitialFocus = false
+    private var documentPositionResetGeneration = 0
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -165,11 +223,53 @@ final class EditorTextView: NSTextView {
     /// NSTextView moves its insertion point to the end when `string` is
     /// replaced. Reset both the caret and viewport so a newly opened document
     /// always starts at its top-left edge.
-    func resetDocumentPosition() {
-        setSelectedRange(NSRange(location: 0, length: 0))
+    func resetDocumentPosition(requestFocus: Bool = false) {
+        documentPositionResetGeneration += 1
+        let generation = documentPositionResetGeneration
+        resetDocumentPositionImmediately(requestFocus: requestFocus)
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.documentPositionResetGeneration == generation else { return }
+            self.resetDocumentPositionImmediately(requestFocus: requestFocus)
+        }
+    }
+
+    private func resetDocumentPositionImmediately(requestFocus: Bool) {
+        let documentStart = NSRange(location: 0, length: 0)
+        setSelectedRange(documentStart)
+        if requestFocus {
+            requestFocusIfPossible()
+        }
+        if let layoutManager, let textContainer {
+            layoutManager.ensureLayout(for: textContainer)
+        }
+        scrollRangeToVisible(documentStart)
         guard let scrollView = enclosingScrollView else { return }
-        scrollView.contentView.scroll(to: .zero)
+        scrollView.contentView.scroll(to: topLeftClipOrigin(in: scrollView))
         scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func requestFocusIfPossible() {
+        guard let window else { return }
+        didRequestInitialFocus = true
+        window.makeFirstResponder(self)
+    }
+
+    private func topLeftClipOrigin(in scrollView: NSScrollView) -> NSPoint {
+        let clipView = scrollView.contentView
+        guard let documentView = scrollView.documentView else { return .zero }
+        let documentBounds = documentView.bounds
+        let visibleSize = clipView.bounds.size
+        let topY = documentView.isFlipped
+            ? documentBounds.minY
+            : max(documentBounds.minY, documentBounds.maxY - visibleSize.height)
+        let proposedBounds = NSRect(
+            x: documentBounds.minX,
+            y: topY,
+            width: visibleSize.width,
+            height: visibleSize.height
+        )
+        return clipView.constrainBoundsRect(proposedBounds).origin
     }
 
     override func insertNewline(_ sender: Any?) {

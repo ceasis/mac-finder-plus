@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 
@@ -129,6 +130,50 @@ struct DiskSpaceDeletionCandidate: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+struct DiskSpaceDuplicateFile: Codable, Identifiable, Hashable, Sendable {
+    let path: String
+    let kind: DiskSpaceContentKind
+    let bytes: Int64
+    let logicalBytes: Int64
+    let modified: Date
+
+    var id: String { path }
+    var url: URL { URL(fileURLWithPath: path) }
+    var name: String { url.lastPathComponent }
+    var parentPath: String { url.deletingLastPathComponent().path }
+    var isSystemItem: Bool { DiskSpaceSystemItem.isProtected(path) }
+    var sizeText: String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+struct DiskSpaceDuplicateGroup: Codable, Identifiable, Hashable, Sendable {
+    let hash: String
+    let logicalBytes: Int64
+    let files: [DiskSpaceDuplicateFile]
+
+    var id: String { "\(logicalBytes)-\(hash)" }
+    var fileCount: Int { files.count }
+    var removableCopyCount: Int { max(fileCount - 1, 0) }
+    var totalBytes: Int64 {
+        files.reduce(0) { $0 + $1.bytes }
+    }
+    var potentialSavings: Int64 {
+        guard fileCount > 1 else { return 0 }
+        let keptBytes = files.map(\.bytes).max() ?? 0
+        return max(totalBytes - keptBytes, 0)
+    }
+    var duplicateSizeText: String {
+        ByteCountFormatter.string(fromByteCount: logicalBytes, countStyle: .file)
+    }
+    var potentialSavingsText: String {
+        ByteCountFormatter.string(fromByteCount: potentialSavings, countStyle: .file)
+    }
+    var representativeName: String {
+        files.first?.name ?? "Duplicate files"
+    }
+}
+
 struct DiskSpaceFolderNode: Codable, Identifiable, Hashable, Sendable {
     let path: String
     let name: String
@@ -179,6 +224,10 @@ struct DiskSpaceAnalysis: Codable, Sendable {
     let applications: [DiskSpaceApplication]
     let deletionCandidates: [DiskSpaceContentKind: [DiskSpaceDeletionCandidate]]
     let folderTree: DiskSpaceFolderNode?
+    let duplicateGroups: [DiskSpaceDuplicateGroup]
+    let duplicateGroupCount: Int
+    let duplicateFileCount: Int
+    let duplicatePotentialSavings: Int64
     let scannedFileCount: Int
 
     var totalBytes: Int64 {
@@ -223,6 +272,60 @@ struct DiskSpaceAnalysis: Codable, Sendable {
     func deletionCandidates(for kind: DiskSpaceContentKind) -> [DiskSpaceDeletionCandidate] {
         deletionCandidates[kind] ?? []
     }
+
+    var duplicatePotentialSavingsText: String {
+        ByteCountFormatter.string(fromByteCount: duplicatePotentialSavings, countStyle: .file)
+    }
+}
+
+extension DiskSpaceAnalysis {
+    enum CodingKeys: String, CodingKey {
+        case volumeName
+        case volumePath
+        case volumeCapacity
+        case availableCapacity
+        case typeSlices
+        case dateSlices
+        case sizeSlices
+        case applications
+        case deletionCandidates
+        case folderTree
+        case duplicateGroups
+        case duplicateGroupCount
+        case duplicateFileCount
+        case duplicatePotentialSavings
+        case scannedFileCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        volumeName = try container.decode(String.self, forKey: .volumeName)
+        volumePath = try container.decode(String.self, forKey: .volumePath)
+        volumeCapacity = try container.decodeIfPresent(Int64.self, forKey: .volumeCapacity)
+        availableCapacity = try container.decodeIfPresent(Int64.self, forKey: .availableCapacity)
+        typeSlices = try container.decode([DiskSpaceSlice].self, forKey: .typeSlices)
+        dateSlices = try container.decode([DiskSpaceSlice].self, forKey: .dateSlices)
+        sizeSlices = try container.decode([DiskSpaceSlice].self, forKey: .sizeSlices)
+        applications = try container.decode([DiskSpaceApplication].self, forKey: .applications)
+        deletionCandidates = try container.decode(
+            [DiskSpaceContentKind: [DiskSpaceDeletionCandidate]].self,
+            forKey: .deletionCandidates
+        )
+        folderTree = try container.decodeIfPresent(DiskSpaceFolderNode.self, forKey: .folderTree)
+        duplicateGroups = try container.decodeIfPresent(
+            [DiskSpaceDuplicateGroup].self,
+            forKey: .duplicateGroups
+        ) ?? []
+        duplicateGroupCount = try container.decodeIfPresent(Int.self, forKey: .duplicateGroupCount)
+            ?? duplicateGroups.count
+        duplicateFileCount = try container.decodeIfPresent(Int.self, forKey: .duplicateFileCount)
+            ?? duplicateGroups.reduce(0) { $0 + $1.fileCount }
+        duplicatePotentialSavings = try container.decodeIfPresent(
+            Int64.self,
+            forKey: .duplicatePotentialSavings
+        ) ?? duplicateGroups.reduce(0) { $0 + $1.potentialSavings }
+        scannedFileCount = try container.decode(Int.self, forKey: .scannedFileCount)
+    }
 }
 
 struct DiskSpaceAnalysisSnapshot: Codable, Sendable {
@@ -233,8 +336,10 @@ struct DiskSpaceAnalysisSnapshot: Codable, Sendable {
 struct DiskSpaceScanProgress: Sendable {
     let filesScanned: Int
     let bytesFound: Int64
+    var customDetail: String?
 
     var detail: String {
+        if let customDetail { return customDetail }
         let size = ByteCountFormatter.string(fromByteCount: bytesFound, countStyle: .file)
         return "Scanned \(filesScanned.formatted()) files · \(size) found"
     }
@@ -243,6 +348,7 @@ struct DiskSpaceScanProgress: Sendable {
 struct DiskSpaceScanOptions: Sendable {
     let root: URL
     var sizeThresholds: DiskSpaceSizeThresholds = .standard
+    var duplicateMinimumLogicalBytes: Int64 = 100 * 1_000
 }
 
 enum DiskSpaceAnalyzerEngine {
@@ -317,6 +423,7 @@ enum DiskSpaceAnalyzerEngine {
         var accumulator = DiskSpaceAccumulator(
             root: root,
             thresholds: options.sizeThresholds,
+            duplicateMinimumLogicalBytes: options.duplicateMinimumLogicalBytes,
             now: Date(),
             calendar: Calendar.current
         )
@@ -355,9 +462,11 @@ enum DiskSpaceAnalyzerEngine {
                     modified: values?.contentModificationDate ?? .distantPast
                 )
             } else {
+                let fileSize = fileSizes(from: values)
                 accumulator.addFile(
                     at: url,
-                    bytes: allocatedSize(from: values),
+                    logicalBytes: fileSize.logical,
+                    allocatedBytes: fileSize.allocated,
                     modified: values?.contentModificationDate ?? .distantPast
                 )
             }
@@ -377,11 +486,23 @@ enum DiskSpaceAnalyzerEngine {
             bytesFound: accumulator.totalBytes
         )
         await progress(finalProgress)
+        let scannedFileCount = accumulator.scannedFileCount
+        let totalBytes = accumulator.totalBytes
+        let duplicateSummary = try await accumulator.duplicateSummary { checked, total in
+            await progress(
+                DiskSpaceScanProgress(
+                    filesScanned: scannedFileCount,
+                    bytesFound: totalBytes,
+                    customDetail: "Checking duplicates \(checked.formatted()) of \(total.formatted())"
+                )
+            )
+        }
         return accumulator.analysis(
             volumeName: volumeName,
             volumePath: root.path,
             volumeCapacity: totalCapacity,
-            availableCapacity: availableCapacity
+            availableCapacity: availableCapacity,
+            duplicateSummary: duplicateSummary
         )
     }
 
@@ -426,6 +547,12 @@ enum DiskSpaceAnalyzerEngine {
         Int64(values?.fileAllocatedSize ?? values?.fileSize ?? 0)
     }
 
+    private static func fileSizes(from values: URLResourceValues?) -> (logical: Int64, allocated: Int64) {
+        let logical = Int64(values?.fileSize ?? 0)
+        let allocated = Int64(values?.fileAllocatedSize ?? values?.fileSize ?? 0)
+        return (max(logical, 0), max(allocated, 0))
+    }
+
     private static func volumePath(for url: URL) -> String? {
         let values = try? (url as NSURL).resourceValues(forKeys: [.volumeURLKey])
         return (values?[.volumeURLKey] as? URL)?.standardizedFileURL.path
@@ -444,9 +571,11 @@ enum DiskSpaceAnalyzerEngine {
 
 private struct DiskSpaceAccumulator {
     private static let deletionCandidateLimit = 50
+    private static let duplicateGroupLimit = 50
 
     let root: URL
     let thresholds: DiskSpaceSizeThresholds
+    let duplicateMinimumLogicalBytes: Int64
     let now: Date
     let calendar: Calendar
     var typeBytes = Dictionary(uniqueKeysWithValues: DiskSpaceContentKind.allCases.map { ($0, Int64(0)) })
@@ -460,11 +589,13 @@ private struct DiskSpaceAccumulator {
         uniqueKeysWithValues: DiskSpaceContentKind.allCases.map { ($0, [DiskSpaceDeletionCandidate]()) }
     )
     var folderUsage: [String: DiskSpaceFolderUsage] = [:]
+    var duplicateCandidatesByLogicalSize: [Int64: [DiskSpaceDuplicateCandidate]] = [:]
     var scannedFileCount = 0
     var totalBytes: Int64 = 0
 
-    mutating func addFile(at url: URL, bytes: Int64, modified: Date) {
-        let size = max(bytes, 0)
+    mutating func addFile(at url: URL, logicalBytes: Int64, allocatedBytes: Int64, modified: Date) {
+        let size = max(allocatedBytes, 0)
+        let logicalSize = max(logicalBytes, 0)
         let kind = DiskSpaceAnalyzerEngine.contentKind(for: url)
         add(size: size, kind: kind, modified: modified)
         addFolderUsage(
@@ -481,6 +612,17 @@ private struct DiskSpaceAccumulator {
                 isDirectory: false
             )
         )
+        if logicalSize >= duplicateMinimumLogicalBytes {
+            duplicateCandidatesByLogicalSize[logicalSize, default: []].append(
+                DiskSpaceDuplicateCandidate(
+                    path: url.path,
+                    kind: kind,
+                    allocatedBytes: size,
+                    logicalBytes: logicalSize,
+                    modified: modified
+                )
+            )
+        }
     }
 
     mutating func addApplication(at url: URL, bytes: Int64, fileCount: Int, modified: Date) {
@@ -513,7 +655,8 @@ private struct DiskSpaceAccumulator {
         volumeName: String,
         volumePath: String,
         volumeCapacity: Int64?,
-        availableCapacity: Int64?
+        availableCapacity: Int64?,
+        duplicateSummary: DiskSpaceDuplicateScanSummary
     ) -> DiskSpaceAnalysis {
         DiskSpaceAnalysis(
             volumeName: volumeName,
@@ -547,8 +690,97 @@ private struct DiskSpaceAccumulator {
             applications: applications.values.sorted { $0.bytes > $1.bytes },
             deletionCandidates: deletionCandidates,
             folderTree: makeFolderTree(volumeName: volumeName),
+            duplicateGroups: duplicateSummary.groups,
+            duplicateGroupCount: duplicateSummary.totalGroupCount,
+            duplicateFileCount: duplicateSummary.duplicateFileCount,
+            duplicatePotentialSavings: duplicateSummary.potentialSavings,
             scannedFileCount: scannedFileCount
         )
+    }
+
+    func duplicateSummary(
+        progress: @escaping @Sendable (_ checked: Int, _ total: Int) async -> Void
+    ) async throws -> DiskSpaceDuplicateScanSummary {
+        let candidateBuckets = duplicateCandidatesByLogicalSize
+            .values
+            .filter { $0.count > 1 }
+        let totalCandidates = candidateBuckets.reduce(0) { $0 + $1.count }
+        guard totalCandidates > 1 else { return .empty }
+
+        var checkedCandidates = 0
+        var groupsByHash: [String: [DiskSpaceDuplicateCandidate]] = [:]
+
+        for bucket in candidateBuckets {
+            for candidate in bucket {
+                try Task.checkCancellation()
+                if checkedCandidates.isMultiple(of: 50) {
+                    await progress(checkedCandidates, totalCandidates)
+                }
+                guard let contentHash = try? sha256(for: candidate.path) else {
+                    checkedCandidates += 1
+                    continue
+                }
+                groupsByHash[contentHash, default: []].append(candidate)
+                checkedCandidates += 1
+            }
+        }
+        await progress(checkedCandidates, totalCandidates)
+
+        let allGroups = groupsByHash
+            .filter { $0.value.count > 1 }
+            .map { contentHash, candidates in
+                let sortedFiles = candidates
+                    .map { candidate in
+                        DiskSpaceDuplicateFile(
+                            path: candidate.path,
+                            kind: candidate.kind,
+                            bytes: candidate.allocatedBytes,
+                            logicalBytes: candidate.logicalBytes,
+                            modified: candidate.modified
+                        )
+                    }
+                    .sorted {
+                        if $0.modified != $1.modified { return $0.modified > $1.modified }
+                        return $0.path.localizedStandardCompare($1.path) == .orderedAscending
+                    }
+                return DiskSpaceDuplicateGroup(
+                    hash: contentHash,
+                    logicalBytes: candidates.first?.logicalBytes ?? 0,
+                    files: sortedFiles
+                )
+            }
+            .sorted {
+                if $0.potentialSavings != $1.potentialSavings {
+                    return $0.potentialSavings > $1.potentialSavings
+                }
+                if $0.logicalBytes != $1.logicalBytes {
+                    return $0.logicalBytes > $1.logicalBytes
+                }
+                return $0.representativeName.localizedStandardCompare($1.representativeName) == .orderedAscending
+            }
+
+        return DiskSpaceDuplicateScanSummary(
+            groups: Array(allGroups.prefix(Self.duplicateGroupLimit)),
+            totalGroupCount: allGroups.count,
+            duplicateFileCount: allGroups.reduce(0) { $0 + $1.fileCount },
+            potentialSavings: allGroups.reduce(0) { $0 + $1.potentialSavings }
+        )
+    }
+
+    private func sha256(for path: String) throws -> String {
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        while true {
+            try Task.checkCancellation()
+            guard let data = try handle.read(upToCount: 4 * 1024 * 1024),
+                  !data.isEmpty else {
+                break
+            }
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private func makeFolderTree(volumeName: String) -> DiskSpaceFolderNode? {
@@ -673,6 +905,28 @@ private struct DiskSpaceFolderUsage {
     var directBytes: Int64 = 0
     var fileCount: Int = 0
     var directFileCount: Int = 0
+}
+
+private struct DiskSpaceDuplicateCandidate: Sendable {
+    let path: String
+    let kind: DiskSpaceContentKind
+    let allocatedBytes: Int64
+    let logicalBytes: Int64
+    let modified: Date
+}
+
+private struct DiskSpaceDuplicateScanSummary: Sendable {
+    let groups: [DiskSpaceDuplicateGroup]
+    let totalGroupCount: Int
+    let duplicateFileCount: Int
+    let potentialSavings: Int64
+
+    static let empty = DiskSpaceDuplicateScanSummary(
+        groups: [],
+        totalGroupCount: 0,
+        duplicateFileCount: 0,
+        potentialSavings: 0
+    )
 }
 
 private enum DiskSpaceAnalyzerError: LocalizedError {

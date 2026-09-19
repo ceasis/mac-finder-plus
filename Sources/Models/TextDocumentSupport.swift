@@ -257,6 +257,184 @@ struct TextDocumentViewerResult: Equatable, Sendable {
     let errorMessage: String?
 }
 
+enum MarkdownPreviewBlock: Equatable, Sendable {
+    case heading(level: Int, text: String)
+    case paragraph(String)
+    case unorderedList([String])
+    case orderedList([String])
+    case code(language: String?, text: String)
+    case blockquote(String)
+    case divider
+}
+
+enum MarkdownPreviewParser {
+    static func blocks(from source: String) -> [MarkdownPreviewBlock] {
+        let lines = source
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: "\n")
+        var index = 0
+        var blocks: [MarkdownPreviewBlock] = []
+
+        while index < lines.count {
+            let line = lines[index]
+            let trimmed = trim(line)
+            if trimmed.isEmpty {
+                index += 1
+                continue
+            }
+
+            if let fence = fenceStart(in: line) {
+                var codeLines: [String] = []
+                index += 1
+                while index < lines.count {
+                    let candidate = trim(lines[index])
+                    if candidate.hasPrefix(fence.marker) {
+                        index += 1
+                        break
+                    }
+                    codeLines.append(lines[index])
+                    index += 1
+                }
+                blocks.append(.code(language: fence.language, text: codeLines.joined(separator: "\n")))
+                continue
+            }
+
+            if let heading = heading(in: line) {
+                blocks.append(.heading(level: heading.level, text: heading.text))
+                index += 1
+                continue
+            }
+
+            if isDivider(line) {
+                blocks.append(.divider)
+                index += 1
+                continue
+            }
+
+            if let quote = blockquoteLine(from: line) {
+                var quoteLines = [quote]
+                index += 1
+                while index < lines.count, let continuation = blockquoteLine(from: lines[index]) {
+                    quoteLines.append(continuation)
+                    index += 1
+                }
+                blocks.append(.blockquote(quoteLines.joined(separator: " ")))
+                continue
+            }
+
+            if let item = unorderedListItem(from: line) {
+                var items = [item]
+                index += 1
+                while index < lines.count, let continuation = unorderedListItem(from: lines[index]) {
+                    items.append(continuation)
+                    index += 1
+                }
+                blocks.append(.unorderedList(items))
+                continue
+            }
+
+            if let item = orderedListItem(from: line) {
+                var items = [item]
+                index += 1
+                while index < lines.count, let continuation = orderedListItem(from: lines[index]) {
+                    items.append(continuation)
+                    index += 1
+                }
+                blocks.append(.orderedList(items))
+                continue
+            }
+
+            var paragraphLines = [trimmed]
+            index += 1
+            while index < lines.count {
+                let nextLine = lines[index]
+                let nextTrimmed = trim(nextLine)
+                if nextTrimmed.isEmpty || startsStructuredBlock(nextLine) {
+                    break
+                }
+                paragraphLines.append(nextTrimmed)
+                index += 1
+            }
+            blocks.append(.paragraph(paragraphLines.joined(separator: "\n")))
+        }
+
+        return blocks
+    }
+
+    private static func trim(_ line: String) -> String {
+        line.trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func startsStructuredBlock(_ line: String) -> Bool {
+        fenceStart(in: line) != nil
+            || heading(in: line) != nil
+            || isDivider(line)
+            || blockquoteLine(from: line) != nil
+            || unorderedListItem(from: line) != nil
+            || orderedListItem(from: line) != nil
+    }
+
+    private static func fenceStart(in line: String) -> (marker: String, language: String?)? {
+        let trimmed = trim(line)
+        let marker: String
+        if trimmed.hasPrefix("```") {
+            marker = "```"
+        } else if trimmed.hasPrefix("~~~") {
+            marker = "~~~"
+        } else {
+            return nil
+        }
+        let language = trim(String(trimmed.dropFirst(marker.count)))
+        return (marker, language.isEmpty ? nil : language)
+    }
+
+    private static func heading(in line: String) -> (level: Int, text: String)? {
+        let trimmed = trim(line)
+        var level = 0
+        for character in trimmed {
+            guard character == "#" else { break }
+            level += 1
+        }
+        guard (1...6).contains(level) else { return nil }
+        let remainder = trimmed.dropFirst(level)
+        guard remainder.first?.isWhitespace == true else { return nil }
+        let text = trim(String(remainder))
+        return text.isEmpty ? nil : (level, text)
+    }
+
+    private static func isDivider(_ line: String) -> Bool {
+        let compact = line.filter { !$0.isWhitespace }
+        guard compact.count >= 3, let first = compact.first else { return false }
+        guard first == "-" || first == "*" || first == "_" else { return false }
+        return compact.allSatisfy { $0 == first }
+    }
+
+    private static func blockquoteLine(from line: String) -> String? {
+        let trimmed = trim(line)
+        guard trimmed.hasPrefix(">") else { return nil }
+        return trim(String(trimmed.dropFirst()))
+    }
+
+    private static func unorderedListItem(from line: String) -> String? {
+        let trimmed = trim(line)
+        guard trimmed.count >= 2, let marker = trimmed.first else { return nil }
+        guard marker == "-" || marker == "*" || marker == "+" else { return nil }
+        let remainder = trimmed.dropFirst()
+        guard remainder.first?.isWhitespace == true else { return nil }
+        return trim(String(remainder))
+    }
+
+    private static func orderedListItem(from line: String) -> String? {
+        let trimmed = trim(line)
+        let digitCount = trimmed.prefix(while: \.isNumber).count
+        guard digitCount > 0 else { return nil }
+        let afterDigits = trimmed.dropFirst(digitCount)
+        guard afterDigits.hasPrefix(". ") || afterDigits.hasPrefix(") ") else { return nil }
+        return trim(String(afterDigits.dropFirst(2)))
+    }
+}
+
 enum TextDocumentViewerFormatter {
     static func format(_ source: String, as kind: TextDocumentViewerKind) -> TextDocumentViewerResult {
         switch kind {

@@ -469,23 +469,148 @@ private struct ReadOnlyCodePreview: View {
 private struct MarkdownDocumentPreview: View {
     let source: String
 
-    private var rendered: AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .full,
-            failurePolicy: .returnPartiallyParsedIfPossible
-        )
-        return (try? AttributedString(markdown: source, options: options)) ?? AttributedString(source)
+    private var blocks: [MarkdownPreviewBlock] {
+        MarkdownPreviewParser.blocks(from: source)
     }
 
     var body: some View {
         ScrollView {
-            Text(rendered)
-                .textSelection(.enabled)
-                .frame(maxWidth: 760, alignment: .leading)
+            LazyVStack(alignment: .leading, spacing: 12) {
+                if blocks.isEmpty {
+                    Text("Empty Markdown document")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                        MarkdownBlockView(block: block)
+                    }
+                }
+            }
+                .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(24)
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+}
+
+private struct MarkdownBlockView: View {
+    let block: MarkdownPreviewBlock
+
+    var body: some View {
+        switch block {
+        case .heading(let level, let text):
+            Text(inlineMarkdown(text))
+                .font(headingFont(level))
+                .fontWeight(level <= 2 ? .bold : .semibold)
+                .lineSpacing(3)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, level <= 2 ? 8 : 4)
+
+        case .paragraph(let text):
+            Text(inlineMarkdown(text))
+                .font(.body)
+                .lineSpacing(4)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+        case .unorderedList(let items):
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("•")
+                            .font(.body)
+                            .frame(width: 18, alignment: .trailing)
+                        Text(inlineMarkdown(item))
+                            .font(.body)
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+
+        case .orderedList(let items):
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { offset, item in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("\(offset + 1).")
+                            .font(.body.monospacedDigit())
+                            .frame(width: 28, alignment: .trailing)
+                        Text(inlineMarkdown(item))
+                            .font(.body)
+                            .lineSpacing(3)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+
+        case .code(let language, let text):
+            VStack(alignment: .leading, spacing: 6) {
+                if let language {
+                    Text(language)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ScrollView(.horizontal, showsIndicators: true) {
+                    Text(text.isEmpty ? " " : text)
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
+            )
+
+        case .blockquote(let text):
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.accentColor.opacity(0.55))
+                    .frame(width: 4)
+                Text(inlineMarkdown(text))
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 2)
+
+        case .divider:
+            Divider()
+                .padding(.vertical, 6)
+        }
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+    }
+
+    private func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1:
+            return .title2
+        case 2:
+            return .title3
+        case 3:
+            return .headline
+        default:
+            return .subheadline
+        }
     }
 }
 

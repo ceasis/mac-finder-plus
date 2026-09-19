@@ -2175,6 +2175,51 @@ final class TextDocumentSupportTests: EngineTestCase {
         XCTAssertNotNil(invalid.errorMessage)
         XCTAssertEqual(invalid.text, "<root>")
     }
+
+    func testMarkdownPreviewParserSeparatesBlocks() {
+        let source = """
+        # Course Outline
+        **Target Audience:** Beginners
+
+        - Module 1
+        - Module 2
+
+        ```swift
+        let value = 1
+        ```
+        """
+
+        XCTAssertEqual(
+            MarkdownPreviewParser.blocks(from: source),
+            [
+                .heading(level: 1, text: "Course Outline"),
+                .paragraph("**Target Audience:** Beginners"),
+                .unorderedList(["Module 1", "Module 2"]),
+                .code(language: "swift", text: "let value = 1")
+            ]
+        )
+    }
+
+    func testMarkdownPreviewParserPreservesMeaningfulLineBreaksInsideParagraphs() {
+        let blocks = MarkdownPreviewParser.blocks(
+            from: """
+            Target Audience: Beginners
+            Recommended Duration: 7 hours
+            """
+        )
+
+        XCTAssertEqual(
+            blocks,
+            [
+                .paragraph(
+                    """
+                    Target Audience: Beginners
+                    Recommended Duration: 7 hours
+                    """
+                )
+            ]
+        )
+    }
 }
 
 final class InlineRenameSelectionTests: XCTestCase {
@@ -3259,6 +3304,51 @@ final class DiskSpaceAnalyzerTests: EngineTestCase {
         XCTAssertEqual(analysis.sizeSlices.reduce(0) { $0 + $1.bytes }, analysis.totalBytes)
     }
 
+    func testAnalyzerReportsExactDuplicateSavings() async throws {
+        let now = Date()
+        let duplicatePayload = Data((0..<150_000).map { UInt8($0 % 251) })
+        let differentSameSizePayload = Data((0..<150_000).map { UInt8(($0 + 17) % 251) })
+        let nestedFolder = tempDir.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedFolder, withIntermediateDirectories: true)
+
+        try makeFile("original.bin", data: duplicatePayload, modified: now)
+        try makeFile(
+            "copy.bin",
+            data: duplicatePayload,
+            modified: now.addingTimeInterval(-60),
+            in: nestedFolder
+        )
+        try makeFile("same-size-different.bin", data: differentSameSizePayload, modified: now)
+
+        let analysis = try await DiskSpaceAnalyzerEngine.analyze(
+            options: DiskSpaceScanOptions(root: tempDir)
+        )
+
+        XCTAssertEqual(analysis.duplicateGroupCount, 1)
+        XCTAssertEqual(analysis.duplicateFileCount, 2)
+        XCTAssertEqual(analysis.duplicateGroups.count, 1)
+        XCTAssertGreaterThan(analysis.duplicatePotentialSavings, 0)
+
+        let group = try XCTUnwrap(analysis.duplicateGroups.first)
+        XCTAssertEqual(group.logicalBytes, Int64(duplicatePayload.count))
+        XCTAssertEqual(Set(group.files.map(\.name)), ["original.bin", "copy.bin"])
+        XCTAssertFalse(group.files.contains { $0.name == "same-size-different.bin" })
+    }
+
+    func testAnalyzerSkipsSmallDuplicateFilesByDefault() async throws {
+        let payload = Data((0..<8_192).map { UInt8($0 % 251) })
+        try makeFile("tiny-a.bin", data: payload, modified: .now)
+        try makeFile("tiny-b.bin", data: payload, modified: .now)
+
+        let analysis = try await DiskSpaceAnalyzerEngine.analyze(
+            options: DiskSpaceScanOptions(root: tempDir)
+        )
+
+        XCTAssertEqual(analysis.duplicateGroupCount, 0)
+        XCTAssertEqual(analysis.duplicatePotentialSavings, 0)
+        XCTAssertTrue(analysis.duplicateGroups.isEmpty)
+    }
+
     func testAnalyzerKeepsTheLargestFiftyDeletionCandidatesPerType() async throws {
         let now = Date()
         for index in 1...55 {
@@ -3344,6 +3434,8 @@ final class DiskSpaceAnalyzerTests: EngineTestCase {
         XCTAssertEqual(restored.analysis.totalBytes, analysis.totalBytes)
         XCTAssertEqual(restored.analysis.volumePath, analysis.volumePath)
         XCTAssertEqual(restored.analysis.folderTree, analysis.folderTree)
+        XCTAssertEqual(restored.analysis.duplicatePotentialSavings, analysis.duplicatePotentialSavings)
+        XCTAssertEqual(restored.analysis.duplicateGroups, analysis.duplicateGroups)
         XCTAssertEqual(
             restored.analysis.deletionCandidates(for: .archives).first?.name,
             "archive.zip"
@@ -3362,13 +3454,31 @@ final class DiskSpaceAnalyzerTests: EngineTestCase {
         )
         var analysisObject = try XCTUnwrap(object["analysis"] as? [String: Any])
         analysisObject.removeValue(forKey: "folderTree")
+        analysisObject.removeValue(forKey: "duplicateGroups")
+        analysisObject.removeValue(forKey: "duplicateGroupCount")
+        analysisObject.removeValue(forKey: "duplicateFileCount")
+        analysisObject.removeValue(forKey: "duplicatePotentialSavings")
         object["analysis"] = analysisObject
 
         let legacyData = try JSONSerialization.data(withJSONObject: object)
         let restored = try JSONDecoder().decode(DiskSpaceAnalysisSnapshot.self, from: legacyData)
 
         XCTAssertNil(restored.analysis.folderTree)
+        XCTAssertTrue(restored.analysis.duplicateGroups.isEmpty)
+        XCTAssertEqual(restored.analysis.duplicateGroupCount, 0)
+        XCTAssertEqual(restored.analysis.duplicatePotentialSavings, 0)
         XCTAssertEqual(restored.analysis.totalBytes, analysis.totalBytes)
+    }
+
+    private func makeFile(
+        _ name: String,
+        data: Data,
+        modified: Date,
+        in directory: URL? = nil
+    ) throws {
+        let url = (directory ?? tempDir).appendingPathComponent(name)
+        try data.write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
     }
 
     private func makeSizedFile(

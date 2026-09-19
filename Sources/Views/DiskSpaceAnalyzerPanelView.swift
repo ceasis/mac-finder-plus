@@ -80,6 +80,12 @@ struct DiskSpaceAnalyzerPanelView: View {
                             store.startScan(containing: appState.activePane.currentURL, force: true)
                         }
                     }
+                    DiskSpaceDuplicatesSection(
+                        analysis: analysis,
+                        reveal: { file in
+                            appState.revealInFinder([file.url])
+                        }
+                    )
                     LazyVGrid(
                         columns: [GridItem(.adaptive(minimum: 300), spacing: 14)],
                         spacing: 14
@@ -509,6 +515,237 @@ private struct DiskSpaceMetric: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+private struct DiskSpaceDuplicatesSection: View {
+    let analysis: DiskSpaceAnalysis
+    let reveal: (DiskSpaceDuplicateFile) -> Void
+
+    @State private var expandedGroupIDs: Set<String> = []
+
+    private var groups: [DiskSpaceDuplicateGroup] {
+        analysis.duplicateGroups
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Label("Duplicates", systemImage: "doc.on.doc")
+                    .font(.headline)
+                Text("Exact matches · keep one copy")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                if analysis.duplicateGroupCount > groups.count {
+                    Text("Top \(groups.count) of \(analysis.duplicateGroupCount)")
+                        .font(.caption.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 12) {
+                DiskSpaceMetric(
+                    label: "Potential Savings",
+                    value: analysis.duplicatePotentialSavingsText
+                )
+                DiskSpaceMetric(
+                    label: "Duplicate Groups",
+                    value: analysis.duplicateGroupCount.formatted()
+                )
+                DiskSpaceMetric(
+                    label: "Files Involved",
+                    value: analysis.duplicateFileCount.formatted()
+                )
+            }
+
+            Divider()
+
+            if groups.isEmpty {
+                ContentUnavailableView(
+                    "No Duplicate Savings Found",
+                    systemImage: "doc.on.doc",
+                    description: Text("Workbench checks exact file matches 100 KB and larger, then estimates the space saved if one copy is kept.")
+                )
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 20)
+            } else {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+                        DiskSpaceDuplicateGroupRow(
+                            group: group,
+                            rank: index + 1,
+                            isExpanded: expandedGroupIDs.contains(group.id),
+                            toggleExpansion: {
+                                toggleExpansion(for: group)
+                            },
+                            reveal: reveal
+                        )
+                        if index < groups.count - 1 {
+                            Divider()
+                                .padding(.leading, 32)
+                        }
+                    }
+                }
+            }
+
+            Text("Potential savings assumes you keep one copy from each exact-match group.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+        }
+    }
+
+    private func toggleExpansion(for group: DiskSpaceDuplicateGroup) {
+        if expandedGroupIDs.contains(group.id) {
+            expandedGroupIDs.remove(group.id)
+        } else {
+            expandedGroupIDs.insert(group.id)
+        }
+    }
+}
+
+private struct DiskSpaceDuplicateGroupRow: View {
+    let group: DiskSpaceDuplicateGroup
+    let rank: Int
+    let isExpanded: Bool
+    let toggleExpansion: () -> Void
+    let reveal: (DiskSpaceDuplicateFile) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: toggleExpansion) {
+                HStack(alignment: .center, spacing: 10) {
+                    Text(rank.formatted())
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, alignment: .trailing)
+
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+
+                    Image(systemName: "doc.on.doc.fill")
+                        .foregroundStyle(Color.accentColor)
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(group.representativeName)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(groupDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(group.potentialSavingsText)
+                            .font(.subheadline.monospacedDigit().weight(.semibold))
+                            .lineLimit(1)
+                        Text("save")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 10)
+
+            if isExpanded {
+                VStack(spacing: 0) {
+                    ForEach(Array(group.files.enumerated()), id: \.element.id) { index, file in
+                        DiskSpaceDuplicateFileRow(
+                            file: file,
+                            isSuggestedKeep: index == 0,
+                            reveal: { reveal(file) }
+                        )
+                        if index < group.files.count - 1 {
+                            Divider()
+                                .padding(.leading, 74)
+                        }
+                    }
+                }
+                .padding(.bottom, 8)
+            }
+        }
+    }
+
+    private var groupDetail: String {
+        let copies = "\(group.fileCount.formatted()) copies"
+        let removable = "\(group.removableCopyCount.formatted()) removable"
+        return "\(copies) · \(removable) · \(group.duplicateSizeText) each"
+    }
+}
+
+private struct DiskSpaceDuplicateFileRow: View {
+    let file: DiskSpaceDuplicateFile
+    let isSuggestedKeep: Bool
+    let reveal: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Color.clear
+                .frame(width: 58)
+
+            Image(systemName: file.kind.systemImage)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(file.name)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if isSuggestedKeep {
+                        Text("Keep")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.green.opacity(0.12), in: Capsule())
+                    }
+                    if file.isSystemItem {
+                        Text("System")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.red.opacity(0.12), in: Capsule())
+                    }
+                }
+                Text(file.parentPath)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(file.sizeText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Button(action: reveal) {
+                Label("Reveal", systemImage: "finder")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+        .padding(.vertical, 6)
     }
 }
 

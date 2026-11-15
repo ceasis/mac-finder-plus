@@ -11,11 +11,20 @@ LOCAL_CODE_SIGN_IDENTITY="${LOCAL_CODE_SIGN_IDENTITY:-D53515F4D74DAD9F1932B627FD
 LOCAL_DEVELOPMENT_TEAM="${LOCAL_DEVELOPMENT_TEAM:-TDXJZR8KA3}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/script/resolve_developer_dir.sh"
 DERIVED_DATA_DIR="$ROOT_DIR/build/DerivedData"
 APP_BUNDLE="$DERIVED_DATA_DIR/Build/Products/$CONFIGURATION/$APP_NAME.app"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 cd "$ROOT_DIR"
+
+# Keep the generated project (including build stamping) aligned with project.yml.
+if command -v xcodegen >/dev/null 2>&1; then
+  xcodegen generate
+elif [[ ! -d "$PROJECT_NAME" ]]; then
+  echo "XcodeGen is required to create $PROJECT_NAME. Install it and run again." >&2
+  exit 1
+fi
 
 while IFS= read -r app_pid; do
   [[ -n "$app_pid" ]] || continue

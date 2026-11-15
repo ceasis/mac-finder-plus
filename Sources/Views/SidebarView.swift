@@ -662,13 +662,11 @@ struct SidebarView: View {
                             moveFavorite(source, onto: target, in: orderedFavorites)
                         }
                     ))
-                    .padding(SidebarFileDropMetrics.contentPadding)
-                    .fileDropTarget(
-                        to: url,
+                    .modifier(SidebarFolderDropTargetModifier(
+                        url: url,
                         paneIndex: appState.activePaneIndex,
-                        appState: appState,
-                        isEnabled: SidebarFileDropPolicy.acceptsDestination(url)
-                    )
+                        appState: appState
+                    ))
                     .tag(url)
                     .contextMenu {
                         Button("Remove from Favorites") {
@@ -1468,7 +1466,27 @@ private extension Array {
     }
 }
 
-private struct SidebarReorderableLabelRow<DragHandle: View>: View {
+/// Shared by real sidebar favorites and the isolated interaction-test scene.
+struct SidebarFolderDropTargetModifier: ViewModifier {
+    let url: URL
+    let paneIndex: Int
+    let appState: AppState
+
+    func body(content: Content) -> some View {
+        content
+            .padding(SidebarFileDropMetrics.contentPadding)
+            .fileDropTarget(
+                to: url,
+                paneIndex: paneIndex,
+                appState: appState,
+                isEnabled: SidebarFileDropPolicy.acceptsDestination(url)
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("sidebar-folder-\(url.lastPathComponent)")
+    }
+}
+
+struct SidebarReorderableLabelRow<DragHandle: View>: View {
     let title: String
     let systemImage: String
     var help: String?

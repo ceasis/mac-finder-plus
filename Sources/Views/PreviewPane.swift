@@ -20,7 +20,7 @@ enum VideoPreviewPlaybackPreferences {
     static let unmutedValidityInterval: TimeInterval = 60 * 60
 
     static func shouldStartMuted(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = WorkbenchUITestConfiguration.defaults,
         now: Date = .now
     ) -> Bool {
         guard defaults.object(forKey: mutedKey) as? Bool == false,
@@ -38,7 +38,7 @@ enum VideoPreviewPlaybackPreferences {
 
     static func recordMuteState(
         _ isMuted: Bool,
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults = WorkbenchUITestConfiguration.defaults,
         now: Date = .now
     ) {
         defaults.set(isMuted, forKey: mutedKey)
@@ -792,6 +792,8 @@ private struct VideoPlaybackControls: View {
             .buttonStyle(.plain)
             .disabled(player == nil)
             .help(isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(isPlaying ? "Pause" : "Play")
+            .accessibilityIdentifier("video-playback-toggle")
 
             Button {
                 isMuted = VideoPlaybackMuteControl.toggle(player: player)
@@ -813,6 +815,7 @@ private struct VideoPlaybackControls: View {
                     in: 0...max(duration, 0.1),
                     onEditingChanged: handleScrubbing
                 )
+                    .accessibilityIdentifier("video-playback-position")
                     .disabled(player == nil || duration <= 0)
                 HStack {
                     Text(VideoTrimmer.preciseTimeText(currentTime))
@@ -1062,10 +1065,12 @@ private struct VideoTimelineTrimView: View {
 
             HStack {
                 Text("In \(VideoTrimmer.preciseTimeText(inTime))")
+                    .accessibilityIdentifier("video-trim-in-value")
                 Spacer()
                 Text("Selected \(VideoTrimmer.preciseTimeText(trimDuration))")
                 Spacer()
                 Text("Out \(VideoTrimmer.preciseTimeText(outTime))")
+                    .accessibilityIdentifier("video-trim-out-value")
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
@@ -1097,6 +1102,7 @@ private struct VideoTimelineTrimView: View {
             .disabled(player == nil || duration <= 0)
             .help("Set trim start to the current playback position")
             .accessibilityLabel("Set In Point")
+            .accessibilityIdentifier("video-set-in")
 
             Button {
                 markOut()
@@ -1108,6 +1114,7 @@ private struct VideoTimelineTrimView: View {
             .disabled(player == nil || duration <= 0)
             .help("Set trim end to the current playback position")
             .accessibilityLabel("Set Out Point")
+            .accessibilityIdentifier("video-set-out")
 
             Button {
                 captureCurrentFrame()
@@ -1119,6 +1126,7 @@ private struct VideoTimelineTrimView: View {
             .disabled(player == nil)
             .help("Save the current video frame as a PNG beside the video")
             .accessibilityLabel("Capture Frame")
+            .accessibilityIdentifier("video-capture-frame")
 
             Button {
                 showsIntervalCapture.toggle()
@@ -1130,6 +1138,7 @@ private struct VideoTimelineTrimView: View {
             .disabled(duration <= 0)
             .help("Capture screenshots from the full video at a chosen interval")
             .accessibilityLabel("Capture Screenshots at an Interval")
+            .accessibilityIdentifier("video-capture-interval")
             .popover(isPresented: $showsIntervalCapture, arrowEdge: .bottom) {
                 intervalCapturePopover
             }
@@ -1145,6 +1154,7 @@ private struct VideoTimelineTrimView: View {
             .disabled(!hasAudioTrack)
             .help("Keep the audio track and set its volume to zero")
             .accessibilityValue(removeAudio ? "On" : "Off")
+            .accessibilityIdentifier("video-remove-audio")
 
             Button {
                 appState.exportVideoAudio(item, inTime: inTime, outTime: outTime)
@@ -1152,6 +1162,7 @@ private struct VideoTimelineTrimView: View {
                 Label("Export Audio", systemImage: "waveform")
             }
             .disabled(!isValid || !hasAudioTrack)
+            .accessibilityIdentifier("video-export-audio")
             .help(
                 hasAudioTrack
                     ? "Export the selected range as an audio-only M4A file"
@@ -1169,6 +1180,7 @@ private struct VideoTimelineTrimView: View {
                 Label("Export", systemImage: "square.and.arrow.down")
             }
             .disabled(!isValid)
+            .accessibilityIdentifier("video-export-trim")
             .help(
                 removeAudio
                     ? "Export the selected range with a silent audio track"

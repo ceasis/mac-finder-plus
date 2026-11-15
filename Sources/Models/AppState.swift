@@ -216,6 +216,9 @@ final class AppState {
     var showReleaseChecklist = false
     var showCommandPalette = false
     var capturePermissionPrompt: CapturePermissionPrompt?
+    private(set) var isCaptureInProgress = false
+    private(set) var isScreenRecording = false
+    @ObservationIgnored private var activeCaptureActivityID: UUID?
     var proToolsEnabled = UserDefaults.standard.bool(
         forKey: ProToolsAccessPolicy.enabledDefaultsKey
     ) {
@@ -347,6 +350,24 @@ final class AppState {
     }
 
     private init() {
+        #if DEBUG
+        if WorkbenchUITestConfiguration.isRequested {
+            // Invalid fixture arguments must fail closed, never restore user
+            // folders or start background stores as a normal app launch would.
+            let fixture = WorkbenchUITestConfiguration.current
+            let unavailable = URL(fileURLWithPath: "/private/tmp/.workbench-invalid-ui-test-fixture", isDirectory: true)
+            panes = [
+                PaneModel(url: fixture?.browser ?? unavailable, viewMode: .icons),
+                PaneModel(url: fixture?.sidebar ?? unavailable, viewMode: .icons),
+            ]
+            activePaneIndex = 0
+            isDualPane = false
+            showHidden = false
+            autoCalculateFolderSizes = false
+            foldersFirst = true
+            return
+        }
+        #endif
         BookmarkStore.shared.restoreAll()
         let home = FileManager.default.homeDirectoryForCurrentUser
         let restored = RestoredFinderState(home: home)
@@ -973,6 +994,47 @@ final class AppState {
         activityTasks[activityID] = task
     }
 
+    func trashDiskSpaceDuplicates(
+        group: DiskSpaceDuplicateGroup,
+        keeperPath: String,
+        selectedPaths: Set<String>,
+        onCompletion: @escaping (UUID, Set<String>) -> Void
+    ) {
+        let diskStore = DiskSpaceAnalyzerStore.shared
+        guard !selectedPaths.isEmpty, !diskStore.isScanning, !diskStore.isCleaningDuplicates else { return }
+        diskStore.isCleaningDuplicates = true
+        let activityID = addActivity(title: "Trash Duplicates", detail: "Rechecking \(selectedPaths.count) selected copies")
+        let task = Task {
+            updateActivity(activityID) { $0.status = .running }
+            let result = await DiskSpaceDuplicateCleanup.trash(
+                group: group, keeperPath: keeperPath, selectedPaths: selectedPaths
+            )
+            let undo = result.records.isEmpty ? nil : FileUndoAction.putBack(
+                title: "Trash Duplicates", records: result.records
+            )
+            if let undo { undoStack.append(undo) }
+            updateActivity(activityID) { activity in
+                if let error = result.errorMessage {
+                    activity.status = .failed(error)
+                } else {
+                    activity.status = result.wasCancelled ? .cancelled : .completed
+                }
+                activity.finishedAt = Date()
+                activity.undoAction = undo
+                activity.revealURLs = result.records.map(\.trashedURL)
+                activity.detail = "\(result.records.count) copies moved to Trash · original kept"
+            }
+            if let error = result.errorMessage { lastError = error }
+            activityTasks[activityID] = nil
+            let removedPaths = Set(result.records.map { $0.originalURL.path })
+            diskStore.recordTrashedDuplicatePaths(removedPaths)
+            diskStore.isCleaningDuplicates = false
+            onCompletion(activityID, removedPaths)
+            panes.forEach { $0.refresh() }
+        }
+        activityTasks[activityID] = task
+    }
+
     func trashCleanupSuggestions(
         _ suggestions: [CleanupSuggestion],
         onSuccess: @escaping () -> Void = {}
@@ -1017,44 +1079,73 @@ final class AppState {
     }
 
     func performScreenshot(options: ScreenshotOptions) {
+        guard !isCaptureInProgress else { return }
+        isCaptureInProgress = true
+        let appWindowNumber = ScreenshotCapture.keyWindowNumber()
+        let pane = activePane
         Task { @MainActor in
             guard await ensureCapturePermissions(
                 for: options.kind,
                 required: requiredCapturePermissions(for: options)
-            ) else { return }
-            startScreenshotActivity(options: options)
+            ) else {
+                isCaptureInProgress = false
+                return
+            }
+            startScreenshotActivity(options: options, pane: pane, appWindowNumber: appWindowNumber)
         }
     }
 
-    private func startScreenshotActivity(options: ScreenshotOptions) {
-        let destinationFolder = activePane.currentURL
+    func stopScreenRecording() {
+        guard isScreenRecording else { return }
+        isScreenRecording = false
+        if let activeCaptureActivityID {
+            updateActivity(activeCaptureActivityID) { $0.progressDetail = "Saving recording…" }
+        }
+        NativeScreenRecorder.stop()
+    }
+
+    func cancelCapture() {
+        if let activeCaptureActivityID { cancelActivity(activeCaptureActivityID) }
+    }
+
+    private func startScreenshotActivity(options: ScreenshotOptions, pane: PaneModel, appWindowNumber: Int?) {
+        let destinationFolder = pane.currentURL
         let activityTitle = options.kind == .recording ? "Screen Recording" : "Screenshot"
-        let activityDetail = options.selectedWindowTitle ?? options.mode.title
+        let activityDetail = options.mode.needsAppWindowSelection ? options.selectedWindowTitle ?? options.mode.title : options.mode.title
         let activityID = addActivity(title: activityTitle, detail: activityDetail)
+        activeCaptureActivityID = activityID
         let task = Task {
+            defer {
+                isScreenRecording = false
+                isCaptureInProgress = false
+                activeCaptureActivityID = nil
+                activityTasks[activityID] = nil
+                pausedActivityIDs.remove(activityID)
+            }
             updateActivity(activityID) { activity in
                 activity.status = .running
-                if options.delay > 0 {
-                    activity.progressDetail = "\(options.delay)s delay"
-                } else if options.kind == .recording && options.recordingDuration > 0 {
-                    activity.progressDetail = "\(options.recordingDuration)s recording"
-                } else if options.mode == .interactive || options.mode == .selection || options.mode == .window {
+                if options.mode == .interactive || options.mode == .selection || options.mode == .window {
                     activity.progressDetail = "Waiting for selection"
-                } else if options.kind == .recording {
-                    activity.progressDetail = "Recording"
+                } else {
+                    activity.progressDetail = options.delay > 0 ? "\(options.delay)s delay" : "Preparing capture"
                 }
             }
             do {
                 try await Task.sleep(for: .milliseconds(250))
-                let windowNumber = ScreenshotCapture.keyWindowNumber()
                 let result = try await ScreenshotCapture.capture(
                     options: options,
                     destinationFolder: destinationFolder,
-                    appWindowNumber: windowNumber
+                    appWindowNumber: appWindowNumber,
+                    onRecording: {
+                        self.isScreenRecording = true
+                        self.updateActivity(activityID) {
+                            $0.progressDetail = options.recordingDuration > 0 ? "Recording · \(options.recordingDuration)s" : "Recording · stop in Pro Tools"
+                        }
+                    }
                 )
-                if let savedURL = result.savedURL {
-                    activePane.selection = [savedURL.path]
-                    activePane.refresh()
+                if let savedURL = result.savedURL, pane.currentURL == destinationFolder {
+                    pane.selection = [savedURL.path]
+                    pane.refresh()
                 }
                 updateActivity(activityID) { activity in
                     activity.status = .completed
@@ -1062,6 +1153,7 @@ final class AppState {
                     activity.bytesCompleted = activity.bytesTotal
                     activity.detail = result.savedURL?.lastPathComponent ?? "Copied to clipboard"
                     activity.progressDetail = options.copyToClipboard ? "Copied to clipboard" : nil
+                    activity.revealURLs = result.savedURL.map { [$0] } ?? []
                 }
             } catch is CancellationError {
                 updateActivity(activityID) { activity in
@@ -1075,8 +1167,6 @@ final class AppState {
                 }
                 lastError = error.localizedDescription
             }
-            activityTasks[activityID] = nil
-            pausedActivityIDs.remove(activityID)
         }
         activityTasks[activityID] = task
     }
@@ -3757,15 +3847,22 @@ final class AppState {
         return undoStack.contains(action)
     }
 
-    func undoActivity(_ id: UUID) {
+    func undoActivity(_ id: UUID, onCompletion: @escaping (Bool) -> Void = { _ in }) {
         guard let action = fileActivities.first(where: { $0.id == id })?.undoAction,
               let stackIndex = undoStack.lastIndex(of: action) else {
             NSSound.beep()
+            onCompletion(false)
             return
         }
         undoStack.remove(at: stackIndex)
         markUndoActionConsumed(action)
-        performUndo(action)
+        performUndo(action) { succeeded in
+            if !succeeded {
+                // Keep the original activity's retry button after a failed restore.
+                self.updateActivity(id) { $0.undoAction = action }
+            }
+            onCompletion(succeeded)
+        }
     }
 
     func canRevealActivity(_ id: UUID) -> Bool {
@@ -3782,7 +3879,7 @@ final class AppState {
         revealInFinder(urls)
     }
 
-    private func performUndo(_ action: FileUndoAction) {
+    private func performUndo(_ action: FileUndoAction, onCompletion: @escaping (Bool) -> Void = { _ in }) {
         let title = action.title
         let activityID = addActivity(title: "Undo \(title)", detail: "Restoring files")
         let task = Task {
@@ -3796,6 +3893,7 @@ final class AppState {
                     activity.finishedAt = Date()
                     activity.bytesCompleted = activity.bytesTotal
                 }
+                onCompletion(true)
             } catch {
                 undoStack.append(action)
                 updateActivity(activityID) { activity in
@@ -3803,6 +3901,7 @@ final class AppState {
                     activity.finishedAt = Date()
                 }
                 lastError = error.localizedDescription
+                onCompletion(false)
             }
             activityTasks[activityID] = nil
             panes.forEach { $0.refresh() }
@@ -4220,6 +4319,7 @@ final class AppState {
     }
 
     private func savePersistentState() {
+        guard !WorkbenchUITestConfiguration.isRequested else { return }
         let defaults = UserDefaults.standard
         defaults.set(isDualPane, forKey: RestoredFinderState.Key.isDualPane)
         defaults.set(activePaneIndex, forKey: RestoredFinderState.Key.activePaneIndex)

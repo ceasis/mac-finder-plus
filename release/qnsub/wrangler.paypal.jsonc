@@ -1,0 +1,27 @@
+{
+  // Deploy only after the private release object AND the PayPal secrets exist.
+  "name": "qnsub-workbench-page",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "qnsub.com/workbench", "zone_name": "qnsub.com" },
+    { "pattern": "qnsub.com/workbench/", "zone_name": "qnsub.com" },
+    { "pattern": "qnsub.com/workbench/gallery/*", "zone_name": "qnsub.com" },
+    { "pattern": "qnsub.com/images/icons/workbench.webp", "zone_name": "qnsub.com" },
+    { "pattern": "qnsub.com/images/workbench-app-icon.jpg", "zone_name": "qnsub.com" },
+    { "pattern": "qnsub.com/s3-images/workbench-app-icon.jpg", "zone_name": "qnsub.com" },
+    { "pattern": "qnsub.com/workbench/checkout", "zone_name": "qnsub.com" },
+    { "pattern": "qnsub.com/workbench/checkout/*", "zone_name": "qnsub.com" }
+  ],
+  "main": "workbench-route.mjs",
+  "vars": { "PAYPAL_MODE": "live", "WORKBENCH_RELEASE_KEY": "releases/Workbench-macOS.zip" },
+  "r2_buckets": [{ "binding": "WORKBENCH_RELEASES", "bucket_name": "qnsub-workbench-downloads" }],
+  "assets": {
+    "directory": "../../build/qnsub-workbench-public",
+    "binding": "PAGE_ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  }
+}

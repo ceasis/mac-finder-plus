@@ -221,10 +221,12 @@ struct CapturePanelView: View {
                         .help("Include microphone audio")
                 }
 
-                CaptureOptionRow("Clicks", systemImage: "cursorarrow.click") {
-                    Toggle("", isOn: $showClicks)
-                        .labelsHidden()
-                        .help("Show mouse clicks in the recording")
+                if #available(macOS 15, *) {
+                    CaptureOptionRow("Clicks", systemImage: "cursorarrow.click") {
+                        Toggle("", isOn: $showClicks)
+                            .labelsHidden()
+                            .help("Show mouse clicks in the recording")
+                    }
                 }
             }
 
@@ -295,16 +297,37 @@ struct CapturePanelView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
 
-            Button {
-                appState.performScreenshot(options: options)
-            } label: {
-                Label(captureKind == .recording ? "Start Recording" : "Take Screenshot", systemImage: captureKind.systemImage)
-                    .frame(maxWidth: .infinity)
+            if appState.isScreenRecording {
+                Button {
+                    appState.stopScreenRecording()
+                } label: {
+                    Label("Stop Recording", systemImage: "stop.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .controlSize(.large)
+            } else if appState.isCaptureInProgress {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Capture in progress…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    PanelIconButton(systemName: "xmark", help: "Cancel capture") { appState.cancelCapture() }
+                }
+            } else {
+                Button {
+                    appState.performScreenshot(options: options)
+                } label: {
+                    Label(captureKind == .recording ? "Start Recording" : "Take Screenshot", systemImage: captureKind.systemImage)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(!canCapture)
+                .help(captureKind == .recording ? "Start recording" : "Take screenshot")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!canCapture)
-            .help(captureKind == .recording ? "Start recording" : "Take screenshot")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)

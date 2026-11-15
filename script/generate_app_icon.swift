@@ -21,7 +21,8 @@ let renditions: [IconRendition] = [
 ]
 
 let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-let outputURL = root.appendingPathComponent("Assets.xcassets/AppIcon.appiconset", isDirectory: true)
+// The original Forge concept is kept separately from the current bundle icon.
+let outputURL = root.appendingPathComponent("Design/AppIconConcepts/Forge.iconset", isDirectory: true)
 let masterURL = root.appendingPathComponent("Design/AppIconConcepts/workbench-icon-02a-hammer-anvil.png")
 let appIconVisualScale: CGFloat = 0.86
 let appIconOpticalCenter = CGPoint(x: 538.5, y: 512)

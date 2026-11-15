@@ -8,16 +8,30 @@ struct WorkbenchApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environment(appState)
-                .frame(minWidth: 780, minHeight: 480)
-                .background(WindowTitleHider())
+            #if DEBUG
+            if let fixture = WorkbenchUITestConfiguration.current {
+                WorkbenchUIRegressionView(fixture: fixture, appState: appState)
+            } else if WorkbenchUITestConfiguration.isRequested {
+                ContentUnavailableView(
+                    "Invalid UI Test Fixture",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("The test runner must provide a marked disposable directory in an approved temporary location.")
+                )
+                .frame(width: 680, height: 360)
+            } else {
+                mainContent
+            }
+            #else
+            mainContent
+            #endif
         }
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
-            WorkbenchAppInfoCommands(appState: appState)
-            AppCommands(appState: appState)
-            CalendarCommands(appState: appState)
+            if !WorkbenchUITestConfiguration.isRequested {
+                WorkbenchAppInfoCommands(appState: appState)
+                AppCommands(appState: appState)
+                CalendarCommands(appState: appState)
+            }
         }
 
         Settings {
@@ -31,6 +45,13 @@ struct WorkbenchApp: App {
         }
         .defaultSize(width: 700, height: 660)
         .windowResizability(.contentSize)
+    }
+
+    private var mainContent: some View {
+        ContentView()
+            .environment(appState)
+            .frame(minWidth: 780, minHeight: 480)
+            .background(WindowTitleHider())
     }
 }
 

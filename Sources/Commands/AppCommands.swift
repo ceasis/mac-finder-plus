@@ -319,6 +319,9 @@ struct AppCommands: Commands {
                     Button("Screenshot…") { appState.beginScreenshotCapture() }
                         .keyboardShortcut("5", modifiers: [.command, .option])
                     Button("Screen Recording…") { appState.beginScreenRecording() }
+                    if appState.isScreenRecording {
+                        Button("Stop Screen Recording") { appState.stopScreenRecording() }
+                    }
                     Button("Voice Recorder…") { appState.showVoiceRecorderTool() }
                         .keyboardShortcut("m", modifiers: [.command, .option])
                 } else {

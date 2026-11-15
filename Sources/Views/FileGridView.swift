@@ -542,6 +542,8 @@ private struct GridCell: View {
                 .stroke(compareMarker?.color.opacity(0.35) ?? Color.clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("file-grid-\(paneIndex)-\(item.name)")
         .clickableCursor()
         .task(id: "\(item.id)|\(item.modified.timeIntervalSince1970)") {
             thumbnail = nil

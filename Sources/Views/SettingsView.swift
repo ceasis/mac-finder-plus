@@ -127,7 +127,7 @@ private struct PermissionsSettingsView: View {
 
 private struct GeneralSettingsView: View {
     @Environment(AppState.self) private var appState
-    @AppStorage(WorkbenchAppIconMode.defaultsKey) private var appIconMode = WorkbenchAppIconMode.forge.rawValue
+    @AppStorage(WorkbenchAppIconMode.defaultsKey) private var appIconMode = WorkbenchAppIconMode.defaultMode.rawValue
 
     var body: some View {
         @Bindable var appState = appState
@@ -192,12 +192,7 @@ private struct GeneralSettingsView: View {
 private struct AppIconPicker: View {
     @Binding var selection: String
 
-    private let columns = [
-        GridItem(.flexible(minimum: 92), spacing: 8),
-        GridItem(.flexible(minimum: 92), spacing: 8),
-        GridItem(.flexible(minimum: 92), spacing: 8),
-        GridItem(.flexible(minimum: 92), spacing: 8),
-    ]
+    private let columns = Array(repeating: GridItem(.flexible(minimum: 92), spacing: 8), count: 3)
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 8) {

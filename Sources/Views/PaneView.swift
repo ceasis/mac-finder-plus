@@ -409,6 +409,7 @@ struct InlineFileRenameField: NSViewRepresentable {
         field.focusRingType = .default
         field.lineBreakMode = .byTruncatingMiddle
         field.usesSingleLineMode = true
+        field.setAccessibilityIdentifier("file-rename-field")
         field.controlSize = compact ? .small : .regular
         field.font = compact
             ? .systemFont(ofSize: NSFont.smallSystemFontSize)

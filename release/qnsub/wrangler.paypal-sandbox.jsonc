@@ -1,0 +1,22 @@
+{
+  // Test purchases only. This Worker must never receive a production route or installer.
+  "name": "qnsub-workbench-paypal-sandbox",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": true,
+  "preview_urls": false,
+  "main": "workbench-route.mjs",
+  "vars": {
+    "PAYPAL_MODE": "sandbox",
+    "WORKBENCH_RELEASE_KEY": "fixtures/Workbench-Checkout-Test.zip"
+  },
+  "r2_buckets": [
+    { "binding": "WORKBENCH_RELEASES", "bucket_name": "qnsub-workbench-checkout-test" }
+  ],
+  "assets": {
+    "directory": "../../build/qnsub-workbench-public",
+    "binding": "PAGE_ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  }
+}

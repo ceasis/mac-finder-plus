@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{layout/main :: layout(~{::title}, ~{::main})}">
+<head>
+    <title>Workbench for macOS - Visual File Manager</title>
+</head>
+<body>
+    <main>
+        <!-- Hero Section -->
+        <section class="hero hero-split">
+            <div class="container">
+                <div class="hero-content">
+                    <span class="hero-eyebrow">Available on Gumroad</span>
+                    <h1>Make room for your files.</h1>
+                    <p>Browse two folders side by side, preview media, and see what’s taking up space. Workbench brings file management, notes, and quick editing tools into one Mac workspace.</p>
+                    <div class="hero-badges">
+                        <span class="hero-badge"><i class="fas fa-check-circle"></i> Dual-pane file workspace</span>
+                        <span class="hero-badge"><i class="fas fa-check-circle"></i> Media preview and tools</span>
+                        <span class="hero-badge"><i class="fas fa-check-circle"></i> Local-first Mac utility</span>
+                    </div>
+                    <div class="hero-buttons">
+                        <a href="https://qnsub.gumroad.com/l/yyloqo" target="_blank" rel="noopener noreferrer" class="btn">Buy on Gumroad</a>
+                        <a href="#download" class="btn btn-outline-light">Download &amp; Install</a>
+                        <a href="#screenshots" class="btn btn-outline-light">Screenshots</a>
+                        <a href="#history" class="btn btn-outline-light">History</a>
+                    </div>
+                </div>
+                <div class="hero-art" aria-hidden="true">
+                    <img th:src="@{/images/apps/workbench-hero.webp}" alt="" width="1200" height="960" fetchpriority="high" decoding="async">
+                    <img class="hero-art-icon" th:src="@{/images/icons/workbench.webp}" alt="" width="96" height="96" decoding="async">
+                </div>
+            </div>
+        </section>
+
+        <!-- App Identity Strip -->
+        <section class="trusted-by-section">
+            <div class="container">
+                <div class="trusted-by-content app-identity-strip">
+                    <img th:src="@{/images/icons/workbench.webp}" alt="Workbench app icon" width="96" height="96" decoding="async">
+                    <div>
+                        <h3>Workbench</h3>
+                        <p>Productivity &middot; Utilities &middot; Built by QnSub Tech &middot; macOS 14 or later</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- What It Does Section -->
+        <section id="features" class="section what-we-do-section">
+            <div class="container">
+                <div class="section-title">
+                    <h2>Built for creators, developers, students, and heavy Mac folders</h2>
+                    <p>Workbench combines familiar macOS-style browsing with focused power tools for downloads, screenshots, media libraries, research folders, and project cleanup.</p>
+                </div>
+                <div class="what-we-do-grid">
+                    <div class="what-we-do-item reveal">
+                        <div class="what-we-do-icon"><i class="fas fa-columns"></i></div>
+                        <h3>Dual-Pane Browsing</h3>
+                        <p>Work across two folders at once, move files between panes, use keyboard-friendly navigation, and switch between list, icon, and column-style workflows.</p>
+                    </div>
+                    <div class="what-we-do-item reveal">
+                        <div class="what-we-do-icon"><i class="fas fa-photo-film"></i></div>
+                        <h3>Media Preview</h3>
+                        <p>Preview images, video, and audio inside the workspace, resize images, rotate or flip media, convert supported files, and make quick visual decisions faster.</p>
+                    </div>
+                    <div class="what-we-do-item reveal">
+                        <div class="what-we-do-icon"><i class="fas fa-broom"></i></div>
+                        <h3>Disk Cleanup</h3>
+                        <p>Analyze disk usage with visual summaries, identify large deletion candidates, filter by date, size, type, file, or folder, and clean up crowded directories with less guessing.</p>
+                    </div>
+                    <div class="what-we-do-item reveal">
+                        <div class="what-we-do-icon"><i class="fas fa-note-sticky"></i></div>
+                        <h3>Notes and Snippets</h3>
+                        <p>Keep notes with dragged images, audio, video, and file attachments. Save reusable snippets of text, images, audio, and files with quick copy or open actions.</p>
+                    </div>
+                    <div class="what-we-do-item reveal">
+                        <div class="what-we-do-icon"><i class="fas fa-wand-magic-sparkles"></i></div>
+                        <h3>Focused File Tools</h3>
+                        <p>Create text files quickly, move selected files into a new folder, inspect archives, compare folders, browse metadata, and use right-click tools for common file work.</p>
+                    </div>
+                    <div class="what-we-do-item reveal">
+                        <div class="what-we-do-icon"><i class="fas fa-shield-halved"></i></div>
+                        <h3>Local-First Privacy</h3>
+                        <p>No analytics SDKs, no ad SDKs, no account tracking, and no cloud sync. Workbench works with files on your Mac and stores app data locally.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="screenshots" class="section" aria-labelledby="workbench-screenshots-title">
+            <div class="container">
+                <div class="section-title">
+                    <h2 id="workbench-screenshots-title">See Workbench in action</h2>
+                    <p>Workbench with sample files. Select a screenshot to see it full size.</p>
+                </div>
+                <div class="what-we-do-grid" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr))">
+                    <figure class="what-we-do-item" style="margin:0; min-width:0; text-align:left">
+                        <a href="/workbench/gallery/image-preview.jpg">
+                            <img src="/workbench/gallery/image-preview.jpg" alt="Workbench’s file grid beside a full-size image preview" width="1180" height="640" loading="lazy" decoding="async" style="display:block; width:100%; height:auto; border-radius:8px">
+                        </a>
+                        <figcaption><h3>Browse and preview</h3><p>See images at a useful size without leaving your folder.</p></figcaption>
+                    </figure>
+                    <figure class="what-we-do-item" style="margin:0; min-width:0; text-align:left">
+                        <a href="/workbench/gallery/csv-preview.jpg">
+                            <img src="/workbench/gallery/csv-preview.jpg" alt="Workbench’s file grid beside a CSV table preview" width="1180" height="640" loading="lazy" decoding="async" style="display:block; width:100%; height:auto; border-radius:8px">
+                        </a>
+                        <figcaption><h3>Scan CSV files</h3><p>Check column headers and sample rows before opening the full file.</p></figcaption>
+                    </figure>
+                    <figure class="what-we-do-item" style="margin:0; min-width:0; text-align:left">
+                        <a href="/workbench/gallery/markdown-editor.jpg">
+                            <img src="/workbench/gallery/markdown-editor.jpg" alt="Workbench’s rendered Markdown view showing a sample project brief" width="1180" height="640" loading="lazy" decoding="async" style="display:block; width:100%; height:auto; border-radius:8px">
+                        </a>
+                        <figcaption><h3>Read Markdown in place</h3><p>Switch between the source and a formatted preview without opening another app.</p></figcaption>
+                    </figure>
+                </div>
+            </div>
+        </section>
+
+        <!-- Workflow Section -->
+        <section class="section bg-light">
+            <div class="container">
+                <div class="section-title">
+                    <h2>A practical command center for messy folders</h2>
+                    <p>Designed for the folders that grow fast: Downloads, screenshots, client assets, class materials, video exports, PDFs, and project archives.</p>
+                </div>
+                <div class="parkingmanager-workflow">
+                    <div>
+                        <span>01</span>
+                        <h3>Browse and preview</h3>
+                        <p>Open a folder, scan files visually, preview media, and keep the second pane ready for sorting or comparison.</p>
+                    </div>
+                    <div>
+                        <span>02</span>
+                        <h3>Organize the batch</h3>
+                        <p>Filter by type or date, move selected files into a new folder, save useful snippets, and keep notes beside the work.</p>
+                    </div>
+                    <div>
+                        <span>03</span>
+                        <h3>Clean and ship</h3>
+                        <p>Find space hogs, convert or resize supported media, inspect archives, and leave the folder clearer than you found it.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Download and installation -->
+        <section id="download" class="section">
+            <div class="container">
+                <div class="section-title">
+                    <h2>Download and install Workbench</h2>
+                    <p>For Apple silicon and Intel Macs running macOS 14 Sonoma or later. The download is available through Gumroad.</p>
+                </div>
+                <div class="parkingmanager-workflow">
+                    <div>
+                        <span>01</span>
+                        <h3>Get Workbench</h3>
+                        <p>Purchase Workbench on Gumroad. If you already own it, open your Gumroad library for the download and available updates.</p>
+                    </div>
+                    <div>
+                        <span>02</span>
+                        <h3>Move it to Applications</h3>
+                        <p>Open the downloaded file, then drag Workbench.app into Applications.</p>
+                    </div>
+                    <div>
+                        <span>03</span>
+                        <h3>Open Workbench</h3>
+                        <p>Launch Workbench from Applications. macOS may ask for access to the folders you browse or for permission when you use certain tools.</p>
+                    </div>
+                </div>
+                <div style="max-width: 760px; margin: 0 auto; text-align: center;">
+                    <p style="margin: 28px 0;">One purchase covers personal or family use within one household on up to 5 Macs. See Gumroad for current pricing.</p>
+                    <div class="hero-buttons">
+                        <a href="https://qnsub.gumroad.com/l/yyloqo" target="_blank" rel="noopener noreferrer" class="btn">Buy on Gumroad</a>
+                        <a th:href="@{/workbench/support}" class="btn btn-outline">Open Support</a>
+                        <a th:href="@{/workbench/privacy}" class="btn btn-outline">Read Privacy Policy</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Product history: separate public launch from development milestones. -->
+        <section id="history" class="section bg-light">
+            <div class="container">
+                <div class="section-title">
+                    <h2>Workbench history</h2>
+                    <p>Workbench started as a two-pane file browser and grew into a workspace for everyday file and media tasks.</p>
+                </div>
+                <div class="what-we-do-grid">
+                    <article class="what-we-do-item" id="build-20261114185224">
+                        <p>Build notarized &middot; <time datetime="2026-11-15">November 15, 2026</time></p>
+                        <h3>Native screen capture and safer duplicate cleanup</h3>
+                        <p>Take screenshots and record your screen with ScreenCaptureKit. Review exact duplicates, choose which copy to keep, and move selected extras to Trash. This build also includes the new Workspace icon.</p>
+                        <p><small>Build 20261114185224 &middot; macOS 14 or later &middot; Apple silicon and Intel. The QnSub download is not live yet.</small></p>
+                    </article>
+                    <article class="what-we-do-item">
+                        <p>Public launch &middot; <time datetime="2026-07-14">July 14, 2026</time></p>
+                        <h3>First Gumroad release</h3>
+                        <p>Workbench launched with file browsing, media preview, notes and snippets, file tools, and disk usage analysis.</p>
+                    </article>
+                    <article class="what-we-do-item">
+                        <p>Development milestone &middot; <time datetime="2026-09-19">September 19, 2026</time></p>
+                        <h3>Duplicate-space estimates and Markdown</h3>
+                        <p>Disk Space began estimating savings from exact file matches, and Markdown preview received rendering improvements.</p>
+                    </article>
+                    <article class="what-we-do-item">
+                        <p>Development milestone &middot; <time datetime="2026-08">August 2026</time></p>
+                        <h3>Document editing and folder sizes</h3>
+                        <p>The built-in document editor and an expandable folder-usage tree made it easier to edit files and pinpoint where storage was going.</p>
+                    </article>
+                    <article class="what-we-do-item">
+                        <p>Development milestone &middot; <time datetime="2026-07">Late July 2026</time></p>
+                        <h3>Productivity tools and CSV preview</h3>
+                        <p>Development added Calendar reminders, a Pomodoro timer, Calculator, Terminal, and a table preview for CSV files.</p>
+                    </article>
+                    <article class="what-we-do-item">
+                        <p>Development milestone &middot; <time datetime="2026-07-07">July 7, 2026</time></p>
+                        <h3>The Panes prototype</h3>
+                        <p>The first prototype paired a dual-pane file browser with previews, batch rename, and a file activity log.</p>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA Section -->
+        <section class="section cta-section">
+            <div class="container">
+                <div class="cta-content reveal">
+                    <h2>Organize files. Preview media. Clean up disk space.</h2>
+                    <p>Workbench is available on Gumroad. Built by QnSub Tech for Mac users who need more room to work than the default file browser gives them.</p>
+                    <div class="hero-buttons">
+                        <a href="https://qnsub.gumroad.com/l/yyloqo" target="_blank" rel="noopener noreferrer" class="btn">Buy on Gumroad</a>
+                        <a th:href="@{/workbench/support}" class="btn btn-outline-light">Support</a>
+                        <a th:href="@{/workbench/privacy}" class="btn btn-outline-light">Privacy Policy</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

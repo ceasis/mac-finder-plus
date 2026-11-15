@@ -9,6 +9,7 @@ struct WorkbenchBuildInfo: Sendable {
     let bundleID: String
     let macOSVersion: String
     let hardwareModel: String
+    var metadata: WorkbenchBuildMetadata? = nil
 
     static var current: WorkbenchBuildInfo {
         let bundle = Bundle.main
@@ -20,17 +21,26 @@ struct WorkbenchBuildInfo: Sendable {
             build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown",
             bundleID: bundle.bundleIdentifier ?? "com.qnsub.workbench.app",
             macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-            hardwareModel: Self.hardwareModel()
+            hardwareModel: Self.hardwareModel(),
+            metadata: WorkbenchBuildMetadata.load(from: bundle)
         )
     }
 
+    var displayBuild: String {
+        metadata?.identifier ?? build
+    }
+
     var displayVersion: String {
-        "Version \(version) (\(build))"
+        "Version \(version) (\(displayBuild))"
     }
 
     var diagnosticsText: String {
         """
         \(appName) \(displayVersion)
+        Bundle Build: \(build)
+        Built: \(metadata?.builtAt ?? "Unavailable (older build)")
+        Source: \(metadata?.sourceText ?? "Unavailable (older build)")
+        Configuration: \(metadata?.configuration ?? "Unknown")
         Bundle ID: \(bundleID)
         macOS: \(macOSVersion)
         Mac: \(hardwareModel)
@@ -448,6 +458,7 @@ enum WorkbenchDiagnostics {
         let appName: String
         let version: String
         let build: String
+        let buildMetadata: WorkbenchBuildMetadata?
         let bundleID: String
         let createdAt: Date
         let includedFiles: [String]
@@ -508,6 +519,7 @@ enum WorkbenchDiagnostics {
             appName: info.appName,
             version: info.version,
             build: info.build,
+            buildMetadata: info.metadata,
             bundleID: info.bundleID,
             createdAt: Date(),
             includedFiles: includedFiles

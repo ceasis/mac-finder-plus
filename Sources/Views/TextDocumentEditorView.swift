@@ -341,6 +341,13 @@ struct TextDocumentEditorView: View {
             line = 1
             column = 1
             isLoading = false
+            #if DEBUG
+            if WorkbenchUITestConfiguration.current != nil,
+               ProcessInfo.processInfo.arguments.contains("--export-workbench-gallery"),
+               viewerKind == .markdown {
+                selectedTab = .viewer
+            }
+            #endif
         } catch is CancellationError {
             return
         } catch {

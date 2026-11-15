@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+import ImageIO
+@preconcurrency import ScreenCaptureKit
+import UniformTypeIdentifiers
 
 enum CaptureKind: String, CaseIterable, Identifiable, Sendable {
     case screenshot
@@ -137,25 +140,50 @@ struct ScreenCaptureWindowTarget: Identifiable, Hashable, Sendable {
     }
 }
 
+@MainActor
 enum ScreenshotCapture {
     static func capture(
         options: ScreenshotOptions,
         destinationFolder: URL,
-        appWindowNumber: Int?
+        appWindowNumber: Int?,
+        onRecording: @escaping @MainActor () -> Void = {}
     ) async throws -> ScreenshotCaptureResult {
-        let destination = options.saveToActiveFolder
-            ? uniqueDestination(in: destinationFolder, options: options)
-            : nil
-        try await runScreencapture(
-            options: options,
-            destination: destination,
-            appWindowNumber: appWindowNumber
-        )
+        let target = try await ScreenCaptureTarget.resolve(options.mode, selectedWindow: options.selectedWindowNumber,
+                                                           workbenchWindow: appWindowNumber)
+        // Start the countdown after an interactive selection, when the user can use it to prepare.
+        try await Task.sleep(for: .milliseconds(options.delay > 0 ? options.delay * 1_000 : 180))
+        let configuration = target.configuration(for: options)
+        let destination = options.kind == .recording || options.saveToActiveFolder
+            ? uniqueDestination(in: destinationFolder, options: options) : nil
 
-        if options.copyToClipboard, let destination {
-            await copyToClipboard(destination)
+        switch options.kind {
+        case .recording:
+            guard let destination else { throw ScreenshotCaptureError.noOutput }
+            try await NativeScreenRecorder.record(filter: target.filter, configuration: configuration,
+                                                  destination: destination, duration: options.recordingDuration,
+                                                  includeMicrophone: options.includeMicrophone, onRecording: onRecording)
+        case .screenshot:
+            guard destination != nil || options.copyToClipboard else { throw ScreenshotCaptureError.noOutput }
+            let image = try await SCScreenshotManager.captureImage(contentFilter: target.filter, configuration: configuration)
+            try Task.checkCancellation()
+            if let destination {
+                // Encode before touching the destination and never replace an existing file.
+                let data = try ScreenshotImageEncoder.encode(image, as: options.format)
+                try data.write(to: destination, options: .withoutOverwriting)
+            }
+            if options.copyToClipboard {
+                let pasteboard = NSPasteboard.general
+                let image = NSImage(cgImage: image, size: .zero)
+                pasteboard.clearContents()
+                if let destination {
+                    pasteboard.writeObjects([image, destination as NSURL])
+                } else {
+                    pasteboard.writeObjects([image])
+                }
+            }
         }
-
+        if options.playSound { NSSound(named: "Tink")?.play() }
+        if options.openInPreview, let destination { openCapture(destination, kind: options.kind) }
         return ScreenshotCaptureResult(savedURL: destination)
     }
 
@@ -206,128 +234,6 @@ enum ScreenshotCapture {
         }
     }
 
-    private static func runScreencapture(
-        options: ScreenshotOptions,
-        destination: URL?,
-        appWindowNumber: Int?
-    ) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            var arguments: [String] = ["-d"]
-            switch options.kind {
-            case .screenshot:
-                arguments += ["-t", options.format.rawValue]
-            case .recording:
-                arguments.append("-v")
-                if options.recordingDuration > 0 {
-                    arguments += ["-V", "\(options.recordingDuration)"]
-                }
-                if options.includeMicrophone {
-                    arguments.append("-g")
-                }
-                if options.showClicks {
-                    arguments.append("-k")
-                }
-            }
-
-            if !options.playSound {
-                arguments.append("-x")
-            }
-            if options.delay > 0 {
-                arguments += ["-T", "\(options.delay)"]
-            }
-
-            switch options.mode {
-            case .interactive:
-                arguments += ["-i", "-J", options.kind == .recording ? "video" : "selection"]
-                if options.kind == .recording {
-                    arguments.append("-U")
-                }
-                if !options.includeWindowShadow {
-                    arguments.append("-o")
-                }
-            case .selection:
-                arguments += ["-i", "-s"]
-                if options.kind == .recording {
-                    arguments += ["-J", "video", "-U"]
-                }
-            case .window:
-                arguments += ["-i", "-w"]
-                if options.kind == .recording {
-                    arguments += ["-J", "video", "-U"]
-                }
-                if !options.includeWindowShadow {
-                    arguments.append("-o")
-                }
-            case .applicationWindow:
-                guard let selectedWindowNumber = options.selectedWindowNumber else {
-                    throw ScreenshotCaptureError.noWindow
-                }
-                arguments += ["-l", "\(selectedWindowNumber)"]
-                if !options.includeWindowShadow {
-                    arguments.append("-o")
-                }
-            case .appWindow:
-                guard let appWindowNumber else {
-                    throw ScreenshotCaptureError.noWindow
-                }
-                arguments += ["-l", "\(appWindowNumber)"]
-                if !options.includeWindowShadow {
-                    arguments.append("-o")
-                }
-            case .fullScreen:
-                arguments.append("-m")
-                if options.includeCursor {
-                    arguments.append("-C")
-                }
-            }
-
-            if options.copyToClipboard, destination == nil {
-                arguments.append("-c")
-            }
-            if options.openInPreview, destination != nil {
-                arguments.append("-P")
-            }
-            if let destination {
-                arguments.append(destination.path)
-            }
-
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-            process.arguments = arguments
-
-            let outputPipe = Pipe()
-            let errorPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = errorPipe
-
-            try process.run()
-            process.waitUntilExit()
-
-            let output = String(
-                data: outputPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-            let error = String(
-                data: errorPipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-            let detail = [output, error]
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
-
-            if process.terminationStatus != 0 {
-                if destination?.hasReachableFile == false || detail.isEmpty {
-                    throw CancellationError()
-                }
-                throw ScreenshotCaptureError.failed(detail)
-            }
-            if let destination, !destination.hasReachableFile {
-                throw CancellationError()
-            }
-        }.value
-    }
-
     private static func uniqueDestination(in folder: URL, options: ScreenshotOptions) -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -338,34 +244,53 @@ enum ScreenshotCapture {
         return FileOperations.uniqueDestination(for: folder.appendingPathComponent(name))
     }
 
-    @MainActor
-    private static func copyToClipboard(_ url: URL) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        if let image = NSImage(contentsOf: url) {
-            pasteboard.writeObjects([image, url as NSURL])
+    private static func openCapture(_ url: URL, kind: CaptureKind) {
+        let workspace = NSWorkspace.shared
+        let bundleID = kind == .recording ? "com.apple.QuickTimePlayerX" : "com.apple.Preview"
+        if let application = workspace.urlForApplication(withBundleIdentifier: bundleID) {
+            workspace.open([url], withApplicationAt: application, configuration: NSWorkspace.OpenConfiguration())
         } else {
-            pasteboard.writeObjects([url as NSURL])
+            workspace.open(url)
         }
     }
 }
 
-private extension URL {
-    var hasReachableFile: Bool {
-        (try? resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+enum ScreenshotImageEncoder {
+    static func encode(_ image: CGImage, as format: ScreenshotFormat) throws -> Data {
+        let output = NSMutableData()
+        if format == .pdf {
+            var bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+            guard let consumer = CGDataConsumer(data: output as CFMutableData),
+                  let context = CGContext(consumer: consumer, mediaBox: &bounds, nil) else {
+                throw ScreenshotCaptureError.encodingFailed
+            }
+            context.beginPDFPage(nil)
+            context.draw(image, in: bounds)
+            context.endPDFPage()
+            context.closePDF()
+        } else {
+            let type: UTType = format == .png ? .png : (format == .jpg ? .jpeg : .tiff)
+            guard let destination = CGImageDestinationCreateWithData(output, type.identifier as CFString, 1, nil) else {
+                throw ScreenshotCaptureError.encodingFailed
+            }
+            let properties = format == .jpg ? [kCGImageDestinationLossyCompressionQuality: 0.95] as CFDictionary : nil
+            CGImageDestinationAddImage(destination, image, properties)
+            guard CGImageDestinationFinalize(destination) else { throw ScreenshotCaptureError.encodingFailed }
+        }
+        return output as Data
     }
 }
 
-private enum ScreenshotCaptureError: LocalizedError {
-    case noWindow
-    case failed(String)
+enum ScreenshotCaptureError: LocalizedError {
+    case noWindow, noDisplay, invalidArea, noOutput, encodingFailed
 
     var errorDescription: String? {
         switch self {
-        case .noWindow:
-            "No visible Workbench window was available to capture."
-        case let .failed(detail):
-            detail.isEmpty ? "Screenshot failed." : detail
+        case .noWindow: "The selected window is no longer available to capture."
+        case .noDisplay: "No screen was available to capture."
+        case .invalidArea: "Select an area within one screen."
+        case .noOutput: "Choose where to save or copy the capture."
+        case .encodingFailed: "Workbench couldn’t encode the screenshot in the selected format."
         }
     }
 }

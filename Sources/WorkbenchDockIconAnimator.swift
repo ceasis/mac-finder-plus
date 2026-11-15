@@ -3,7 +3,9 @@ import AppKit
 
 enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
     static let defaultsKey = "appIconMode"
+    static let defaultMode: WorkbenchAppIconMode = .workspace
     static let allCases: [WorkbenchAppIconMode] = [
+        .workspace,
         .forge,
         .mark,
         .spark,
@@ -14,6 +16,7 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
         .pro,
     ]
 
+    case workspace
     case forge = "animated"
     case mark
     case spark
@@ -28,6 +31,7 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .workspace: "Workspace"
         case .forge, .staticIcon: "Forge"
         case .mark: "Mark"
         case .spark: "Spark"
@@ -41,6 +45,7 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
 
     var detail: String {
         switch self {
+        case .workspace: "Default"
         case .forge, .staticIcon: "Animated"
         case .mark: "Simple"
         case .spark: "Catchy"
@@ -54,6 +59,7 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
 
     var assetName: String {
         switch self.normalized {
+        case .workspace: "AppIcon"
         case .forge: "WorkbenchIconForge"
         case .mark: "WorkbenchIconMark"
         case .spark: "WorkbenchIconSpark"
@@ -67,18 +73,13 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
     }
 
     static var preferred: WorkbenchAppIconMode {
-        guard let rawValue = UserDefaults.standard.string(forKey: defaultsKey) else {
-            return .forge
-        }
-        return mode(for: rawValue)
+        mode(for: UserDefaults.standard.string(forKey: defaultsKey))
     }
 
     static func mode(for rawValue: String?) -> WorkbenchAppIconMode {
-        guard let rawValue else {
-            return .forge
+        guard let rawValue, let mode = WorkbenchAppIconMode(rawValue: rawValue) else {
+            return defaultMode
         }
-
-        let mode = WorkbenchAppIconMode(rawValue: rawValue) ?? .forge
         return mode.normalized
     }
 
@@ -90,7 +91,7 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
         switch normalized {
         case .forge, .classic, .glass, .pro:
             true
-        case .mark, .spark, .done, .bolt, .staticIcon:
+        case .workspace, .mark, .spark, .done, .bolt, .staticIcon:
             false
         }
     }
@@ -99,7 +100,7 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
         switch self {
         case .staticIcon:
             .forge
-        case .forge, .mark, .spark, .done, .bolt, .classic, .glass, .pro:
+        case .workspace, .forge, .mark, .spark, .done, .bolt, .classic, .glass, .pro:
             self
         }
     }
@@ -108,11 +109,22 @@ enum WorkbenchAppIconMode: String, CaseIterable, Identifiable {
 @MainActor
 final class WorkbenchAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        WorkbenchGalleryExport.runIfRequested()
+        #endif
+        guard !WorkbenchUITestConfiguration.isRequested else { return }
         UNUserNotificationCenter.current().delegate = self
         WorkbenchDockIconAnimator.shared.startObservingPreferences()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let fixture = WorkbenchUITestConfiguration.current {
+            // The nonsandboxed app owns this suite; the sandboxed UI runner's
+            // preferences cleanup cannot remove it from the user's domain.
+            fixture.defaults.removePersistentDomain(forName: fixture.defaultsSuiteName)
+            return
+        }
+        guard !WorkbenchUITestConfiguration.isRequested else { return }
         NotesStore.shared.saveNow()
         TerminalStore.shared.shutdown()
         WorkbenchDockIconAnimator.shared.stopObservingPreferences()
@@ -198,12 +210,12 @@ final class WorkbenchDockIconAnimator {
         timer?.invalidate()
         timer = nil
         NSApplication.shared.dockTile.contentView = nil
-        NSApplication.shared.applicationIconImage = image ?? Self.image(for: .forge)
+        NSApplication.shared.applicationIconImage = image ?? Self.image(for: WorkbenchAppIconMode.defaultMode)
         NSApplication.shared.dockTile.display()
     }
 
     static func image(for mode: WorkbenchAppIconMode) -> NSImage {
-        if let image = NSImage(named: mode.assetName) {
+        if mode != .workspace, let image = NSImage(named: mode.assetName) {
             return appIconCopy(of: image, removingOuterRim: mode.removesOuterRim)
         }
 
@@ -219,15 +231,15 @@ final class WorkbenchDockIconAnimator {
     private static func loadPrimaryIconImage() -> NSImage {
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let image = NSImage(contentsOf: iconURL) {
-            return appIconCopy(of: image)
+            // The macOS renditions already include their intended Dock padding.
+            return image
         }
 
         if let image = NSImage(named: "AppIcon") {
-            return appIconCopy(of: image)
+            return image
         }
 
-        let fallback = NSApplication.shared.applicationIconImage ?? NSImage(size: NSSize(width: 1024, height: 1024))
-        return appIconCopy(of: fallback)
+        return NSApplication.shared.applicationIconImage ?? NSImage(size: NSSize(width: 1024, height: 1024))
     }
 
     private static func appIconCopy(of image: NSImage, removingOuterRim: Bool = false) -> NSImage {

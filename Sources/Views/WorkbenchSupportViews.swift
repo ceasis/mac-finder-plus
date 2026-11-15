@@ -88,7 +88,10 @@ struct AboutWorkbenchView: View {
 
                 WorkbenchInfoGrid(rows: [
                     ("Version", info.version),
-                    ("Build", info.build),
+                    ("Build", info.displayBuild),
+                    ("Built", info.metadata?.dateText ?? "Unavailable (older build)"),
+                    ("Source", info.metadata?.sourceText ?? "Unavailable (older build)"),
+                    ("Configuration", info.metadata?.configuration ?? "Unknown"),
                     ("macOS", info.macOSVersion),
                     ("Mac", info.hardwareModel),
                 ])

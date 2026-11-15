@@ -380,15 +380,26 @@ enum DiskSpaceAnalyzerEngine {
         options: DiskSpaceScanOptions,
         progress: @escaping @Sendable (DiskSpaceScanProgress) async -> Void = { _ in }
     ) async throws -> DiskSpaceAnalysis {
-        try await Task.detached(priority: .userInitiated) {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
             try await analyzeDetached(options: options, progress: progress)
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            let analysis = try await worker.value
+            try Task.checkCancellation()
+            return analysis
+        } onCancel: {
+            // Detached tasks do not inherit cancellation from their caller.
+            // Stop the actual disk work, not only delivery of its result.
+            worker.cancel()
+        }
     }
 
     private static func analyzeDetached(
         options: DiskSpaceScanOptions,
         progress: @escaping @Sendable (DiskSpaceScanProgress) async -> Void
     ) async throws -> DiskSpaceAnalysis {
+        try Task.checkCancellation()
         let root = options.root.standardizedFileURL
         let resourceKeys: Set<URLResourceKey> = [
             .contentModificationDateKey,
@@ -478,14 +489,17 @@ enum DiskSpaceAnalyzerEngine {
                         bytesFound: accumulator.totalBytes
                     )
                 )
+                try Task.checkCancellation()
             }
         }
 
+        try Task.checkCancellation()
         let finalProgress = DiskSpaceScanProgress(
             filesScanned: accumulator.scannedFileCount,
             bytesFound: accumulator.totalBytes
         )
         await progress(finalProgress)
+        try Task.checkCancellation()
         let scannedFileCount = accumulator.scannedFileCount
         let totalBytes = accumulator.totalBytes
         let duplicateSummary = try await accumulator.duplicateSummary { checked, total in
@@ -497,6 +511,7 @@ enum DiskSpaceAnalyzerEngine {
                 )
             )
         }
+        try Task.checkCancellation()
         return accumulator.analysis(
             volumeName: volumeName,
             volumePath: root.path,
@@ -715,8 +730,11 @@ private struct DiskSpaceAccumulator {
                 try Task.checkCancellation()
                 if checkedCandidates.isMultiple(of: 50) {
                     await progress(checkedCandidates, totalCandidates)
+                    try Task.checkCancellation()
                 }
                 guard let contentHash = try? sha256(for: candidate.path) else {
+                    // A cancelled read must not be treated as an unreadable file.
+                    try Task.checkCancellation()
                     checkedCandidates += 1
                     continue
                 }
@@ -725,6 +743,7 @@ private struct DiskSpaceAccumulator {
             }
         }
         await progress(checkedCandidates, totalCandidates)
+        try Task.checkCancellation()
 
         let allGroups = groupsByHash
             .filter { $0.value.count > 1 }
@@ -946,6 +965,7 @@ final class DiskSpaceAnalyzerStore {
 
     var analysis: DiskSpaceAnalysis?
     var isScanning = false
+    var isCleaningDuplicates = false
     var scanDetail = ""
     var lastError: String?
     var lastScannedAt: Date?
@@ -960,7 +980,7 @@ final class DiskSpaceAnalyzerStore {
     }
 
     func startScan(containing location: URL, force: Bool = false) {
-        guard !isScanning else { return }
+        guard !isScanning, !isCleaningDuplicates else { return }
         let root = DiskSpaceAnalyzerEngine.volumeRoot(for: location)
         if !force, analysis?.volumePath == root.path { return }
 
@@ -1012,6 +1032,34 @@ final class DiskSpaceAnalyzerStore {
 
     func reloadSavedSnapshot() {
         restoreSnapshot()
+    }
+
+    func recordTrashedDuplicatePaths(_ paths: Set<String>) {
+        guard !paths.isEmpty, let previous = analysis else { return }
+        let groups = previous.duplicateGroups.compactMap { group -> DiskSpaceDuplicateGroup? in
+            let files = group.files.filter { !paths.contains($0.path) }
+            guard files.count > 1 else { return nil }
+            return DiskSpaceDuplicateGroup(hash: group.hash, logicalBytes: group.logicalBytes, files: files)
+        }
+        let oldVisibleFileCount = previous.duplicateGroups.reduce(0) { $0 + $1.fileCount }
+        let oldVisibleSavings = previous.duplicateGroups.reduce(Int64(0)) { $0 + $1.potentialSavings }
+        let newVisibleFileCount = groups.reduce(0) { $0 + $1.fileCount }
+        let newVisibleSavings = groups.reduce(Int64(0)) { $0 + $1.potentialSavings }
+        // Trash still occupies disk space. Keep the original disk-usage snapshot until a new scan.
+        analysis = DiskSpaceAnalysis(
+            volumeName: previous.volumeName, volumePath: previous.volumePath,
+            volumeCapacity: previous.volumeCapacity, availableCapacity: previous.availableCapacity,
+            typeSlices: previous.typeSlices, dateSlices: previous.dateSlices, sizeSlices: previous.sizeSlices,
+            applications: previous.applications,
+            deletionCandidates: previous.deletionCandidates.mapValues { $0.filter { !paths.contains($0.path) } },
+            folderTree: previous.folderTree, duplicateGroups: groups,
+            duplicateGroupCount: max(0, previous.duplicateGroupCount - previous.duplicateGroups.count + groups.count),
+            duplicateFileCount: max(0, previous.duplicateFileCount - oldVisibleFileCount + newVisibleFileCount),
+            duplicatePotentialSavings: max(0, previous.duplicatePotentialSavings - oldVisibleSavings + newVisibleSavings),
+            scannedFileCount: previous.scannedFileCount
+        )
+        scanDetail = "Duplicates moved to Trash. Analyze again to refresh disk usage after emptying Trash or undoing."
+        saveSnapshot()
     }
 
     private func restoreSnapshot() {

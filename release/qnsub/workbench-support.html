@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org"
+      th:replace="~{layout/main :: layout(~{::title}, ~{::main})}">
+<head>
+    <title>Workbench Support - QnSub</title>
+</head>
+<body>
+    <main>
+        <!-- Page Header -->
+        <section class="page-header">
+            <div class="container">
+                <div class="hero-breadcrumb">
+                    <a th:href="@{/workbench}"><i class="fas fa-chevron-left"></i> Back to Workbench</a>
+                </div>
+                <h1>Workbench Support</h1>
+                <p>Help with installation, purchases, downloads, and using Workbench on your Mac.</p>
+            </div>
+        </section>
+
+        <!-- Contact Section -->
+        <section class="section">
+            <div class="container">
+                <div style="max-width: 760px; margin: 0 auto;">
+                    <h2>Get in touch</h2>
+                    <p>The fastest way to reach the Workbench team is by email. We read every message and reply within a few business days.</p>
+                    <p style="font-size: 1.15rem; margin: 24px 0;">
+                        <i class="fas fa-envelope" style="margin-right: 10px;"></i>
+                        <a href="mailto:support@qnsub.com"><strong>support@qnsub.com</strong></a>
+                    </p>
+                    <p>When emailing, it helps to include:</p>
+                    <ul style="margin: 12px 0 32px 24px; line-height: 1.8;">
+                        <li>Your Workbench version</li>
+                        <li>Your macOS version and Mac model</li>
+                        <li>What you expected to happen</li>
+                        <li>What actually happened</li>
+                        <li>A screenshot or screen recording, if useful</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- FAQ Section -->
+        <section class="section bg-light">
+            <div class="container">
+                <div class="section-title">
+                    <h2>Frequently Asked Questions</h2>
+                    <p>Quick answers about installation, permissions, download access, licensing, and privacy.</p>
+                </div>
+                <div class="faq-container">
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>What macOS version is required?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>Workbench requires macOS 14 Sonoma or later and runs on Apple Silicon and Intel Macs.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>How do I install Workbench?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>After paying with PayPal, return to the QnSub confirmation page in the same browser and download the zip. Unzip it, move <code>Workbench.app</code> to Applications, then open it. If you bought through Gumroad before, use your Gumroad library for your download.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>macOS blocked the app from opening. What should I do?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>Make sure you opened the download from your confirmed QnSub purchase or your previous Gumroad purchase. If macOS still blocks launch, email <a href="mailto:support@qnsub.com">support@qnsub.com</a> with the exact message and your macOS version.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>Does Workbench replace the built-in macOS file browser?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>No. The built-in macOS file browser stays on your Mac. Workbench adds a focused workspace for heavier file tasks such as dual-pane browsing, media preview, notes, snippets, cleanup, and disk analysis.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>Why does Workbench ask for Screen Recording or Microphone permission?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>Screen Recording is optional and only needed for screenshot or recording tools. Microphone is optional and only needed for voice recording, voice notes, and narrated recordings. You can change both permissions in macOS System Settings.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>Does Workbench upload my files?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>No. Workbench works locally on your Mac. It does not include analytics, cloud sync, advertising SDKs, or background uploads.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>Can I use one purchase on multiple Macs?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>Yes. One Workbench purchase covers personal or family use within one household on up to 5 Macs. The household license is not for company-wide sharing, resale, or public redistribution.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>How do I download again after paying?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>Keep the QnSub confirmation link and reopen it in the same browser. The browser’s checkout cookie lasts up to 14 days. If it expired, you cleared your cookies, or you used a different browser, email <a href="mailto:support@qnsub.com">support@qnsub.com</a> with the transaction ID from your PayPal receipt for manual recovery. Never send your card number, password, or verification code. For a previous Gumroad purchase, check your Gumroad library.</p>
+                        </div>
+                    </div>
+
+                    <div class="faq-item">
+                        <div class="faq-question">
+                            <h4>Where can I read the privacy policy?</h4>
+                            <span class="faq-toggle"><i class="fas fa-chevron-down"></i></span>
+                        </div>
+                        <div class="faq-answer">
+                            <p>The full policy is available at <a th:href="@{/workbench/privacy}">/workbench/privacy</a>.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- CTA Section -->
+        <section class="section cta-section">
+            <div class="container">
+                <div class="cta-content reveal">
+                    <h2>Still need help?</h2>
+                    <p>Email <a href="mailto:support@qnsub.com" style="color: inherit; text-decoration: underline;">support@qnsub.com</a> and include your Workbench version, macOS version, and a short description of the issue.</p>
+                    <a href="mailto:support@qnsub.com" class="btn">Email Support</a>
+                </div>
+            </div>
+        </section>
+    </main>
+</body>
+</html>

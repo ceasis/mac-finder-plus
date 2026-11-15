@@ -1,0 +1,14 @@
+Workbench for macOS · QnSub
+
+Requires macOS 14 Sonoma or later on an Apple silicon or Intel Mac.
+
+1. Open the ZIP you downloaded from QnSub.
+2. Drag Workbench.app into Applications.
+3. Open it from Applications. Select folders when macOS asks for access.
+
+Screen Recording and Microphone permissions are only needed for tools that
+use them. If macOS blocks launch, contact QnSub support for a verified copy.
+
+Product and history: https://qnsub.com/workbench
+Support: https://qnsub.com/workbench/support
+Privacy: https://qnsub.com/workbench/privacy
